@@ -1,5 +1,24 @@
 import os, httpx, json, re
-from typing import List, Dict
+from typing import List, Dict, Tuple
+
+def estimate_tokens(text: str) -> int:
+    """Stima semplice del numero di token (fallback se tiktoken non disponibile)."""
+    try:
+        import tiktoken  # type: ignore
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        # fallback euristico ~ 4 chars per token
+        return max(1, len(text) // 4)
+
+def count_messages_tokens(messages: List[Dict]) -> Tuple[int, List[int]]:
+    per_msg = []
+    total = 0
+    for m in messages:
+        c = estimate_tokens(m.get("content", ""))
+        per_msg.append(c)
+        total += c
+    return total, per_msg
 
 def _extract_scores(text: str) -> List[int]:
     """Estrae i punteggi numerici dal testo dell'utente"""
@@ -234,3 +253,13 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
 
     # fallback
     return await _local_reply(messages, context_hint)
+
+def compute_token_stats(messages: List[Dict], reply: str) -> Dict:
+    in_total, per_msg = count_messages_tokens(messages)
+    out_tokens = estimate_tokens(reply)
+    return {
+        "input_tokens": in_total,
+        "per_message": per_msg,
+        "output_tokens": out_tokens,
+        "total": in_total + out_tokens
+    }

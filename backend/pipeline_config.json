@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {"pattern": "\\b(analisi.*secondo livello|sintesi trasversale|raggruppamenti|collega i fattori)\\b", "topic": "analisi_secondo_livello"},
+    {"pattern": "\\b(fattori cognitivi|C[1-7]|A[1-7]|strategie|organizzatori|metacognizione)\\b", "topic": "fattori_cognitivi"},
+    {"pattern": "\\b(artefice di (me|te|se) stess[oa]|\\bautodeterminazione|autoregolazione|mindset)\\b", "topic": "artefice_di_se_stessi"},
+    {"pattern": "\\b(FAQ|domande frequenti|domande e risposte|aiuto rapido|come fare)\\b", "topic": "faq_qsa"}
+  ],
+  "files": {
+    "analisi_secondo_livello": "analisi-di-secondo-livello.txt",
+    "fattori_cognitivi": "fattori-cognitivi.txt",
+    "artefice_di_se_stessi": "essere-artchietto-di-sestessi.txt",
+    "faq_qsa": "domane-e-risposte.txt"
+  }
+}

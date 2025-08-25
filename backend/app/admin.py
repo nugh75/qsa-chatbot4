@@ -3,6 +3,11 @@ from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import json
 import os
+from .prompts import load_system_prompt, save_system_prompt
+from .topic_router import refresh_routes_cache
+from .rag import refresh_files_cache
+from pathlib import Path
+import re
 
 router = APIRouter()
 
@@ -144,6 +149,89 @@ async def save_admin_config(config: AdminConfig):
         return {"success": True, "message": "Configurazione salvata con successo"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio: {str(e)}")
+
+@router.get("/admin/system-prompt")
+async def get_system_prompt():
+    """Restituisce il prompt di sistema corrente."""
+    try:
+        return {"prompt": load_system_prompt()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento prompt: {str(e)}")
+
+class SystemPromptIn(BaseModel):
+    prompt: str
+
+@router.post("/admin/system-prompt")
+async def update_system_prompt(payload: SystemPromptIn):
+    """Aggiorna/salva il prompt di sistema."""
+    try:
+        save_system_prompt(payload.prompt)
+        return {"success": True, "message": "Prompt salvato"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel salvataggio prompt: {str(e)}")
+
+@router.post("/admin/system-prompt/reset")
+async def reset_system_prompt():
+    """Ripristina un prompt di default minimale."""
+    try:
+        default_text = "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+        save_system_prompt(default_text)
+        return {"success": True, "prompt": default_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore reset prompt: {str(e)}")
+
+# ---------------- Pipeline (routing + files) -----------------
+PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+
+class PipelineConfig(BaseModel):
+    routes: List[Dict[str, str]]
+    files: Dict[str, str]
+
+@router.get("/admin/pipeline")
+async def get_pipeline_config():
+    try:
+        data = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento pipeline: {str(e)}")
+
+@router.post("/admin/pipeline")
+async def update_pipeline_config(cfg: PipelineConfig):
+    # Validazione regex
+    invalid = []
+    for route in cfg.routes:
+        pat = route.get("pattern", "")
+        try:
+            re.compile(pat)
+        except re.error as e:
+            invalid.append({"pattern": pat, "error": str(e)})
+    if invalid:
+        raise HTTPException(status_code=400, detail={"message": "Pattern regex non valido", "invalid": invalid})
+    try:
+        PIPELINE_CONFIG_PATH.write_text(json.dumps(cfg.dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        refresh_routes_cache()
+        refresh_files_cache()
+        return {"success": True, "message": "Pipeline salvata"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel salvataggio pipeline: {str(e)}")
+
+@router.post("/admin/pipeline/reset")
+async def reset_pipeline_config():
+    """Ripristina pipeline_config.json ai valori iniziali se presenti nel repository."""
+    try:
+        # Carica il file originale dal repository (se esiste) oppure fallback hardcoded
+        default_path = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+        if default_path.exists():
+            original = json.loads(default_path.read_text(encoding="utf-8"))
+        else:
+            original = {"routes": [], "files": {}}
+        # Sovrascrive
+        PIPELINE_CONFIG_PATH.write_text(json.dumps(original, indent=2, ensure_ascii=False), encoding="utf-8")
+        refresh_routes_cache()
+        refresh_files_cache()
+        return {"success": True, "pipeline": original}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore reset pipeline: {str(e)}")
 
 @router.get("/admin/test-provider/{provider}")
 async def test_ai_provider(provider: str):

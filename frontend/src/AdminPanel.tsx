@@ -53,6 +53,15 @@ export default function AdminPanel() {
   const [loadingVoices, setLoadingVoices] = useState<Record<string, boolean>>({})
   const [testingVoices, setTestingVoices] = useState<Record<string, boolean>>({})
   const [voiceTestResults, setVoiceTestResults] = useState<Record<string, {success: boolean, message: string}>>({})
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [pipelineConfig, setPipelineConfig] = useState<{routes: {pattern: string; topic: string}[]; files: Record<string,string>} | null>(null)
+  const [savingPrompt, setSavingPrompt] = useState(false)
+  const [savingPipeline, setSavingPipeline] = useState(false)
+  const [promptChars, setPromptChars] = useState(0)
+  const [promptTokens, setPromptTokens] = useState(0)
+  const [tokenTestInput, setTokenTestInput] = useState('')
+  const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
+  const [testingTokens, setTestingTokens] = useState(false)
 
   const authenticate = () => {
     if (password === 'Lagom192.') {
@@ -82,6 +91,89 @@ export default function AdminPanel() {
       setMessage('Errore nel caricamento configurazione')
     }
   }
+
+  const updatePromptStats = (text: string) => {
+    setPromptChars(text.length)
+    setPromptTokens(Math.max(1, Math.round(text.length / 4)))
+  }
+
+  const loadSystemPrompt = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/system-prompt`)
+      const data = await res.json()
+      setSystemPrompt(data.prompt || '')
+      updatePromptStats(data.prompt || '')
+    } catch (e) {
+      setMessage('Errore caricamento system prompt')
+    }
+  }
+
+  const saveSystemPrompt = async () => {
+    try {
+      setSavingPrompt(true)
+      const res = await fetch(`${BACKEND}/api/admin/system-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: systemPrompt })
+      })
+      const data = await res.json()
+      if (data.success) setMessage('Prompt salvato con successo')
+      else setMessage('Errore salvataggio prompt')
+      updatePromptStats(systemPrompt)
+    } catch (e) {
+      setMessage('Errore salvataggio prompt')
+    } finally {
+      setSavingPrompt(false)
+    }
+  }
+
+  const resetSystemPrompt = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/system-prompt/reset`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setSystemPrompt(data.prompt)
+        updatePromptStats(data.prompt)
+        setMessage('Prompt ripristinato')
+      }
+    } catch (e) { setMessage('Errore reset prompt') }
+  }
+
+  const loadPipeline = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline`)
+      const data = await res.json()
+      setPipelineConfig(data)
+    } catch (e) {
+      setMessage('Errore caricamento pipeline')
+    }
+  }
+
+  const savePipeline = async () => {
+    if (!pipelineConfig) return
+    try {
+      setSavingPipeline(true)
+      const res = await fetch(`${BACKEND}/api/admin/pipeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pipelineConfig)
+      })
+      const data = await res.json()
+      if (data.success) setMessage('Pipeline salvata')
+      else setMessage('Errore salvataggio pipeline')
+    } catch (e) {
+      setMessage('Errore salvataggio pipeline')
+    } finally {
+      setSavingPipeline(false)
+    }
+  }
+
+  useEffect(() => {
+    if (authenticated) {
+      loadSystemPrompt()
+      loadPipeline()
+    }
+  }, [authenticated])
 
   const loadStats = async () => {
     try {
@@ -229,6 +321,29 @@ export default function AdminPanel() {
       }
     } catch (error) {
       setMessage(`Errore nel test ${provider}: ${error}`)
+    }
+  }
+
+  const runTokenTest = async () => {
+    if (!tokenTestInput.trim()) return
+    setTestingTokens(true)
+    setTokenTestResult(null)
+    try {
+      const res = await fetch(`${BACKEND}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-LLM-Provider': config?.default_provider || 'local',
+          'X-Admin-Password': password
+        },
+        body: JSON.stringify({ message: tokenTestInput })
+      })
+      const data = await res.json()
+      setTokenTestResult(data)
+    } catch (e) {
+      setTokenTestResult({ error: 'Errore chiamata' })
+    } finally {
+      setTestingTokens(false)
     }
   }
 
@@ -602,6 +717,169 @@ export default function AdminPanel() {
               ) : (
                 <Typography>Caricamento statistiche...</Typography>
               )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* System Prompt Editor */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                Prompt di Sistema
+              </Typography>
+              <TextField
+                multiline
+                minRows={12}
+                value={systemPrompt}
+                onChange={(e) => { setSystemPrompt(e.target.value); updatePromptStats(e.target.value) }}
+                fullWidth
+                placeholder="Inserisci il prompt di sistema..."
+              />
+              <Typography variant="caption" color="text.secondary">
+                {promptChars} caratteri ~ {promptTokens} token stimati
+              </Typography>
+              <Box sx={{ mt: 2, textAlign: 'right' }}>
+                <Button variant="outlined" size="small" onClick={resetSystemPrompt} sx={{ mr: 1 }}>Ripristina</Button>
+                <Button variant="outlined" size="small" onClick={loadSystemPrompt} sx={{ mr: 1 }}>Ricarica</Button>
+                <Button variant="contained" size="small" onClick={saveSystemPrompt} disabled={savingPrompt}>
+                  {savingPrompt ? 'Salvataggio...' : 'Salva Prompt'}
+                </Button>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Pipeline Editor */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Pipeline (Routing & File)</Typography>
+              {pipelineConfig && (
+                <Stack spacing={2}>
+                  <Typography variant="subtitle2">Regole di Routing</Typography>
+                  {pipelineConfig.routes.map((r, idx) => (
+                    <Stack key={idx} direction="row" spacing={1}>
+                      <TextField
+                        label="Pattern (regex)"
+                        size="small"
+                        value={r.pattern}
+                        onChange={(e) => {
+                          const routes = [...pipelineConfig.routes]
+                          routes[idx] = { ...routes[idx], pattern: e.target.value }
+                          setPipelineConfig({ ...pipelineConfig, routes })
+                        }}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Topic"
+                        size="small"
+                        value={r.topic}
+                        onChange={(e) => {
+                          const routes = [...pipelineConfig.routes]
+                          routes[idx] = { ...routes[idx], topic: e.target.value }
+                          setPipelineConfig({ ...pipelineConfig, routes })
+                        }}
+                        sx={{ width: 180 }}
+                      />
+                      <Button color="error" size="small" onClick={() => {
+                        const routes = pipelineConfig.routes.filter((_, i) => i !== idx)
+                        setPipelineConfig({ ...pipelineConfig, routes })
+                      }}>X</Button>
+                    </Stack>
+                  ))}
+                  <Button size="small" variant="outlined" onClick={() => {
+                    setPipelineConfig(prev => prev ? { ...prev, routes: [...prev.routes, { pattern: '', topic: '' }] } : prev)
+                  }}>Aggiungi Regola</Button>
+                  <Divider />
+                  <Typography variant="subtitle2">File per Topic</Typography>
+                  {Object.entries(pipelineConfig.files).map(([topic, filename]) => (
+                    <Stack key={topic} direction="row" spacing={1} alignItems="center">
+                      <TextField
+                        label="Topic"
+                        size="small"
+                        value={topic}
+                        disabled
+                        sx={{ width: 180 }}
+                      />
+                      <TextField
+                        label="File"
+                        size="small"
+                        value={filename}
+                        onChange={(e) => {
+                          setPipelineConfig(prev => prev ? { ...prev, files: { ...prev.files, [topic]: e.target.value } } : prev)
+                        }}
+                        fullWidth
+                      />
+                      <Button color="error" size="small" onClick={() => {
+                        setPipelineConfig(prev => {
+                          if (!prev) return prev
+                          const files = { ...prev.files }
+                          delete files[topic]
+                          return { ...prev, files }
+                        })
+                      }}>X</Button>
+                    </Stack>
+                  ))}
+                  <Button size="small" variant="outlined" onClick={() => {
+                    const newTopic = prompt('Nome nuovo topic?')
+                    if (newTopic) {
+                      setPipelineConfig(prev => prev ? { ...prev, files: { ...prev.files, [newTopic]: '' } } : prev)
+                    }
+                  }}>Aggiungi Topic/File</Button>
+                  <Box sx={{ textAlign: 'right' }}>
+                    <Button variant="outlined" size="small" onClick={async () => { await fetch(`${BACKEND}/api/admin/pipeline/reset`, { method:'POST' }); loadPipeline(); }} sx={{ mr: 1 }}>Ripristina</Button>
+                    <Button variant="outlined" size="small" onClick={loadPipeline} sx={{ mr: 1 }}>Ricarica</Button>
+                    <Button variant="contained" size="small" disabled={savingPipeline} onClick={savePipeline}>
+                      {savingPipeline ? 'Salvataggio...' : 'Salva Pipeline'}
+                    </Button>
+                  </Box>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Token Tester */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Analisi Token</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Inserisci un messaggio di prova per stimare i token (input + output). I token vengono mostrati solo a te come amministratore.
+              </Typography>
+              <Stack spacing={2}>
+                <TextField
+                  label="Messaggio di test"
+                  multiline
+                  minRows={3}
+                  value={tokenTestInput}
+                  onChange={(e) => setTokenTestInput(e.target.value)}
+                  fullWidth
+                />
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <Button variant="contained" size="small" onClick={runTokenTest} disabled={testingTokens}>
+                    {testingTokens ? 'Calcolo...' : 'Calcola Token'}
+                  </Button>
+                  {tokenTestResult?.tokens && (
+                    <Chip color="primary" label={`Totale: ${tokenTestResult.tokens.total} token (in ${tokenTestResult.tokens.input_tokens} / out ${tokenTestResult.tokens.output_tokens})`} />
+                  )}
+                  {tokenTestResult?.tokens && (
+                    <Chip variant="outlined" label={`Messaggi: ${tokenTestResult.tokens.per_message.join(',')}`} />
+                  )}
+                  {tokenTestResult?.topic && (
+                    <Chip label={`Topic: ${tokenTestResult.topic || 'n/d'}`} />
+                  )}
+                </Stack>
+                {tokenTestResult?.reply && (
+                  <Box sx={{ p:2, bgcolor:'#fafafa', borderRadius:1, fontSize:'.85rem', whiteSpace:'pre-wrap' }}>
+                    {tokenTestResult.reply}
+                  </Box>
+                )}
+                {tokenTestResult?.error && (
+                  <Alert severity="error">{tokenTestResult.error}</Alert>
+                )}
+              </Stack>
             </CardContent>
           </Card>
         </Grid>

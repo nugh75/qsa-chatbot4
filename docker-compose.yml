@@ -1,0 +1,20 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./data:/app/data:ro
+  frontend:
+    build: ./frontend
+    ports:
+      - "5175:5175"
+    environment:
+      - VITE_BACKEND_URL=http://localhost:8005
+    depends_on:
+      - backend

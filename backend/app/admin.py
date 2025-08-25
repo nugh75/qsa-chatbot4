@@ -6,6 +6,7 @@ import os
 from .prompts import load_system_prompt, save_system_prompt
 from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
+from .usage import read_usage, usage_stats, reset_usage
 from pathlib import Path
 import re
 
@@ -232,6 +233,30 @@ async def reset_pipeline_config():
         return {"success": True, "pipeline": original}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset pipeline: {str(e)}")
+
+# --------------- Usage logging endpoints ---------------
+@router.get("/admin/usage")
+async def get_usage(limit: int = 200):
+    try:
+        data = read_usage(limit=limit)
+        return {"items": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento usage: {str(e)}")
+
+@router.get("/admin/usage/stats")
+async def get_usage_stats():
+    try:
+        return usage_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore stats usage: {str(e)}")
+
+@router.post("/admin/usage/reset")
+async def reset_usage_logs():
+    try:
+        reset_usage()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore reset usage: {str(e)}")
 
 @router.get("/admin/test-provider/{provider}")
 async def test_ai_provider(provider: str):

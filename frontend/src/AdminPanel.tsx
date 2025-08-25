@@ -62,6 +62,30 @@ export default function AdminPanel() {
   const [tokenTestInput, setTokenTestInput] = useState('')
   const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
   const [testingTokens, setTestingTokens] = useState(false)
+  const [usageItems, setUsageItems] = useState<any[]>([])
+  const [loadingUsage, setLoadingUsage] = useState(false)
+  const [usageStats, setUsageStats] = useState<any | null>(null)
+
+  const loadUsage = async () => {
+    try {
+      setLoadingUsage(true)
+      const res = await fetch(`${BACKEND}/api/admin/usage?limit=200`)
+      const data = await res.json()
+      setUsageItems(data.items || [])
+      const statsRes = await fetch(`${BACKEND}/api/admin/usage/stats`)
+      setUsageStats(await statsRes.json())
+    } catch (e) {
+      setMessage('Errore caricamento usage')
+    } finally {
+      setLoadingUsage(false)
+    }
+  }
+
+  const resetUsage = async () => {
+    if (!window.confirm('Sicuro di voler cancellare i log di utilizzo?')) return
+    await fetch(`${BACKEND}/api/admin/usage/reset`, { method: 'POST' })
+    loadUsage()
+  }
 
   const authenticate = () => {
     if (password === 'Lagom192.') {
@@ -172,6 +196,7 @@ export default function AdminPanel() {
     if (authenticated) {
       loadSystemPrompt()
       loadPipeline()
+  loadUsage()
     }
   }, [authenticated])
 
@@ -883,6 +908,61 @@ export default function AdminPanel() {
             </CardContent>
           </Card>
         </Grid>
+
+          {/* Usage Table */}
+          <Grid item xs={12}>
+            <Card>
+              <CardContent>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                  <Typography variant="h6" gutterBottom>Log Utilizzo (ultimi {usageItems.length})</Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" variant="outlined" onClick={loadUsage} disabled={loadingUsage}>Aggiorna</Button>
+                    <Button size="small" color="error" variant="outlined" onClick={resetUsage}>Reset</Button>
+                  </Stack>
+                </Stack>
+                {usageStats && (
+                  <Box sx={{ mb:2 }}>
+                    <Chip label={`Interazioni: ${usageStats.total_interactions}`} sx={{ mr:1 }} />
+                    <Chip label={`Token totali: ${usageStats.total_tokens}`} sx={{ mr:1 }} />
+                    {Object.entries(usageStats.by_provider || {}).map(([p, v]: any) => (
+                      <Chip key={p} label={`${p}: ${(v as any).count} (${(v as any).tokens} tok)`} sx={{ mr:1, mb:1 }} />
+                    ))}
+                  </Box>
+                )}
+                <Box sx={{ maxHeight: 300, overflow: 'auto', fontSize: '.75rem', border: '1px solid #eee', borderRadius:1 }}>
+                  <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                    <thead style={{ position:'sticky', top:0, background:'#fafafa' }}>
+                      <tr>
+                        <th style={{ textAlign:'left', padding:'4px' }}>Giorno</th>
+                        <th style={{ textAlign:'left', padding:'4px' }}>Ora</th>
+                        <th style={{ textAlign:'left', padding:'4px' }}>Provider</th>
+                        <th style={{ textAlign:'left', padding:'4px' }}>Modello</th>
+                        <th style={{ textAlign:'right', padding:'4px' }}>Durata ms</th>
+                        <th style={{ textAlign:'right', padding:'4px' }}>Token</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usageItems.slice().reverse().map((u, idx) => {
+                        const ts = u.ts || ''
+                        const [dayPart, timePartFull] = ts.split('T')
+                        const timePart = (timePartFull || '').replace('Z','').slice(0,8)
+                        return (
+                          <tr key={idx} style={{ borderTop:'1px solid #eee' }}>
+                            <td style={{ padding:'4px' }}>{dayPart || '-'}</td>
+                            <td style={{ padding:'4px' }}>{timePart || '-'}</td>
+                            <td style={{ padding:'4px' }}>{u.provider}</td>
+                            <td style={{ padding:'4px' }}>{u.model || '-'}</td>
+                            <td style={{ padding:'4px', textAlign:'right' }}>{u.duration_ms}</td>
+                            <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.total ?? '-'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </Box>
+              </CardContent>
+            </Card>
+          </Grid>
       </Grid>
 
       <Box sx={{ mt: 3, textAlign: 'center' }}>

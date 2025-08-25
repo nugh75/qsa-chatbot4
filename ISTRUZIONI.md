@@ -29,7 +29,7 @@ contenuto del file corrispondente in `data/`:
 - `domane-e-risposte.txt` → quando chiede FAQ o “domande e risposte”.
 
 ## 5) Prompt di sistema
-Il backend carica `data/CLAUDE.md`. Modificalo per cambiare stile e flusso (Alex).
+Il backend carica `data/CLAUDE.md`. Modificalo per cambiare stile e flusso (Counselorbot).
 
 ## 6) Endpoint utili
 - `POST /api/chat` → chat principale (header opzionale `X-LLM-Provider: local|gemini|claude|openai`)

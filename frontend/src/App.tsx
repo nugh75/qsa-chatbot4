@@ -26,7 +26,7 @@ export default function App(){
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-    return [{role:'assistant', content:'Ciao! Sono Alex, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
+  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
   })
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
@@ -156,7 +156,7 @@ export default function App(){
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `messaggio_alex_${new Date().toISOString().split('T')[0]}.txt`
+  a.download = `messaggio_counselorbot_${new Date().toISOString().split('T')[0]}.txt`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -193,7 +193,7 @@ export default function App(){
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:2 }}>
         <Stack direction="row" spacing={1} alignItems="center">
           <ChatAvatar />
-          <Typography variant="h6">Alex – QSA Chatbot</Typography>
+          <Typography variant="h6">Counselorbot – QSA Chatbot</Typography>
         </Stack>
         <Stack direction="row" spacing={2} alignItems="center">
           <Select size="small" value={provider} onChange={e=>setProvider(e.target.value as any)}>
@@ -445,7 +445,7 @@ export default function App(){
                 boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
               }}>
                 <Typography variant="body2" color="text.secondary">
-                  Alex sta scrivendo...
+                  Counselorbot sta scrivendo...
                 </Typography>
               </Box>
             </Box>
@@ -544,7 +544,7 @@ export default function App(){
             <Box 
               component="button" 
               onClick={() => {
-                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Alex'}: ${m.content}`).join('\n\n')
+                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Counselorbot'}: ${m.content}`).join('\n\n')
                 copyMessage(allMessages, -1)
               }}
               sx={{ 
@@ -571,7 +571,7 @@ export default function App(){
             <Box 
               component="button" 
               onClick={() => {
-                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Alex'}: ${m.content}`).join('\n\n')
+                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Counselorbot'}: ${m.content}`).join('\n\n')
                 downloadMessage(allMessages)
               }}
               sx={{ 

@@ -1,4 +1,4 @@
-# QSA Chatbot – Alex
+# QSA Chatbot – Counselorbot
 
 Un chatbot AI avanzato con supporto per multiple piattaforme AI e sintesi vocale.
 Integra una RAG "leggera" che instrada le richieste verso 4 file di conoscenza e 
@@ -68,7 +68,7 @@ ELEVENLABS_API_KEY="your_elevenlabs_api_key"
 OLLAMA_BASE_URL="http://localhost:11434"
 ```
 
-## 🏃‍♂️ Avviohatbot – Alex
+## 🏃‍♂️ Avviohatbot – Counselorbot
 
 Progetto completo (frontend React/Vite + backend FastAPI) per un chatbot
 che segue le linee guida di **CLAUDE.md** e usa l’avatar `volto.png`.

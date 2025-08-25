@@ -66,9 +66,9 @@ async def _local_reply(messages: List[Dict], context_hint: str) -> str:
     # Se è il primo messaggio o un saluto
     if any(word in user_text.lower() for word in ['ciao', 'salve', 'buongiorno', 'buonasera']):
         if name:
-            return f"Ciao {name}! Sono Alex, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
+            return f"Ciao {name}! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
         else:
-            return "Ciao! Sono Alex, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
+            return "Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
     
     # Se ci sono punteggi da analizzare
     if scores:

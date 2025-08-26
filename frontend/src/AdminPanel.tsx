@@ -22,6 +22,7 @@ import {
   Remove as RemoveIcon,
   Edit as EditIcon,
   Delete as DeleteIcon,
+  Key as KeyIcon,
   Storage as StorageIcon
 } from '@mui/icons-material'
 import AdminRAGManagement from './components/AdminRAGManagement'
@@ -223,7 +224,7 @@ const UserManagementComponent: React.FC = () => {
                                 handleResetPassword();
                               }}
                             >
-                              <Typography component="span" sx={{ fontSize: '16px' }}>🔑</Typography>
+                              <KeyIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
                           <Tooltip title="Elimina Utente">
@@ -235,7 +236,7 @@ const UserManagementComponent: React.FC = () => {
                                 setDeleteDialog(true);
                               }}
                             >
-                              <Typography component="span" sx={{ fontSize: '16px' }}>🗑️</Typography>
+                              <DeleteIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
                         </Box>

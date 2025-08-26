@@ -95,6 +95,7 @@ interface ProcessedFile {
   text_length?: number;
   message?: string;
   error?: string;
+  base64_data?: string; // Align with FileAttachment optional field
 }
 
 interface SearchResult {

@@ -23,6 +23,7 @@ export interface ProcessedFile {
   mime_type: string;
   size: number;
   content?: string;
+  base64_data?: string; // Optional base64 representation for images
   processed_at: string;
   error?: string;
 }

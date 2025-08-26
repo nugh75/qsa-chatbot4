@@ -353,13 +353,16 @@ const AppContent: React.FC = () => {
       
       // Aggiungi allegati se presenti
       if (attachedFiles.length > 0) {
-        requestBody.attachments = attachedFiles.map(file => ({
-          id: file.id,
-          filename: file.filename,
-          file_type: file.file_type,
-          content: file.content,
-          base64_data: file.base64_data
-        }));
+        requestBody.attachments = attachedFiles.map(file => {
+          const att: any = {
+            id: file.id,
+            filename: file.filename,
+            file_type: file.file_type,
+            content: file.content
+          }
+          if (file.base64_data) att.base64_data = file.base64_data
+          return att
+        });
       }
       
       // Aggiungi conversation_id se disponibile

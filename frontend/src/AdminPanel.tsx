@@ -1933,7 +1933,7 @@ export default function AdminPanel() {
                   <Typography variant="h6" gutterBottom>
                     Feedback per Provider
                   </Typography>
-                  {Object.entries(stats.by_provider).map(([provider, data]: [string, any]) => (
+                  {stats && stats.by_provider && Object.entries(stats.by_provider).map(([provider, data]: [string, any]) => (
                     <Box key={provider} sx={{ mb: 1 }}>
                       <Typography variant="subtitle2">{provider}</Typography>
                       <Grid container spacing={1}>

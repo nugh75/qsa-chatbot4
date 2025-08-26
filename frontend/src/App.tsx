@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip, FormControl, CircularProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -26,6 +26,9 @@ import { ConversationSidebar } from './components/ConversationSidebar'
 import ConversationSearch from './components/ConversationSearch'
 import LoginDialog from './components/LoginDialog'
 import FileUpload, { ProcessedFile } from './components/FileUpload'
+import FileManagerCompact from './components/FileManagerCompact'
+import ChatToolbar from './components/ChatToolbar'
+import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
@@ -152,7 +155,9 @@ const AppContent: React.FC = () => {
   const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'>('edge')
   const [playingMessageIndex, setPlayingMessageIndex] = useState<number | null>(null)
   const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [feedback, setFeedback] = useState<{[key: number]: 'like' | 'dislike'}>({})
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -160,7 +165,68 @@ const AppContent: React.FC = () => {
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<ProcessedFile[]>([])
+  const [enabledProviders, setEnabledProviders] = useState<string[]>([])
+  const [enabledTtsProviders, setEnabledTtsProviders] = useState<string[]>([])
+  const [enabledAsrProviders, setEnabledAsrProviders] = useState<string[]>([])
+  const [defaultProvider, setDefaultProvider] = useState('')
+  const [defaultTts, setDefaultTts] = useState('')
+  const [defaultAsr, setDefaultAsr] = useState('')
+  const [asrProvider, setAsrProvider] = useState<'openai'|'local'>('openai')
+
+  // Provider mappings
+  const providerLabels: Record<string, string> = {
+    'local': 'Locale',
+    'gemini': 'Gemini',
+    'claude': 'Claude',
+    'openai': 'GPT',
+    'openrouter': 'OpenRouter',
+    'ollama': 'Ollama'
+  }
+
+  const ttsLabels: Record<string, string> = {
+    'edge': 'Edge',
+    'elevenlabs': 'ElevenLabs',
+    'openai': 'OpenAI',
+    'piper': 'Piper'
+  }
+
+  const asrLabels: Record<string, string> = {
+    'openai': 'OpenAI Whisper',
+    'local': 'Whisper Locale'
+  }
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
+
+  // Load public configuration
+  useEffect(() => {
+    const loadConfig = async () => {
+      try {
+        const { apiService } = await import('./apiService')
+        const response = await apiService.getPublicConfig()
+        if (response.success && response.data) {
+          setEnabledProviders(response.data.enabled_providers)
+          setEnabledTtsProviders(response.data.enabled_tts_providers)
+          setEnabledAsrProviders(response.data.enabled_asr_providers)
+          setDefaultProvider(response.data.default_provider)
+          setDefaultTts(response.data.default_tts)
+          setDefaultAsr(response.data.default_asr)
+          
+          // Set default values if current selections are not enabled
+          if (!response.data.enabled_providers.includes(provider)) {
+            setProvider(response.data.default_provider as any)
+          }
+          if (!response.data.enabled_tts_providers.includes(ttsProvider)) {
+            setTtsProvider(response.data.default_tts as any)
+          }
+          if (!response.data.enabled_asr_providers.includes(asrProvider)) {
+            setAsrProvider(response.data.default_asr as any)
+          }
+        }
+      } catch (error) {
+        console.error('Error loading config:', error)
+      }
+    }
+    loadConfig()
+  }, [])
 
   useEffect(()=>{
     const handler = ()=>{
@@ -390,14 +456,76 @@ const AppContent: React.FC = () => {
   const startRecording = async () => {
     try {
       setIsRecording(true)
-      // Placeholder per ora - implementare con Web Audio API
-      setTimeout(() => {
+      setIsTranscribing(false)
+      
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('La registrazione audio non è supportata in questo browser')
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const recorder = new MediaRecorder(stream)
+      const audioChunks: BlobPart[] = []
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data)
+        }
+      }
+
+      recorder.onstop = async () => {
         setIsRecording(false)
-        setInput("Trascrizione vocale non ancora implementata")
-      }, 2000)
+        setIsTranscribing(true)
+        
+        try {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/wav' })
+          const formData = new FormData()
+          formData.append('audio', audioBlob, 'recording.wav')
+          formData.append('provider', asrProvider)
+
+          const response = await fetch(`${BACKEND}/api/transcribe`, {
+            method: 'POST',
+            body: formData
+          })
+
+          if (!response.ok) {
+            throw new Error('Errore nella trascrizione')
+          }
+
+          const result = await response.json()
+          if (result.text) {
+            setInput(prev => prev + (prev ? ' ' : '') + result.text)
+          }
+        } catch (error) {
+          console.error('Errore trascrizione:', error)
+          setError('Errore nella trascrizione audio')
+        } finally {
+          stream.getTracks().forEach(track => track.stop())
+          setIsTranscribing(false)
+          setMediaRecorder(null)
+        }
+      }
+
+      recorder.start()
+      setMediaRecorder(recorder)
+      
+      // Auto-stop dopo 30 secondi
+      setTimeout(() => {
+        if (recorder.state === 'recording') {
+          recorder.stop()
+        }
+      }, 30000)
+      
     } catch (error) {
       console.error('Errore registrazione:', error)
+      setError(error instanceof Error ? error.message : 'Errore nella registrazione')
       setIsRecording(false)
+    }
+  }
+
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop()
+      // Gli stati verranno aggiornati nel callback onstop
     }
   }
 
@@ -449,7 +577,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Container maxWidth="md" sx={{ py: 3 }}>
+    <Container maxWidth="xl" sx={{ py: 3, px: 2 }}>
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
         <Alert severity="warning" sx={{ mb: 2 }} action={
@@ -475,77 +603,69 @@ const AppContent: React.FC = () => {
           <ChatAvatar />
           <Typography variant="h6">Counselorbot – QSA Chatbot</Typography>
         </Stack>
-        <Stack direction="row" spacing={2} alignItems="center">
-          <Select size="small" value={provider} onChange={e=>setProvider(e.target.value as any)}>
-            <MenuItem value="local">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                Local
-              </Box>
-            </MenuItem>
-            <MenuItem value="gemini">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                Gemini
-              </Box>
-            </MenuItem>
-            <MenuItem value="claude">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                Claude
-              </Box>
-            </MenuItem>
-            <MenuItem value="openai">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                OpenAI
-              </Box>
-            </MenuItem>
-            <MenuItem value="openrouter">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                OpenRouter
-              </Box>
-            </MenuItem>
-            <MenuItem value="ollama">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <AIIcon size={16} />
-                Ollama
-              </Box>
-            </MenuItem>
-          </Select>
+        
+        {/* Controlli principali */}
+        <Stack direction="row" spacing={1} alignItems="center">
+          {/* Nuova conversazione */}
+          <Tooltip title="Nuova conversazione">
+            <IconButton
+              size="small"
+              onClick={() => {
+                setMessages([{
+                  role: 'assistant', 
+                  content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+                  ts: Date.now()
+                }]);
+                setCurrentConversationId(null);
+              }}
+              sx={{ color: 'primary.main' }}
+            >
+              <Typography component="span" sx={{ fontSize: '1.2rem' }}>+</Typography>
+            </IconButton>
+          </Tooltip>
           
-          <Select size="small" value={ttsProvider} onChange={e=>setTtsProvider(e.target.value as any)}>
-            <MenuItem value="edge">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <SpeakerIcon size={16} />
-                Edge TTS
-              </Box>
-            </MenuItem>
-            <MenuItem value="elevenlabs">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <SpeakerIcon size={16} />
-                ElevenLabs
-              </Box>
-            </MenuItem>
-            <MenuItem value="openai">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <SpeakerIcon size={16} />
-                OpenAI Voice
-              </Box>
-            </MenuItem>
-            <MenuItem value="piper">
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <SpeakerIcon size={16} />
-                Piper TTS
-              </Box>
-            </MenuItem>
-          </Select>
-          
+          {/* Selezione modello */}
+          <FormControl size="small" sx={{ minWidth: 100 }}>
+            <Select
+              value={provider}
+              onChange={(e) => setProvider(e.target.value as any)}
+              sx={{ 
+                height: 32,
+                borderRadius: 2,
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
+              }}
+            >
+              {enabledProviders.map(providerKey => (
+                <MenuItem key={providerKey} value={providerKey}>
+                  {providerLabels[providerKey] || providerKey}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Selezione voce */}
+          <FormControl size="small" sx={{ minWidth: 100 }}>
+            <Select
+              value={ttsProvider}
+              onChange={(e) => setTtsProvider(e.target.value as any)}
+              sx={{ 
+                height: 32,
+                borderRadius: 2,
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
+              }}
+            >
+              {enabledTtsProviders.map(ttsKey => (
+                <MenuItem key={ttsKey} value={ttsKey}>
+                  {ttsLabels[ttsKey] || ttsKey}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Download Chat + Report */}
           <DownloadChatButton messages={messages} conversationId={currentConversationId} />
-          
-          {/* Rimosso pulsante di ricerca su richiesta */}
-          
+
+          {/* Login/Logout */}
           {isAuthenticated ? (
             <Tooltip title={`Logout (${user?.email})`}>
               <IconButton
@@ -580,7 +700,7 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
 
-      <Paper variant="outlined" sx={{ p: 3, minHeight: 420, position: 'relative', bgcolor: '#fafafa' }}>
+      <Paper variant="outlined" sx={{ p: 3, minHeight: 600, position: 'relative', bgcolor: '#fafafa', borderRadius: 4 }}>
         {error && (
           <Box sx={{ position:'absolute', top:8, right:8, bgcolor:'#ffe6e6', border:'1px solid #ffb3b3', px:1.5, py:0.5, borderRadius:1 }}>
             <Typography variant="caption" color="error">{error}</Typography>
@@ -600,13 +720,13 @@ const AppContent: React.FC = () => {
                 
                 {/* Bolla del messaggio - aumentata la dimensione */}
                 <Box sx={{ 
-                  maxWidth: '80%',  // Aumentato da 75% a 80%
+                  maxWidth: '85%',  // Aumentato da 80% a 85%
                   bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
                   color: m.role === 'assistant' ? '#000' : '#fff',
                   p: 2.5,  // Aumentato il padding
-                  borderRadius: 3,
-                  borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
-                  borderTopRightRadius: m.role === 'user' ? 1 : 3,
+                  borderRadius: 6,  // Angoli più arrotondati
+                  borderTopLeftRadius: m.role === 'assistant' ? 2 : 6,
+                  borderTopRightRadius: m.role === 'user' ? 2 : 6,
                   boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                   position: 'relative',
                 }}>
@@ -643,15 +763,15 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '2px',
-                        borderRadius: '4px',
+                        padding: '3px',  // Aumentato padding
+                        borderRadius: '6px',  // Angoli più arrotondati
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' }
                       }}
                       title={playingMessageIndex === i ? "Ferma audio" : `Ascolta (${ttsProvider})`}
                     >
-                      {playingMessageIndex === i ? <SmallStopIcon size={12} /> : <SpeakerIcon size={12} />}
+                      {playingMessageIndex === i ? <SmallStopIcon size={16} /> : <SpeakerIcon size={16} />}
                     </Box>
 
                     {/* Copia */}
@@ -662,8 +782,8 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '2px',
-                        borderRadius: '4px',
+                        padding: '3px',  // Aumentato padding
+                        borderRadius: '6px',  // Angoli più arrotondati
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' },
@@ -671,7 +791,7 @@ const AppContent: React.FC = () => {
                       }}
                       title={copiedMessage === i ? "Copiato!" : "Copia messaggio"}
                     >
-                      {copiedMessage === i ? <SmallCheckIcon size={12} /> : <CopyIcon size={12} />}
+                      {copiedMessage === i ? <SmallCheckIcon size={16} /> : <CopyIcon size={16} />}
                     </Box>
 
                     {/* Download */}
@@ -682,15 +802,15 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '2px',
-                        borderRadius: '4px',
+                        padding: '3px',  // Aumentato padding
+                        borderRadius: '6px',  // Angoli più arrotondati
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' }
                       }}
                       title="Scarica messaggio"
                     >
-                      <SmallDownloadIcon size={12} />
+                      <SmallDownloadIcon size={16} />
                     </Box>
 
                     {/* Like */}
@@ -701,8 +821,8 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '2px',
-                        borderRadius: '4px',
+                        padding: '3px',  // Aumentato padding
+                        borderRadius: '6px',  // Angoli più arrotondati
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' },
@@ -710,7 +830,7 @@ const AppContent: React.FC = () => {
                       }}
                       title="Mi piace"
                     >
-                      <LikeIcon size={12} />
+                      <LikeIcon size={16} />
                     </Box>
 
                     {/* Dislike */}
@@ -721,8 +841,8 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '2px',
-                        borderRadius: '4px',
+                        padding: '3px',  // Aumentato padding
+                        borderRadius: '6px',  // Angoli più arrotondati
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' },
@@ -730,7 +850,7 @@ const AppContent: React.FC = () => {
                       }}
                       title="Non mi piace"
                     >
-                      <DislikeIcon size={12} />
+                      <DislikeIcon size={16} />
                     </Box>
                   </Box>
                 )}
@@ -772,76 +892,129 @@ const AppContent: React.FC = () => {
         </Stack>
       </Paper>
 
-      <Paper elevation={2} sx={{ mt: 2, p: 1, borderRadius: 3 }}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <TextField 
-            fullWidth 
-            placeholder="Scrivi un messaggio…" 
-            value={input} 
-            onChange={e=>setInput(e.target.value)} 
-            onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }}}
-            variant="outlined"
-            size="small"
-            sx={{
-              '& .MuiOutlinedInput-root': {
-                borderRadius: 3,
-                '& fieldset': { border: 'none' },
-              }
-            }}
-            multiline
-            maxRows={4}
-          />
-          
-          {/* Componente upload file */}
-          <FileUpload 
-            onFilesProcessed={handleFilesProcessed}
-            disabled={loading}
-            maxFiles={3}
-          />
-          
-          {/* Pulsante microfono */}
-          <Tooltip title={isRecording ? "Registrando..." : "Registra messaggio vocale"}>
-            <span style={{ display: 'inline-flex' }}>
-              <IconButton 
-                onClick={startRecording}
-                disabled={isRecording}
-                sx={{ 
-                  bgcolor: isRecording ? 'error.main' : 'grey.300',
-                  color: isRecording ? 'white' : 'grey.600',
-                  '&:hover': { bgcolor: isRecording ? 'error.dark' : 'grey.400' },
-                  borderRadius: 2,
-                  width: 45,
-                  height: 45
-                }}
-              >
-                {isRecording ? <StopIcon /> : <MicIcon />}
-              </IconButton>
-            </span>
-          </Tooltip>
-          
-          {/* Pulsante invio */}
-          <span style={{ display: 'inline-flex' }}>
+      {/* Feedback conversazione - in basso a destra */}
+      <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
+        <Stack direction="row" spacing={1}>
+          <Tooltip title="Mi è piaciuta questa conversazione">
             <IconButton 
-              color="primary" 
-              onClick={send} 
-              disabled={loading || !input.trim()}
+              onClick={() => giveFeedback(-1, 'like')}
+              size="small" 
               sx={{ 
-                bgcolor: loading || !input.trim() ? 'grey.300' : 'primary.main',
-                color: 'white',
-                '&:hover': { bgcolor: 'primary.dark' },
-                borderRadius: 2,
-                width: 45,
-                height: 45
+                color: feedback[-1] === 'like' ? '#4caf50' : '#666',
+                bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f5f5f5',
+                '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#e0e0e0' }
               }}
             >
-              <SendIcon />
+              <LikeIcon size={16} />
             </IconButton>
-          </span>
+          </Tooltip>
+
+          <Tooltip title="Non mi è piaciuta questa conversazione">
+            <IconButton 
+              onClick={() => giveFeedback(-1, 'dislike')}
+              size="small" 
+              sx={{ 
+                color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
+                bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f5f5f5',
+                '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#e0e0e0' }
+              }}
+            >
+              <DislikeIcon size={16} />
+            </IconButton>
+          </Tooltip>
         </Stack>
+      </Box>
+
+      {/* Input Area */}
+      <Paper elevation={2} sx={{ mt: 2, borderRadius: 4 }}>
+        <Box sx={{ p: 2 }}>
+          <Stack direction="row" spacing={2} alignItems="flex-end">
+            <Box position="relative" flex={1}>
+              <TextField 
+                fullWidth 
+                placeholder="Scrivi un messaggio…"
+                value={input} 
+                onChange={e=>setInput(e.target.value)} 
+                onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }}}
+                variant="outlined"
+                size="medium"
+                disabled={isRecording || isTranscribing}
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 4,  // Angoli più arrotondati anche per il TextField
+                  }
+                }}
+                multiline
+                maxRows={6}
+                minRows={2}
+              />
+              
+              {/* Animazione onde dentro il TextField quando si registra */}
+              {isRecording && (
+                <Box
+                  position="absolute"
+                  top="50%"
+                  left="50%"
+                  sx={{
+                    transform: 'translate(-50%, -50%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    pointerEvents: 'none'
+                  }}
+                >
+                  <MicIcon sx={{ color: 'error.main', fontSize: 24 }} />
+                  <VoiceRecordingAnimation isRecording={isRecording} size={36} />
+                  <Typography 
+                    variant="body1" 
+                    color="error.main"
+                    sx={{ 
+                      fontWeight: 600,
+                      fontSize: '1rem'
+                    }}
+                  >
+                    Sto ascoltando...
+                  </Typography>
+                </Box>
+              )}
+              
+              {/* Indicatore trascrizione */}
+              {isTranscribing && (
+                <Box
+                  position="absolute"
+                  top="50%"
+                  left="50%"
+                  sx={{
+                    transform: 'translate(-50%, -50%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 2,
+                    pointerEvents: 'none'
+                  }}
+                >
+                  <CircularProgress size={24} color="primary" />
+                  <Typography variant="body1" color="primary" sx={{ fontWeight: 600 }}>
+                    Trascrizione in corso...
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+            
+            {/* Chat Toolbar - icone a destra */}
+            <ChatToolbar
+              onSend={send}
+              onStartRecording={startRecording}
+              onStopRecording={stopRecording}
+              canSend={!!input.trim() && !loading && !isRecording && !isTranscribing}
+              isRecording={isRecording}
+              isLoading={loading || isTranscribing}
+            />
+          </Stack>
+        </Box>
         
         {/* Indicatori di stato */}
         {(isRecording || playingMessageIndex !== null) && (
-          <Box sx={{ mt: 1, px: 1 }}>
+          <Box sx={{ px: 2, pb: 1 }}>
             {isRecording && (
               <Typography variant="caption" color="error" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
                 <Box sx={{ color: '#f44336', display: 'flex', alignItems: 'center' }}>
@@ -862,119 +1035,16 @@ const AppContent: React.FC = () => {
         )}
       </Paper>
 
-      {/* Barra di feedback globale */}
-      <Paper elevation={1} sx={{ mt: 2, p: 2, borderRadius: 2, bgcolor: '#f5f5f5' }}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center">
-          <Typography variant="body2" color="text.secondary">
-            Come valuti questa conversazione?
-          </Typography>
-          
-          <Stack direction="row" spacing={0.5} alignItems="center">
-            {/* Copia conversazione */}
-            <Box 
-              component="button" 
-              onClick={() => {
-                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Counselorbot'}: ${m.content}`).join('\n\n')
-                copyMessage(allMessages, -1)
-              }}
-              sx={{ 
-                background: 'none',
-                border: '1px solid #ddd',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                padding: '4px 6px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-                fontSize: '12px',
-                color: copiedMessage === -1 ? '#4caf50' : '#666',
-                bgcolor: copiedMessage === -1 ? '#e8f5e8' : 'white',
-                '&:hover': { bgcolor: copiedMessage === -1 ? '#e8f5e8' : '#f0f0f0' }
-              }}
-              title="Copia tutta la conversazione"
-            >
-              {copiedMessage === -1 ? <SmallCheckIcon size={14} /> : <CopyIcon size={14} />}
-              Copia
-            </Box>
+      {/* File Manager */}
+      <Box sx={{ mt: 2 }}>
+        <FileManagerCompact
+          attachedFiles={attachedFiles}
+          onFilesChange={setAttachedFiles}
+          maxFiles={3}
+          disabled={loading}
+        />
+      </Box>
 
-            {/* Scarica conversazione */}
-            <Box 
-              component="button" 
-              onClick={() => {
-                const allMessages = messages.map(m => `${m.role === 'user' ? 'Tu' : 'Counselorbot'}: ${m.content}`).join('\n\n')
-                downloadMessage(allMessages)
-              }}
-              sx={{ 
-                background: 'none',
-                border: '1px solid #ddd',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                padding: '4px 6px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-                fontSize: '12px',
-                color: '#666',
-                bgcolor: 'white',
-                '&:hover': { bgcolor: '#f0f0f0' }
-              }}
-              title="Scarica conversazione completa"
-            >
-              <SmallDownloadIcon size={14} />
-              Scarica
-            </Box>
-
-            {/* Like conversazione */}
-            <Box 
-              component="button" 
-              onClick={() => giveFeedback(-1, 'like')}
-              sx={{ 
-                background: 'none',
-                border: '1px solid #ddd',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                padding: '4px 6px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-                fontSize: '12px',
-                color: feedback[-1] === 'like' ? '#4caf50' : '#666',
-                bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : 'white',
-                '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f0f0f0' }
-              }}
-              title="Mi è piaciuta questa conversazione"
-            >
-              <LikeIcon size={14} />
-              Mi piace
-            </Box>
-
-            {/* Dislike conversazione */}
-            <Box 
-              component="button" 
-              onClick={() => giveFeedback(-1, 'dislike')}
-              sx={{ 
-                background: 'none',
-                border: '1px solid #ddd',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                padding: '4px 6px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.5,
-                fontSize: '12px',
-                color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
-                bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : 'white',
-                '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f0f0f0' }
-              }}
-              title="Non mi è piaciuta questa conversazione"
-            >
-              <DislikeIcon size={14} />
-              Non mi piace
-            </Box>
-          </Stack>
-        </Stack>
-      </Paper>
-      
       <ConversationSidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}

@@ -30,6 +30,10 @@ interface AdminConfig {
   }
   default_provider: string
   default_tts: string
+  summary_settings?: {
+    provider: string
+    enabled: boolean
+  }
 }
 
 interface FeedbackStats {
@@ -60,6 +64,12 @@ export default function AdminPanel() {
   const [savingPipeline, setSavingPipeline] = useState(false)
   const [promptChars, setPromptChars] = useState(0)
   const [promptTokens, setPromptTokens] = useState(0)
+  
+  // Stati per riassunti
+  const [summaryPrompt, setSummaryPrompt] = useState('')
+  const [summarySettings, setSummarySettings] = useState<{provider: string, enabled: boolean}>({provider: 'anthropic', enabled: true})
+  const [savingSummaryPrompt, setSavingSummaryPrompt] = useState(false)
+  const [savingSummarySettings, setSavingSummarySettings] = useState(false)
   const [tokenTestInput, setTokenTestInput] = useState('')
   const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
   const [testingTokens, setTestingTokens] = useState(false)
@@ -184,6 +194,8 @@ export default function AdminPanel() {
       setAuthenticated(true)
       loadConfig()
       loadStats()
+      loadSummaryPrompt()
+      loadSummarySettings()
     } else {
       setMessage('Password errata')
     }
@@ -257,6 +269,63 @@ export default function AdminPanel() {
         setMessage('Prompt ripristinato')
       }
     } catch (e) { setMessage('Errore reset prompt') }
+  }
+
+  // Funzioni per gestire i riassunti
+  const loadSummaryPrompt = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/summary-prompt`)
+      const data = await res.json()
+      setSummaryPrompt(data.prompt || '')
+    } catch (e) {
+      setMessage('Errore caricamento summary prompt')
+    }
+  }
+
+  const saveSummaryPrompt = async () => {
+    try {
+      setSavingSummaryPrompt(true)
+      const res = await fetch(`${BACKEND}/api/admin/summary-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: summaryPrompt })
+      })
+      const data = await res.json()
+      if (data.success) setMessage('Summary prompt salvato con successo')
+      else setMessage('Errore salvataggio summary prompt')
+    } catch (e) {
+      setMessage('Errore salvataggio summary prompt')
+    } finally {
+      setSavingSummaryPrompt(false)
+    }
+  }
+
+  const loadSummarySettings = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/summary-settings`)
+      const data = await res.json()
+      setSummarySettings(data.settings || {provider: 'anthropic', enabled: true})
+    } catch (e) {
+      setMessage('Errore caricamento impostazioni summary')
+    }
+  }
+
+  const saveSummarySettings = async () => {
+    try {
+      setSavingSummarySettings(true)
+      const res = await fetch(`${BACKEND}/api/admin/summary-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(summarySettings)
+      })
+      const data = await res.json()
+      if (data.success) setMessage('Impostazioni summary salvate con successo')
+      else setMessage('Errore salvataggio impostazioni summary')
+    } catch (e) {
+      setMessage('Errore salvataggio impostazioni summary')
+    } finally {
+      setSavingSummarySettings(false)
+    }
   }
 
   const loadPipeline = async () => {
@@ -1237,6 +1306,86 @@ export default function AdminPanel() {
                   <Alert severity="error">{tokenTestResult.error}</Alert>
                 )}
               </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Sezione Riassunti */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <PsychologyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Impostazioni Riassunti Chat
+              </Typography>
+              
+              <Grid container spacing={3}>
+                {/* Impostazioni Provider */}
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
+                    Provider per Riassunti
+                  </Typography>
+                  
+                  <FormControl fullWidth sx={{ mb: 2 }}>
+                    <InputLabel>Provider AI</InputLabel>
+                    <Select
+                      value={summarySettings.provider}
+                      onChange={(e) => setSummarySettings({...summarySettings, provider: e.target.value})}
+                      label="Provider AI"
+                    >
+                      <MenuItem value="anthropic">Claude (Anthropic)</MenuItem>
+                      <MenuItem value="openai">OpenAI</MenuItem>
+                      <MenuItem value="openrouter">OpenRouter</MenuItem>
+                      <MenuItem value="gemini">Google Gemini</MenuItem>
+                    </Select>
+                  </FormControl>
+                  
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={summarySettings.enabled}
+                        onChange={(e) => setSummarySettings({...summarySettings, enabled: e.target.checked})}
+                      />
+                    }
+                    label="Abilita generazione riassunti"
+                  />
+                  
+                  <Button
+                    variant="contained"
+                    onClick={saveSummarySettings}
+                    disabled={savingSummarySettings}
+                    sx={{ mt: 2 }}
+                  >
+                    {savingSummarySettings ? 'Salvataggio...' : 'Salva Impostazioni'}
+                  </Button>
+                </Grid>
+
+                {/* Prompt dei Riassunti */}
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
+                    Prompt per Riassunti
+                  </Typography>
+                  
+                  <TextField
+                    label="Prompt per generazione riassunti"
+                    multiline
+                    minRows={6}
+                    value={summaryPrompt}
+                    onChange={(e) => setSummaryPrompt(e.target.value)}
+                    fullWidth
+                    sx={{ mb: 2 }}
+                    helperText="Questo prompt viene usato per generare i riassunti delle conversazioni"
+                  />
+                  
+                  <Button
+                    variant="contained"
+                    onClick={saveSummaryPrompt}
+                    disabled={savingSummaryPrompt}
+                  >
+                    {savingSummaryPrompt ? 'Salvataggio...' : 'Salva Prompt Riassunti'}
+                  </Button>
+                </Grid>
+              </Grid>
             </CardContent>
           </Card>
         </Grid>

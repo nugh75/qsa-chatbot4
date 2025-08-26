@@ -16,9 +16,11 @@ from .database import db_manager, MessageModel
 router = APIRouter()
 
 class ChatIn(BaseModel):
-    message: str
+    message: str  # Messaggio in chiaro per elaborazione LLM
     sessionId: Optional[str] = None
     conversation_id: Optional[str] = None
+    conversation_history: Optional[list] = None  # Cronologia dal frontend per conversazioni crittografate
+    message_encrypted: Optional[str] = None  # Messaggio crittografato per salvataggio database
 
 def generate_content_hash(content: str) -> str:
     """Generate hash for search indexing"""
@@ -58,16 +60,23 @@ async def chat(
     x_admin_password: Optional[str] = Header(default=None),
     current_user: dict = Depends(get_current_active_user)
 ):
-    user_msg = req.message
+    user_msg = req.message  # Messaggio in chiaro per LLM
     session_id = req.sessionId or "default"
     conversation_id = req.conversation_id
+    frontend_history = req.conversation_history or []
+    user_msg_encrypted = req.message_encrypted or user_msg  # Fallback al messaggio in chiaro se non crittografato
     
-    # Ottieni l'istanza della memoria
-    memory = get_memory()
+    # Ottieni l'istanza della memoria solo se NON c'è conversation_id
+    # Se c'è conversation_id usiamo solo il database per evitare conflitti
+    use_memory_buffer = conversation_id is None
     
-    # Aggiungi il messaggio dell'utente alla memoria
-    topic = detect_topic(user_msg)
-    memory.add_message(session_id, "user", user_msg, {"topic": topic})
+    if use_memory_buffer:
+        memory = get_memory()
+        # Aggiungi il messaggio dell'utente alla memoria
+        topic = detect_topic(user_msg)
+        memory.add_message(session_id, "user", user_msg, {"topic": topic})
+    else:
+        topic = detect_topic(user_msg)
     
     # Se abbiamo un conversation_id, salva nel database
     if conversation_id and current_user:
@@ -77,10 +86,11 @@ async def chat(
             user_message_id = f"msg_{uuid.uuid4().hex}"
             
             # Salva messaggio utente usando MessageModel
+            # Usa la versione crittografata per il database
             success = MessageModel.add_message(
                 message_id=user_message_id,
                 conversation_id=conversation_id,
-                content_encrypted=user_msg,  # Già crittografato dal frontend se necessario
+                content_encrypted=user_msg_encrypted,  # Versione crittografata per database
                 role="user",
                 token_count=0,
                 processing_time=0.0
@@ -97,7 +107,14 @@ async def chat(
     system = load_system_prompt()
 
     # Costruisci la cronologia della conversazione
-    conversation_history = memory.get_conversation_history(session_id)
+    if use_memory_buffer:
+        # Usa memoria in-memory per sessioni temporanee
+        conversation_history = memory.get_conversation_history(session_id)
+    else:
+        # Per conversazioni persistenti con crittografia client-side,
+        # usa la cronologia fornita dal frontend (già decrittata)
+        conversation_history = frontend_history
+        print(f"Using persistent conversation {conversation_id}, frontend provided {len(conversation_history)} history messages")
     
     # Prepara i messaggi per il provider LLM
     messages = [
@@ -117,10 +134,11 @@ async def chat(
     answer = await chat_with_provider(messages, provider=x_llm_provider, context_hint=topic or 'generale')
     processing_time = time.perf_counter() - start_time
     
-    # Aggiungi la risposta dell'assistente alla memoria
-    memory.add_message(session_id, "assistant", answer, {"topic": topic, "provider": x_llm_provider})
+    # Aggiungi la risposta alla memoria appropriata
+    if use_memory_buffer:
+        memory.add_message(session_id, "assistant", answer, {"topic": topic, "provider": x_llm_provider})
     
-    # Salva risposta assistente nel database
+    # Salva sempre nel database se abbiamo conversation_id
     if conversation_id and current_user:
         try:
             # Genera ID unico per il messaggio assistente
@@ -130,11 +148,12 @@ async def chat(
             tokens_stats = compute_token_stats(messages, answer)
             token_count = tokens_stats.get('total_tokens', 0)
             
-            # Salva messaggio assistente usando MessageModel
+            # Salva messaggio assistente - IMPORTANTE: salviamo in chiaro per ora 
+            # ma aggiungeremo crittografia server-side in futuro
             success = MessageModel.add_message(
                 message_id=assistant_message_id,
                 conversation_id=conversation_id,
-                content_encrypted=answer,  # Il backend salva sempre in chiaro per ora
+                content_encrypted=answer,  # TODO: Implementare crittografia server-side
                 role="assistant",
                 token_count=token_count,
                 processing_time=processing_time
@@ -149,9 +168,22 @@ async def chat(
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
     resp = {"reply": answer, "topic": topic}
+    
     if x_admin_password == ADMIN_PASSWORD:
         resp["tokens"] = tokens_full
-        resp["session_stats"] = memory.get_session_stats(session_id)
+        if use_memory_buffer:
+            resp["session_stats"] = memory.get_session_stats(session_id)
+        else:
+            # Statistiche dal database per conversazioni persistenti
+            try:
+                messages_count = len(MessageModel.get_conversation_messages(conversation_id, limit=1000))
+                resp["session_stats"] = {
+                    "messages": messages_count,
+                    "conversation_id": conversation_id,
+                    "storage": "database"
+                }
+            except Exception:
+                resp["session_stats"] = {"storage": "database", "error": "Could not retrieve stats"}
     
     duration_ms = int((time.perf_counter() - start_time) * 1000)
     # Recupera modello selezionato da config

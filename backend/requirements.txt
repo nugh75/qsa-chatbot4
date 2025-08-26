@@ -8,3 +8,8 @@ piper-tts
 PyJWT
 bcrypt
 cryptography
+# File processing dependencies
+pypdf
+python-docx
+Pillow
+pytesseract

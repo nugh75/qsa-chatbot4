@@ -17,8 +17,7 @@ import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
 import ChatAvatar from './components/ChatAvatar'
 import { DownloadChatButton } from './components/DownloadChatButton'
-import { CopyIcon, DownloadIcon as SmallDownloadIcon, LikeIcon, DislikeIcon, CheckIcon as SmallCheckIcon, SpeakerIcon, StopIcon as SmallStopIcon, MicIcon as SmallMicIcon, AIIcon, SettingsIcon } from './components/SmallIcons'
-import ImportExportManager from './components/ImportExportManager'
+import { CopyIcon, DownloadIcon as SmallDownloadIcon, LikeIcon, DislikeIcon, CheckIcon as SmallCheckIcon, SpeakerIcon, StopIcon as SmallStopIcon, MicIcon as SmallMicIcon, AIIcon } from './components/SmallIcons'
 import { ConversationSidebar } from './components/ConversationSidebar'
 import ConversationSearch from './components/ConversationSearch'
 import LoginDialog from './components/LoginDialog'
@@ -52,7 +51,6 @@ const AppContent: React.FC = () => {
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
   const [feedback, setFeedback] = useState<{[key: number]: 'like' | 'dislike'}>({})
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null)
-  const [showImportExport, setShowImportExport] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [showLoginDialog, setShowLoginDialog] = useState(false)
@@ -91,7 +89,6 @@ const AppContent: React.FC = () => {
     setSidebarOpen(false);
     setShowLoginDialog(false);
     setShowSearch(false);
-    setShowImportExport(false);
     
     // Pulisci localStorage
     localStorage.removeItem('chat_messages');
@@ -115,8 +112,10 @@ const AppContent: React.FC = () => {
         headers['Authorization'] = `Bearer ${accessToken}`;
       }
 
-      // Crea nuova conversazione se necessario e utente è autenticato
+      // Gestione conversation_id: riutilizza quello esistente o crea nuovo se necessario
       let conversationId = currentConversationId;
+      
+      // Crea nuova conversazione SOLO se l'utente è autenticato E non esiste già una conversazione
       if (isAuthenticated && !conversationId) {
         try {
           // Genera titolo dalla prima parte del messaggio
@@ -146,27 +145,46 @@ const AppContent: React.FC = () => {
           console.warn('Failed to create conversation:', convError);
           // Continua senza conversation_id per mantenere funzionalità
         }
+      } else if (conversationId) {
+        console.log('🔄 Continuo conversazione esistente:', conversationId);
       }
 
-      // Prepara messaggio da inviare (crittografato se possibile)
-      let messageToSend = text;
+      // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
+      const messageToSend = text;
+      
+      // Se l'utente è autenticato, prepara anche la versione crittografata per il database
+      let messageEncrypted = null;
       if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
         try {
-          messageToSend = await crypto.encryptMessage(text);
+          messageEncrypted = await crypto.encryptMessage(text);
         } catch (cryptoError) {
-          console.warn('Failed to encrypt message, sending in plain text:', cryptoError);
-          // Fallback: invia in chiaro se crittografia fallisce
+          console.warn('Failed to encrypt message for database storage:', cryptoError);
         }
       }
       
       const requestBody: any = { 
-        message: messageToSend, 
+        message: messageToSend,  // Messaggio in chiaro per LLM
         sessionId: 'dev' 
       };
+      
+      // Aggiungi messaggio crittografato se disponibile
+      if (messageEncrypted) {
+        requestBody.message_encrypted = messageEncrypted;
+      }
       
       // Aggiungi conversation_id se disponibile
       if (conversationId) {
         requestBody.conversation_id = conversationId;
+        
+        // Invia anche la cronologia recente per fornire contesto al LLM
+        // Prendi gli ultimi 8 messaggi (4 scambi utente-assistente) per mantenere il contesto
+        const recentHistory = messages.slice(-8).map(msg => ({
+          role: msg.role,
+          content: msg.content
+        }));
+        
+        requestBody.conversation_history = recentHistory;
+        console.log('📝 Invio cronologia recente:', recentHistory.length, 'messaggi');
       }
       
       const r = await fetch(`${BACKEND}/api/chat`, {
@@ -395,30 +413,9 @@ const AppContent: React.FC = () => {
             </MenuItem>
           </Select>
           
-          <DownloadChatButton messages={messages} />
+          <DownloadChatButton messages={messages} conversationId={currentConversationId} />
           
-          <Tooltip title="Import/Export Conversazioni">
-            <IconButton
-              size="small"
-              onClick={() => setShowImportExport(true)}
-              sx={{ color: 'primary.main' }}
-            >
-              <SettingsIcon size={20} />
-            </IconButton>
-          </Tooltip>
-          
-          <Tooltip title="Cerca conversazioni">
-            <span style={{ display: 'inline-flex' }}>
-              <IconButton
-                size="small"
-                onClick={() => setShowSearch(true)}
-                sx={{ color: 'primary.main' }}
-                disabled={!isAuthenticated}
-              >
-                <SearchIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
+          {/* Rimosso pulsante di ricerca su richiesta */}
           
           {isAuthenticated ? (
             <Tooltip title={`Logout (${user?.email})`}>
@@ -446,18 +443,10 @@ const AppContent: React.FC = () => {
 
       {!isAuthenticated && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          <Box display="flex" justifyContent="space-between" alignItems="center">
-            <Typography>
+          <Box display="flex" alignItems="center" sx={{ gap: 1 }}>
+            <Typography sx={{ lineHeight: 1.4 }}>
               Accedi per salvare le conversazioni e usare la crittografia end-to-end
             </Typography>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={() => setShowLoginDialog(true)}
-              startIcon={<LoginIcon />}
-            >
-              Accedi
-            </Button>
           </Box>
         </Alert>
       )}
@@ -844,17 +833,6 @@ const AppContent: React.FC = () => {
           </Stack>
         </Stack>
       </Paper>
-      
-      <ImportExportManager
-        isOpen={showImportExport}
-        onClose={() => setShowImportExport(false)}
-        apiService={createApiService(BACKEND)}
-        conversations={messages.map((msg, index) => ({
-          id: `msg_${index}`,
-          title: msg.content.slice(0, 50) + '...',
-          created_at: new Date(msg.ts).toISOString()
-        }))}
-      />
       
       <ConversationSidebar
         open={sidebarOpen}

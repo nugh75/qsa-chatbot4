@@ -113,7 +113,19 @@ export class ChatCrypto {
 
     try {
       // Decodifica base64
-      const combined = Uint8Array.from(atob(encryptedMessage), c => c.charCodeAt(0));
+      // Verifica pattern base64 (grezzo) per evitare eccezioni
+      const base64Pattern = /^[A-Za-z0-9+/=]+$/;
+      if (!base64Pattern.test(encryptedMessage) || encryptedMessage.length < 24) {
+        // Probabilmente non cifrato: restituisci come testo in chiaro
+        return encryptedMessage;
+      }
+      let combined: Uint8Array;
+      try {
+        combined = Uint8Array.from(atob(encryptedMessage), c => c.charCodeAt(0));
+      } catch (e) {
+        // Non base64 valido – ritorna originale
+        return encryptedMessage;
+      }
       
       // Estrai IV (primi 12 byte) e dati crittografati
       const iv = combined.slice(0, 12);
@@ -128,9 +140,10 @@ export class ChatCrypto {
         encryptedData
       );
 
-      return this.decoder.decode(decrypted);
+  return this.decoder.decode(decrypted);
     } catch (error) {
-      throw new Error('Failed to decrypt message. Invalid key or corrupted data.');
+  // Invece di generare errore blocco UI, restituiamo placeholder
+  return '[Messaggio non decrittabile]';
     }
   }
 

@@ -160,7 +160,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             r = await cx.post("https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version":"2023-06-01"},
                 json={"model":"claude-3-5-sonnet-20241022",
-                      "max_tokens":800,
+                      "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
                       "messages":[{"role":m["role"], "content":m["content"]} for m in messages]})
         r.raise_for_status()
         return r.json()["content"][0]["text"]
@@ -199,7 +199,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
                         "model": "anthropic/claude-3.5-sonnet",  # Modello di default
                         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
                         "temperature": 0.3,
-                        "max_tokens": 800
+                        "max_tokens": 2500  # Aumentato da 800 per risposte più dettagliate
                     })
             
             print(f"📥 Risposta OpenRouter: Status {r.status_code}")

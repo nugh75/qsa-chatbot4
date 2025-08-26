@@ -33,6 +33,7 @@ import {
   Chat as ChatIcon,
 } from '@mui/icons-material';
 import { apiService, ConversationData } from '../apiService';
+import CryptoUnlockDialog from './CryptoUnlockDialog';
 import { useAuth } from '../contexts/AuthContext';
 
 interface ConversationSidebarProps {
@@ -74,6 +75,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
 
   const { crypto: userCrypto, needsCryptoReauth } = useAuth();
 
@@ -101,18 +103,20 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
                   decryption_error: false,
                 };
               } else {
-                // Nessuna chiave crypto disponibile
+                // Nessuna chiave crypto disponibile - mostra un fallback user-friendly
+                const fallbackTitle = `Conversazione ${conv.id.slice(-8)} (${conv.message_count} messaggi)`;
                 return {
                   ...conv,
-                  title_decrypted: `🔒 ${conv.title_encrypted.substring(0, 20)}...`,
-                  decryption_error: true,
+                  title_decrypted: fallbackTitle,
+                  decryption_error: false, // Non è un errore, è solo che non abbiamo la chiave
                 };
               }
             } catch (error) {
               console.warn(`Failed to decrypt title for conversation ${conv.id}:`, error);
+              // Solo qui è un vero errore di decriptazione
               return {
                 ...conv,
-                title_decrypted: `[Conversazione ${conv.id.slice(-8)}]`,
+                title_decrypted: `Conversazione ${conv.id.slice(-8)}`,
                 decryption_error: true,
               };
             }
@@ -313,12 +317,12 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
           severity="warning" 
           sx={{ m: 1 }}
           action={
-            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
-              Login
+            <Button color="inherit" size="small" onClick={() => setUnlockOpen(true)}>
+              Sblocca
             </Button>
           }
         >
-          Conversazioni crittografate. Effettua il login per decrittare i titoli.
+          Conversazioni crittografate. Sblocca per decrittare i titoli.
         </Alert>
       )}
 
@@ -367,9 +371,19 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
                       <ListItemText
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="body2" noWrap>
-                              {conversation.title_decrypted}
-                            </Typography>
+                            {/* Icona lucchetto solo se serve re-auth crypto e non è un errore di decriptazione */}
+                            {needsCryptoReauth && !conversation.decryption_error && (
+                              <Box component="span" sx={{ display:'inline-flex', alignItems:'center' }}>
+                                <Box component="span" sx={{ width:14, height:14, mr:0.5, opacity:0.7 }}>
+                                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <rect x="3" y="11" width="18" height="10" rx="2" ry="2" />
+                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                  </svg>
+                                </Box>
+                              </Box>
+                            )}
+                            <Typography variant="body2" noWrap>{conversation.title_decrypted}</Typography>
+                            {/* Chip errore solo per veri errori di decriptazione */}
                             {conversation.decryption_error && (
                               <Chip
                                 label="Errore"
@@ -458,6 +472,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
           }
         `}
       </style>
+  <CryptoUnlockDialog open={unlockOpen} onClose={() => setUnlockOpen(false)} onUnlocked={loadConversations} />
     </>
   );
 };

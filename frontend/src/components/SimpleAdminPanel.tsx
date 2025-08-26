@@ -51,7 +51,10 @@ import {
   Phone as PhoneIcon,
   Tablet as TabletIcon,
   Storage as StorageIcon,
-  AdminPanelSettings as AdminIcon
+  AdminPanelSettings as AdminIcon,
+  Description as DescriptionIcon,
+  Save as SaveIcon,
+  RestartAlt as RestartAltIcon
 } from '@mui/icons-material';
 
 // Utility per formattazione date senza date-fns
@@ -149,6 +152,11 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
   const [users, setUsers] = useState<UserInfo[]>([]);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [syncActivity, setSyncActivity] = useState<SyncActivity[]>([]);
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [summaryPrompt, setSummaryPrompt] = useState('');
+  const [summarySettings, setSummarySettings] = useState({ provider: 'anthropic', enabled: true });
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptSavedMsg, setPromptSavedMsg] = useState<string|null>(null);
 
   // State per UI
   const [userSearch, setUserSearch] = useState('');
@@ -185,6 +193,24 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
   useEffect(() => {
     if (isOpen) {
       loadAdminData();
+      // Carica prompts
+      (async () => {
+        try {
+          setPromptLoading(true);
+          const [sysRes, sumRes, sumSettingsRes] = await Promise.all([
+            apiService.get('/admin/system-prompt'),
+            apiService.get('/admin/summary-prompt'),
+            apiService.get('/admin/summary-settings')
+          ]);
+          setSystemPrompt(sysRes.data?.prompt || '');
+          setSummaryPrompt(sumRes.data?.prompt || '');
+          setSummarySettings(sumSettingsRes.data?.settings || { provider: 'anthropic', enabled: true });
+        } catch (e) {
+          console.warn('Errore caricamento prompt', e);
+        } finally {
+          setPromptLoading(false);
+        }
+      })();
     }
   }, [isOpen]);
 
@@ -544,6 +570,67 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
     </Box>
   );
 
+  // Prompts Tab
+  const PromptsTab = () => (
+    <Box>
+      <Typography variant="h6" gutterBottom>Gestione Prompt</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb:2 }}>
+        Modifica il prompt di sistema (identità e stile) e il prompt di riassunto (usato per generare i report delle conversazioni). I cambiamenti hanno effetto sulle richieste successive.
+      </Typography>
+      {promptLoading && <LinearProgress sx={{ mb:2 }} />}
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="System Prompt" subheader="Comportamento generale" />
+            <CardContent>
+              <TextField multiline minRows={10} fullWidth value={systemPrompt} onChange={e=>setSystemPrompt(e.target.value)} placeholder="System prompt..." />
+              <Box mt={2} display="flex" gap={1}>
+                <Button variant="contained" startIcon={<SaveIcon/>} size="small" onClick={async()=>{ try { await apiService.post('/admin/system-prompt',{prompt:systemPrompt}); setPromptSavedMsg('System prompt salvato'); setTimeout(()=>setPromptSavedMsg(null),2500);} catch { setPromptSavedMsg('Errore salvataggio system prompt'); } }}>Salva</Button>
+                <Button variant="outlined" startIcon={<RestartAltIcon/>} size="small" color="warning" onClick={async()=>{ try { const r = await apiService.post('/admin/system-prompt/reset'); setSystemPrompt(r.data?.prompt || ''); } catch {} }}>Reset</Button>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="Summary Prompt" subheader="Report conversazioni" />
+            <CardContent>
+              <Box mb={2}>
+                <FormControl fullWidth size="small" sx={{ mb: 2 }}>
+                  <InputLabel>Provider per Summary</InputLabel>
+                  <Select 
+                    value={summarySettings.provider} 
+                    onChange={e => setSummarySettings({...summarySettings, provider: e.target.value})}
+                  >
+                    <MenuItem value="anthropic">Anthropic Claude</MenuItem>
+                    <MenuItem value="openai">OpenAI</MenuItem>
+                    <MenuItem value="gemini">Google Gemini</MenuItem>
+                    <MenuItem value="openrouter">OpenRouter</MenuItem>
+                    <MenuItem value="ollama">Ollama</MenuItem>
+                  </Select>
+                </FormControl>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <Checkbox 
+                    checked={summarySettings.enabled} 
+                    onChange={e => setSummarySettings({...summarySettings, enabled: e.target.checked})}
+                  />
+                  <Typography variant="body2">Abilita generazione automatica summary</Typography>
+                </Box>
+              </Box>
+              <TextField multiline minRows={10} fullWidth value={summaryPrompt} onChange={e=>setSummaryPrompt(e.target.value)} placeholder="Summary prompt..." />
+              <Box mt={2} display="flex" gap={1}>
+                <Button variant="contained" startIcon={<SaveIcon/>} size="small" onClick={async()=>{ try { await apiService.post('/admin/summary-prompt',{prompt:summaryPrompt}); setPromptSavedMsg('Summary prompt salvato'); setTimeout(()=>setPromptSavedMsg(null),2500);} catch { setPromptSavedMsg('Errore salvataggio summary prompt'); } }}>Salva Prompt</Button>
+                <Button variant="contained" startIcon={<SettingsIcon/>} size="small" color="secondary" onClick={async()=>{ try { await apiService.post('/admin/summary-settings', summarySettings); setPromptSavedMsg('Impostazioni summary salvate'); setTimeout(()=>setPromptSavedMsg(null),2500);} catch { setPromptSavedMsg('Errore salvataggio impostazioni summary'); } }}>Salva Config</Button>
+                <Button variant="outlined" startIcon={<RestartAltIcon/>} size="small" color="warning" onClick={async()=>{ try { const r = await apiService.post('/admin/summary-prompt/reset'); setSummaryPrompt(r.data?.prompt || ''); } catch {} }}>Reset</Button>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+      {promptSavedMsg && <Alert sx={{ mt:2 }} severity={promptSavedMsg.includes('Errore')? 'error':'success'}>{promptSavedMsg}</Alert>}
+    </Box>
+  );
+
   // Action Dialog
   const ActionDialog = () => (
     <Dialog open={actionDialog} onClose={() => setActionDialog(false)}>
@@ -617,12 +704,14 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
           <Tab label="Dashboard" icon={<DashboardIcon />} />
           <Tab label="Utenti" icon={<PeopleIcon />} />
           <Tab label="Dispositivi" icon={<DevicesIcon />} />
+          <Tab label="Prompts" icon={<DescriptionIcon />} />
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
           {currentTab === 0 && <DashboardTab />}
           {currentTab === 1 && <UsersTab />}
           {currentTab === 2 && <DevicesTab />}
+          {currentTab === 3 && <PromptsTab />}
         </Box>
       </DialogContent>
 

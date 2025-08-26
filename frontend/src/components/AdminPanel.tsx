@@ -65,13 +65,16 @@ import {
   Timeline as TimelineIcon,
   Speed as SpeedIcon,
   Security as SecurityIcon,
-  AdminPanelSettings as AdminIcon
+  AdminPanelSettings as AdminIcon,
+  Description as DescriptionIcon,
+  Save as SaveIcon,
+  RestartAlt as RestartAltIcon
 } from '@mui/icons-material';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { it } from 'date-fns/locale';
 
 // Import servizi
-import { apiService } from '../services/apiService';
+import { apiService } from '../apiService';
 
 interface AdminStats {
   total_users: number;
@@ -150,10 +153,17 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [deviceDetailsDialog, setDeviceDetailsDialog] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
 
+  // Prompt state
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [summaryPrompt, setSummaryPrompt] = useState('');
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptMessage, setPromptMessage] = useState<string | null>(null);
+
   // Carica dati iniziali
   useEffect(() => {
     if (isOpen) {
       loadAdminData();
+      loadPrompts();
     }
   }, [isOpen]);
 
@@ -181,6 +191,102 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       setLoading(false);
     }
   };
+
+  const loadPrompts = async () => {
+    setPromptLoading(true);
+    setPromptMessage(null);
+    try {
+      const systemRes = await apiService.get('/admin/system-prompt');
+      const summaryRes = await apiService.get('/admin/summary-prompt');
+      if (systemRes?.data?.prompt) setSystemPrompt(systemRes.data.prompt);
+      if (summaryRes?.data?.prompt) setSummaryPrompt(summaryRes.data.prompt);
+    } catch (e) {
+      setPromptMessage('Errore nel caricamento dei prompt');
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const handleSavePrompts = async () => {
+    setPromptLoading(true);
+    setPromptMessage(null);
+    try {
+      if (systemPrompt) await apiService.post('/admin/system-prompt', { prompt: systemPrompt });
+      if (summaryPrompt) await apiService.post('/admin/summary-prompt', { prompt: summaryPrompt });
+      setPromptMessage('Prompt salvati');
+    } catch (e) {
+      setPromptMessage('Errore nel salvataggio');
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const handleResetSummaryPrompt = async () => {
+    setPromptLoading(true);
+    setPromptMessage(null);
+    try {
+      const res = await apiService.post('/admin/summary-prompt/reset');
+      if (res?.data?.prompt) setSummaryPrompt(res.data.prompt);
+      setPromptMessage('Prompt riassunto resettato');
+    } catch (e) {
+      setPromptMessage('Errore reset prompt');
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const PromptsTab = () => (
+    <Box>
+      <Box display="flex" alignItems="center" mb={2} gap={1}>
+        <DescriptionIcon />
+        <Typography variant="h6">Gestione Prompt</Typography>
+      </Box>
+      {promptLoading && <LinearProgress sx={{ mb:2 }} />}
+      {promptMessage && (
+        <Alert severity={promptMessage.includes('Errore') ? 'error':'success'} sx={{ mb:2 }}>
+          {promptMessage}
+        </Alert>
+      )}
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="System Prompt" subheader="Istruzioni di base per il modello" />
+            <CardContent>
+              <TextField
+                value={systemPrompt}
+                onChange={e => setSystemPrompt(e.target.value)}
+                multiline
+                minRows={12}
+                fullWidth
+                variant="outlined"
+                placeholder="Inserisci il system prompt..."
+              />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="Prompt Riassunto Chat" subheader="Usato per generare il report allegato" />
+            <CardContent>
+              <TextField
+                value={summaryPrompt}
+                onChange={e => setSummaryPrompt(e.target.value)}
+                multiline
+                minRows={12}
+                fullWidth
+                variant="outlined"
+                placeholder="Inserisci il prompt di riassunto..."
+              />
+              <Box mt={2} display="flex" gap={1}>
+                <Button variant="contained" startIcon={<SaveIcon />} onClick={handleSavePrompts} disabled={promptLoading}>Salva</Button>
+                <Button variant="outlined" color="warning" startIcon={<RestartAltIcon />} onClick={handleResetSummaryPrompt} disabled={promptLoading}>Reset Riassunto</Button>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </Box>
+  );
 
   // Gestione azioni dispositivi
   const handleDeviceAction = async (action: string, deviceIds: string[], reason?: string) => {
@@ -692,14 +798,16 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
 
         <Tabs value={currentTab} onChange={(_, newValue) => setCurrentTab(newValue)} sx={{ mb: 3 }}>
           <Tab label="Dashboard" icon={<DashboardIcon />} />
-          <Tab label="Utenti" icon={<PeopleIcon />} />
-          <Tab label="Dispositivi" icon={<DevicesIcon />} />
+            <Tab label="Utenti" icon={<PeopleIcon />} />
+            <Tab label="Dispositivi" icon={<DevicesIcon />} />
+            <Tab label="Prompt" icon={<DescriptionIcon />} />
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
           {currentTab === 0 && <DashboardTab />}
           {currentTab === 1 && <UsersTab />}
           {currentTab === 2 && <DevicesTab />}
+          {currentTab === 3 && <PromptsTab />}
         </Box>
       </DialogContent>
 

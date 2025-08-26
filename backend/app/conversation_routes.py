@@ -2,6 +2,7 @@
 Conversation management endpoints with encryption support
 """
 from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
@@ -10,6 +11,10 @@ import hashlib
 
 from .auth import get_current_active_user
 from .database import ConversationModel, MessageModel, DeviceModel
+from .prompts import load_summary_prompt
+from .llm import chat_with_provider
+from .admin import get_summary_provider
+import io, json, zipfile
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -44,6 +49,13 @@ class MessageResponse(BaseModel):
     timestamp: str
     token_count: int
     processing_time: float
+
+class ConversationSummaryResponse(BaseModel):
+    conversation_id: str
+    summary: str
+    model_provider: str
+    message_count: int
+    generated_at: str
 
 @router.post("/", response_model=Dict[str, str])
 async def create_conversation(
@@ -392,4 +404,143 @@ async def get_conversation_stats(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving statistics: {str(e)}"
+        )
+
+# Test endpoint for debugging authentication
+@router.get("/test-auth")
+async def test_auth(current_user: dict = Depends(get_current_active_user)):
+    """Test endpoint to verify authentication is working"""
+    return {
+        "authenticated": True,
+        "user_id": current_user["id"],
+        "email": current_user.get("email", "N/A"),
+        "message": "Authentication successful"
+    }
+
+# ---------------- Summary & Export with Report -----------------
+@router.get("/{conversation_id}/summary", response_model=ConversationSummaryResponse)
+async def summarize_conversation(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Genera un riassunto della conversazione usando il prompt di summary configurato."""
+    conversation = ConversationModel.get_conversation(conversation_id, current_user["id"])
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    messages = MessageModel.get_conversation_messages(conversation_id, limit=1000)
+    if not messages:
+        raise HTTPException(status_code=400, detail="Conversation has no messages")
+
+    # Genera summary con provider configurato
+    summary_prompt = load_summary_prompt()
+    summary_provider = get_summary_provider()
+    llm_messages = [{"role": "system", "content": summary_prompt}] + [
+        {"role": m['role'], "content": m['content_encrypted']} for m in messages
+    ]
+    try:
+        summary_text = await chat_with_provider(llm_messages, provider=summary_provider)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Summary generation failed: {e}")
+
+    return ConversationSummaryResponse(
+        conversation_id=conversation_id,
+        summary=summary_text,
+        model_provider=summary_provider,
+        message_count=len(messages),
+        generated_at=datetime.utcnow().isoformat() + 'Z'
+    )
+
+@router.get("/{conversation_id}/export-with-report")
+async def export_conversation_with_report(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Esporta una singola conversazione in un archivio ZIP contenente:
+    - chat.json (metadata + messaggi)
+    - report.md (riassunto conversazione)
+    - metadata.json (informazioni di export)
+    """
+    try:
+        conversation = ConversationModel.get_conversation(conversation_id, current_user['id'])
+        if not conversation:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Conversation {conversation_id} not found for user {current_user['id']}"
+            )
+
+        messages = MessageModel.get_conversation_messages(conversation_id, limit=1000)
+        if not messages:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Conversation {conversation_id} has no messages to export"
+            )
+
+        # Genera summary con error handling migliorato
+        summary_prompt = load_summary_prompt()
+        summary_provider = get_summary_provider()
+        llm_messages = [{"role": "system", "content": summary_prompt}] + [
+            {"role": m['role'], "content": m['content_encrypted']} for m in messages
+        ]
+        
+        try:
+            summary_text = await chat_with_provider(llm_messages, provider=summary_provider)
+        except Exception as e:
+            print(f"Summary generation failed for conversation {conversation_id}: {e}")
+            summary_text = f"Errore generazione summary: {e}\n\nConversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
+
+        # Preparazione payload export
+        chat_payload = {
+            "conversation": {
+                "id": conversation['id'],
+                "title_encrypted": conversation['title_encrypted'],
+                "created_at": conversation['created_at'],
+                "updated_at": conversation['updated_at'],
+                "message_count": conversation['message_count']
+            },
+            "messages": [
+                {
+                    "id": m['id'],
+                    "role": m['role'],
+                    "content": m['content_encrypted'],
+                    "timestamp": m['timestamp']
+                } for m in messages
+            ]
+        }
+        
+        report_md = f"# Report Conversazione {conversation['id']}\n\n## Informazioni Generali\n- Creata: {conversation['created_at']}\n- Ultimo aggiornamento: {conversation['updated_at']}\n- Numero messaggi: {len(messages)}\n\n## Riassunto\n\n{summary_text}\n"
+        
+        metadata = {
+            "exported_at": datetime.utcnow().isoformat() + 'Z',
+            "user_id": current_user['id'],
+            "conversation_id": conversation_id,
+            "files": ["chat.json", "report.md", "metadata.json"],
+            "message_count": len(messages),
+            "export_version": "1.1"
+        }
+
+        # Creazione ZIP
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('chat.json', json.dumps(chat_payload, ensure_ascii=False, indent=2))
+            zf.writestr('report.md', report_md)
+            zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+
+        zip_buffer.seek(0)
+        filename = f"conversation_{conversation_id}_export.zip"
+        
+        return StreamingResponse(
+            zip_buffer, 
+            media_type='application/zip', 
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        print(f"Unexpected error in export_conversation_with_report: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Internal error during export: {str(e)}"
         )

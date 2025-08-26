@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import json
 import os
-from .prompts import load_system_prompt, save_system_prompt
+from .prompts import load_system_prompt, save_system_prompt, load_summary_prompt, save_summary_prompt
 from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
 from .usage import read_usage, usage_stats, reset_usage, query_usage
@@ -86,6 +86,10 @@ DEFAULT_CONFIG = {
     },
     "default_provider": "local",
     "default_tts": "edge",
+    "summary_settings": {
+        "provider": "anthropic",  # Provider dedicato per i summary (NON local)
+        "enabled": True
+    },
     "memory_settings": {
         "max_messages_per_session": 10,
         "auto_cleanup_hours": 24,
@@ -114,6 +118,19 @@ def save_config(config: dict):
     os.makedirs(os.path.dirname(config_file), exist_ok=True)
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+def get_summary_provider():
+    """Ottiene il provider configurato per i summary (mai 'local')"""
+    config = load_config()
+    summary_settings = config.get("summary_settings", {})
+    provider = summary_settings.get("provider", "anthropic")
+    enabled = summary_settings.get("enabled", True)
+    
+    # Fallback se il provider è local (non dovrebbe mai succedere)
+    if provider == "local":
+        provider = "anthropic"
+    
+    return provider if enabled else "anthropic"  # Fallback sicuro
 
 @router.get("/admin/config")
 async def get_config():
@@ -186,6 +203,69 @@ async def reset_system_prompt():
         return {"success": True, "prompt": default_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset prompt: {str(e)}")
+
+# ---- Summary prompt endpoints ----
+@router.get("/admin/summary-prompt")
+async def get_summary_prompt():
+    """Restituisce il prompt di riassunto conversazioni."""
+    try:
+        return {"prompt": load_summary_prompt()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento summary prompt: {str(e)}")
+
+@router.post("/admin/summary-prompt")
+async def update_summary_prompt(payload: SystemPromptIn):
+    """Aggiorna il prompt di riassunto conversazioni."""
+    try:
+        save_summary_prompt(payload.prompt)
+        return {"success": True, "message": "Summary prompt salvato"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel salvataggio summary prompt: {str(e)}")
+
+@router.post("/admin/summary-prompt/reset")
+async def reset_summary_prompt():
+    """Ripristina il prompt di riassunto conversazioni di default."""
+    try:
+        default_text = load_summary_prompt()  # load_summary_prompt già restituisce default se file assente
+        save_summary_prompt(default_text)
+        return {"success": True, "prompt": default_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore reset summary prompt: {str(e)}")
+
+# ---- Summary settings endpoints ----
+class SummarySettingsIn(BaseModel):
+    provider: str
+    enabled: bool
+
+@router.get("/admin/summary-settings")
+async def get_summary_settings():
+    """Ottiene le impostazioni correnti per la generazione dei summary"""
+    try:
+        config = load_config()
+        summary_settings = config.get("summary_settings", {"provider": "anthropic", "enabled": True})
+        return {"settings": summary_settings}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento impostazioni summary: {str(e)}")
+
+@router.post("/admin/summary-settings")
+async def update_summary_settings(payload: SummarySettingsIn):
+    """Aggiorna le impostazioni per la generazione dei summary"""
+    try:
+        # Valida che il provider non sia "local"
+        if payload.provider == "local":
+            raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary")
+        
+        config = load_config()
+        config["summary_settings"] = {
+            "provider": payload.provider,
+            "enabled": payload.enabled
+        }
+        save_config(config)
+        return {"success": True, "message": "Impostazioni summary aggiornate"}
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel salvataggio impostazioni summary: {str(e)}")
 
 # ---------------- Pipeline (routing + files) -----------------
 PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pipeline_config.json"

@@ -38,6 +38,13 @@ class ConversationMemory:
         
         # Mantieni solo gli ultimi N messaggi
         self._trim_session(session_id)
+        
+        # Periodicamente pulisci la memoria (ogni 100 messaggi)
+        if len(self.sessions) > 0 and sum(len(msgs) for msgs in self.sessions.values()) % 100 == 0:
+            cleaned_old = self.cleanup_old_sessions(max_idle_hours=6)  # Più aggressivo
+            cleaned_excess = self.cleanup_memory_intensive_sessions(max_sessions=30)
+            if cleaned_old > 0 or cleaned_excess > 0:
+                print(f"Memory cleanup: removed {cleaned_old} old sessions, {cleaned_excess} excess sessions")
     
     def get_conversation_history(self, session_id: str, include_system: bool = False) -> List[Dict[str, str]]:
         """
@@ -95,6 +102,27 @@ class ConversationMemory:
             self.clear_session(session_id)
         
         return len(sessions_to_remove)
+    
+    def cleanup_memory_intensive_sessions(self, max_sessions: int = 50):
+        """Limita il numero totale di sessioni per preservare memoria"""
+        if len(self.sessions) <= max_sessions:
+            return 0
+            
+        # Ordina per ultimo accesso (meno recenti prima)
+        sorted_sessions = sorted(
+            self.last_access.items(), 
+            key=lambda x: x[1]
+        )
+        
+        # Rimuovi le sessioni più vecchie
+        sessions_to_remove = sorted_sessions[:-max_sessions]
+        removed_count = 0
+        
+        for session_id, _ in sessions_to_remove:
+            self.clear_session(session_id)
+            removed_count += 1
+            
+        return removed_count
     
     def get_all_sessions_stats(self) -> Dict[str, Any]:
         """Ottiene statistiche globali di tutte le sessioni"""

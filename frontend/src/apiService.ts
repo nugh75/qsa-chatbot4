@@ -290,6 +290,68 @@ class ApiService {
     });
   }
 
+  // Summary/System prompt management
+  async getSummaryPrompt(): Promise<ApiResponse<{ prompt: string }>> {
+    return this.makeRequest<{ prompt: string }>('/admin/summary-prompt');
+  }
+  async updateSummaryPrompt(prompt: string): Promise<ApiResponse> {
+    return this.makeRequest('/admin/summary-prompt', { method: 'POST', body: JSON.stringify({ prompt }) });
+  }
+  async resetSummaryPrompt(): Promise<ApiResponse<{ prompt: string }>> {
+    return this.makeRequest<{ prompt: string }>('/admin/summary-prompt/reset', { method: 'POST' });
+  }
+  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean } }>> {
+    return this.makeRequest<{ settings: { provider: string; enabled: boolean } }>('/admin/summary-settings');
+  }
+  async updateSummarySettings(settings: { provider: string; enabled: boolean }): Promise<ApiResponse> {
+    return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
+  }
+  async getConversationSummary(conversationId: string): Promise<ApiResponse<{ conversation_id: string; summary: string }>> {
+    return this.makeRequest(`/conversations/${conversationId}/summary`);
+  }
+  async downloadConversationWithReport(conversationId: string): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    
+    if (!accessToken) {
+      throw new Error('User not authenticated. Please login first.');
+    }
+    
+    const headers: HeadersInit = {
+      'Authorization': `Bearer ${accessToken}`
+    };
+    
+    try {
+      const resp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, { headers });
+      
+      if (resp.status === 401) {
+        // Token expired, try refresh
+        const refreshed = await this.refreshToken();
+        if (refreshed) {
+          headers['Authorization'] = `Bearer ${CredentialManager.getAccessToken()}`;
+          const retryResp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, { headers });
+          if (!retryResp.ok) {
+            const errorText = await retryResp.text();
+            throw new Error(`Download failed: ${retryResp.status} - ${errorText}`);
+          }
+          return retryResp.blob();
+        } else {
+          CredentialManager.clearCredentials();
+          throw new Error('Authentication expired. Please login again.');
+        }
+      }
+      
+      if (!resp.ok) {
+        const errorText = await resp.text();
+        throw new Error(`Download failed: ${resp.status} - ${errorText}`);
+      }
+      
+      return resp.blob();
+    } catch (error) {
+      console.error('Download conversation with report failed:', error);
+      throw error;
+    }
+  }
+
   // Chat endpoint (compatibile con sistema esistente)
   async chat(messages: any[], provider: string = 'anthropic'): Promise<Response> {
     const accessToken = CredentialManager.getAccessToken();
@@ -310,6 +372,16 @@ class ApiService {
         stream: true
       })
     });
+  }
+
+  // Generic GET helper (usato da componenti legacy)
+  async get(path: string, init?: RequestInit): Promise<any> {
+    return this.makeRequest(path, { method: 'GET', ...(init||{}) });
+  }
+
+  // Generic POST helper
+  async post(path: string, body?: any, init?: RequestInit): Promise<any> {
+    return this.makeRequest(path, { method: 'POST', body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined, ...(init||{}) });
   }
 }
 

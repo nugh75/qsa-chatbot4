@@ -121,6 +121,10 @@ feedback/
 # Piper TTS models
 piper_models/
 
+# Backend model directories (local large model files)
+backend/whisper_models/
+backend/piper_models/
+
 # Docker
 .dockerignore
 

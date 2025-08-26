@@ -46,64 +46,6 @@ app.include_router(search_router, prefix="/api")
 app.include_router(admin_panel_router, prefix="/api")
 app.include_router(file_processing_router, prefix="/api")
 
-@app.get("/api/config/public")
-async def get_public_config():
-    """Get public configuration for enabled providers"""
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'admin_config.json')
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            # Extract enabled providers
-            enabled_providers = []
-            enabled_tts_providers = []
-            enabled_asr_providers = []
-            
-            if 'ai_providers' in config:
-                for provider, settings in config['ai_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_providers.append(provider)
-            
-            if 'tts_providers' in config:
-                for provider, settings in config['tts_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_tts_providers.append(provider)
-            
-            if 'asr_providers' in config:
-                for provider, settings in config['asr_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_asr_providers.append(provider)
-            
-            return {
-                "enabled_providers": enabled_providers,
-                "enabled_tts_providers": enabled_tts_providers,
-                "enabled_asr_providers": enabled_asr_providers,
-                "default_provider": config.get('default_provider', 'local'),
-                "default_tts": config.get('default_tts', 'edge'),
-                "default_asr": config.get('default_asr', 'openai')
-            }
-        else:
-            # Fallback configuration
-            return {
-                "enabled_providers": ['local'],
-                "enabled_tts_providers": ['edge'],
-                "enabled_asr_providers": ['openai'],
-                "default_provider": 'local',
-                "default_tts": 'edge',
-                "default_asr": 'openai'
-            }
-    except Exception as e:
-        print(f"Error loading public config: {e}")
-        return {
-            "enabled_providers": ['local'],
-            "enabled_tts_providers": ['edge'],
-            "enabled_asr_providers": ['openai'],
-            "default_provider": 'local',
-            "default_tts": 'edge',
-            "default_asr": 'openai'
-        }
-
 @app.post("/api/feedback")
 async def save_feedback(feedback_data: FeedbackData):
     """Salva il feedback dell'utente su messaggi o conversazioni"""

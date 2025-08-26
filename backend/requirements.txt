@@ -8,10 +8,6 @@ piper-tts
 PyJWT
 bcrypt
 cryptography
-# Whisper dependencies
-openai-whisper
-torch
-torchaudio
 # File processing dependencies
 pypdf
 PyMuPDF

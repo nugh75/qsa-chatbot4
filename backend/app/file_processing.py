@@ -1,15 +1,19 @@
 """
-File processing functionality for text files only (PDF, Word, TXT, MD)
+File processing functionality for attachments (PDF, Word, Images) - Simplified version without image extraction
 """
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Union
 import os
 import tempfile
 import uuid
 from datetime import datetime
+import base64
 import mimetypes
+import httpx
+from PIL import Image
+import io
 
 # Import libraries for file processing
 try:
@@ -25,7 +29,6 @@ except ImportError:
     Document = None
 
 class ProcessedFile(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     filename: str
     content: str
     file_type: str
@@ -33,7 +36,6 @@ class ProcessedFile(BaseModel):
     mime_type: Optional[str] = None
     size: Optional[int] = None
     processed_at: Optional[datetime] = None
-    error: Optional[str] = None
 
 def extract_text_from_pdf(file_path: str) -> str:
     """Extract text content from PDF file"""
@@ -104,10 +106,36 @@ def extract_text_from_docx(file_path: str) -> str:
     except Exception as e:
         return f"Error extracting text from DOCX: {str(e)}"
 
+def process_image(file_path: str, filename: str) -> Dict[str, Any]:
+    """Process image file and convert to base64"""
+    try:
+        with open(file_path, 'rb') as image_file:
+            image_data = image_file.read()
+            base64_data = base64.b64encode(image_data).decode('utf-8')
+            
+            # Get image dimensions
+            try:
+                with Image.open(file_path) as img:
+                    width, height = img.size
+                    mode = img.mode
+                    content = f"Immagine: {filename}\nDimensioni: {width}x{height} pixels\nModalità: {mode}"
+            except Exception as e:
+                content = f"Immagine: {filename}\nErrore nel caricamento delle informazioni: {str(e)}"
+            
+            return {
+                'base64_data': base64_data,
+                'content': content
+            }
+    except Exception as e:
+        return {
+            'base64_data': None,
+            'content': f"Errore nel processamento dell'immagine: {str(e)}"
+        }
+
 # Create router
 router = APIRouter()
 
-@router.post("/upload")
+@router.post("/upload", response_model=List[ProcessedFile])
 async def upload_files(files: List[UploadFile] = File(...)):
     """Upload and process multiple files"""
     processed_files = []
@@ -137,7 +165,6 @@ async def upload_files(files: List[UploadFile] = File(...)):
             
             # Create base processed file
             processed_file = ProcessedFile(
-                id=str(uuid.uuid4()),
                 filename=filename,
                 content="",
                 file_type=file_ext,
@@ -156,8 +183,13 @@ async def upload_files(files: List[UploadFile] = File(...)):
                 text_content = extract_text_from_docx(temp_file_path)
                 processed_file.content = text_content
                 
-            elif file_ext in ['txt', 'md']:
-                # Per file di testo semplici (TXT, Markdown)
+            elif file_ext in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
+                image_result = process_image(temp_file_path, filename)
+                processed_file.base64_data = image_result['base64_data']
+                processed_file.content = image_result['content']
+                
+            else:
+                # For other file types, try to read as text
                 try:
                     with open(temp_file_path, 'r', encoding='utf-8') as f:
                         processed_file.content = f.read()
@@ -167,10 +199,6 @@ async def upload_files(files: List[UploadFile] = File(...)):
                             processed_file.content = f.read()
                     except Exception as e:
                         processed_file.content = f"Impossibile leggere il file come testo: {str(e)}"
-                
-            else:
-                # File non supportato
-                processed_file.content = f"Tipo di file non supportato: {file_ext}. Supportati: PDF, Word (DOCX/DOC), TXT, Markdown (MD)"
             
             processed_files.append(processed_file)
             print(f"✅ Processed file: {filename} ({file_ext})")
@@ -185,21 +213,17 @@ async def upload_files(files: List[UploadFile] = File(...)):
             print(f"❌ Error processing file {upload_file.filename}: {e}")
             # Add error file to results
             processed_files.append(ProcessedFile(
-                id=str(uuid.uuid4()),
                 filename=upload_file.filename or "unknown",
                 content=f"Errore nel processamento del file: {str(e)}",
                 file_type="error",
-                mime_type="application/octet-stream",
-                size=0,
-                processed_at=datetime.now(),
-                error=str(e)
+                processed_at=datetime.now()
             ))
     
-    return {"files": processed_files}
+    return processed_files
 
 @router.get("/supported-types")
 async def get_supported_types():
-    """Get list of supported file types - ONLY TEXT FILES"""
+    """Get list of supported file types"""
     return {
         "supported_types": [
             {
@@ -223,10 +247,29 @@ async def get_supported_types():
                 "mime_types": ["text/plain"]
             },
             {
-                "extension": "md",
-                "description": "Markdown File",
-                "mime_types": ["text/markdown", "text/x-markdown"]
+                "extension": "png",
+                "description": "PNG Image",
+                "mime_types": ["image/png"]
+            },
+            {
+                "extension": "jpg",
+                "description": "JPEG Image",
+                "mime_types": ["image/jpeg"]
+            },
+            {
+                "extension": "jpeg",
+                "description": "JPEG Image",
+                "mime_types": ["image/jpeg"]
+            },
+            {
+                "extension": "gif",
+                "description": "GIF Image",
+                "mime_types": ["image/gif"]
+            },
+            {
+                "extension": "webp",
+                "description": "WebP Image",
+                "mime_types": ["image/webp"]
             }
-        ],
-        "note": "Solo file di testo sono supportati. Immagini non permesse."
+        ]
     }

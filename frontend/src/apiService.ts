@@ -306,19 +306,6 @@ class ApiService {
   async updateSummarySettings(settings: { provider: string; enabled: boolean }): Promise<ApiResponse> {
     return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
   }
-  
-  // Get public config for enabled providers and models
-  async getPublicConfig(): Promise<ApiResponse<{
-    enabled_providers: string[];
-    enabled_tts_providers: string[];
-    enabled_asr_providers: string[];
-    default_provider: string;
-    default_tts: string;
-    default_asr: string;
-  }>> {
-    return this.makeRequest('/config/public');
-  }
-  
   async getConversationSummary(conversationId: string): Promise<ApiResponse<{ conversation_id: string; summary: string }>> {
     return this.makeRequest(`/conversations/${conversationId}/summary`);
   }

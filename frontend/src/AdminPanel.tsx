@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react'
 import {
   Container, Paper, Typography, TextField, Button, Stack, Box,
   FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
-  Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
-  Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow
+  Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress
 } from '@mui/material'
 import {
   Settings as SettingsIcon,
@@ -12,13 +10,7 @@ import {
   Psychology as AIIcon,
   Analytics as StatsIcon,
   Security as SecurityIcon,
-  Psychology as PsychologyIcon,
-  ExpandMore as ExpandMoreIcon,
-  Mic as MicIcon,
-  Check as CheckIcon,
-  Download as DownloadIcon,
-  Add as AddIcon,
-  Remove as RemoveIcon
+  Psychology as PsychologyIcon
 } from '@mui/icons-material'
 
 interface AdminConfig {
@@ -67,44 +59,17 @@ export default function AdminPanel() {
   const [testingVoices, setTestingVoices] = useState<Record<string, boolean>>({})
   const [voiceTestResults, setVoiceTestResults] = useState<Record<string, {success: boolean, message: string}>>({})
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [systemPromptRows, setSystemPromptRows] = useState(8)
   const [pipelineConfig, setPipelineConfig] = useState<{routes: {pattern: string; topic: string}[]; files: Record<string,string>} | null>(null)
   const [savingPrompt, setSavingPrompt] = useState(false)
   const [savingPipeline, setSavingPipeline] = useState(false)
   const [promptChars, setPromptChars] = useState(0)
   const [promptTokens, setPromptTokens] = useState(0)
   
-  // Stati per editor pipeline
-  const [editingRoute, setEditingRoute] = useState<{pattern: string; topic: string; index?: number} | null>(null)
-  const [testText, setTestText] = useState('')
-  const [testResult, setTestResult] = useState<string | null>(null)
-  const [selectedFileContent, setSelectedFileContent] = useState<{filename: string; content: string} | null>(null)
-  
   // Stati per riassunti
   const [summaryPrompt, setSummaryPrompt] = useState('')
-  const [summaryPromptRows, setSummaryPromptRows] = useState(6)
   const [summarySettings, setSummarySettings] = useState<{provider: string, enabled: boolean}>({provider: 'anthropic', enabled: true})
   const [savingSummaryPrompt, setSavingSummaryPrompt] = useState(false)
   const [savingSummarySettings, setSavingSummarySettings] = useState(false)
-  
-  // Stati per modelli Whisper
-  const [whisperModels, setWhisperModels] = useState<string[]>([])
-  const [availableWhisperModels] = useState<string[]>(['tiny', 'base', 'small', 'medium', 'large-v1', 'large-v2', 'large-v3'])
-  const [downloadingModel, setDownloadingModel] = useState<string | null>(null)
-  const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>('')
-  const [whisperModelStatus, setWhisperModelStatus] = useState<Record<string, string>>({})
-  
-  // Stati per pannelli collassabili
-  const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
-    ai_providers: true,
-    tts_providers: false,
-    stats: false,
-    feedback: false,
-    prompts: false,
-    whisper: false,
-    usage: false,
-    memory: false
-  })
   const [tokenTestInput, setTokenTestInput] = useState('')
   const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
   const [testingTokens, setTestingTokens] = useState(false)
@@ -124,14 +89,6 @@ export default function AdminPanel() {
   const [pageSize, setPageSize] = useState<number>(50)
   const [totalUsage, setTotalUsage] = useState<number>(0)
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false)
-  
-  // Funzione per gestire l'espansione dei pannelli
-  const handlePanelExpansion = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
-    setExpandedPanels(prev => ({
-      ...prev,
-      [panel]: isExpanded
-    }))
-  }
   const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   // Memory settings
@@ -147,7 +104,7 @@ export default function AdminPanel() {
   }, [autoRefresh])
 
   const buildQuery = () => {
-    const params: Record<string,string|number> = { page, page_size: 10000 } // Aumento per ottenere tutte le richieste
+    const params: Record<string,string|number> = { page, page_size: pageSize }
     if (filterProvider) params.provider = filterProvider
     if (filterModel) params.model = filterModel
     if (filterQ) params.q = filterQ
@@ -174,9 +131,7 @@ export default function AdminPanel() {
         setTotalUsage(data.items?.length || 0)
       }
       const statsRes = await fetch(`${BACKEND}/api/admin/usage/stats`)
-      const statsData = await statsRes.json()
-      console.log('Usage stats loaded:', statsData)
-      setUsageStats(statsData)
+      setUsageStats(await statsRes.json())
     } catch (e) {
       setMessage('Errore caricamento usage')
     } finally {
@@ -402,103 +357,14 @@ export default function AdminPanel() {
     }
   }
 
-  // Funzioni per gestione pipeline
-  const addRoute = () => {
-    setEditingRoute({pattern: '', topic: ''})
-  }
-
-  const editRoute = (index: number) => {
-    if (pipelineConfig?.routes[index]) {
-      setEditingRoute({...pipelineConfig.routes[index], index})
-    }
-  }
-
-  const saveRoute = () => {
-    if (!editingRoute || !pipelineConfig) return
-    
-    // Validazione
-    if (!editingRoute.pattern.trim() || !editingRoute.topic.trim()) {
-      setMessage('Pattern e topic sono obbligatori')
-      return
-    }
-
-    // Test regex
-    try {
-      new RegExp(editingRoute.pattern)
-    } catch (e) {
-      setMessage('Pattern regex non valido')
-      return
-    }
-
-    const newRoutes = [...pipelineConfig.routes]
-    if (editingRoute.index !== undefined) {
-      // Modifica esistente
-      newRoutes[editingRoute.index] = {pattern: editingRoute.pattern, topic: editingRoute.topic}
-    } else {
-      // Nuova route
-      newRoutes.push({pattern: editingRoute.pattern, topic: editingRoute.topic})
-    }
-
-    setPipelineConfig({...pipelineConfig, routes: newRoutes})
-    setEditingRoute(null)
-    setMessage('Route salvata (ricorda di salvare la configurazione)')
-  }
-
-  const deleteRoute = (index: number) => {
-    if (!pipelineConfig) return
-    const newRoutes = pipelineConfig.routes.filter((_, i) => i !== index)
-    setPipelineConfig({...pipelineConfig, routes: newRoutes})
-    setMessage('Route eliminata (ricorda di salvare la configurazione)')
-  }
-
-  const testRouting = () => {
-    if (!testText.trim()) {
-      setTestResult(null)
-      return
-    }
-
-    const text = testText.toLowerCase()
-    const result = pipelineConfig?.routes.find(route => {
-      try {
-        return new RegExp(route.pattern).test(text)
-      } catch (e) {
-        return false
-      }
-    })
-
-    setTestResult(result ? `Match: ${result.topic}` : 'Nessun match trovato')
-  }
-
-  const loadFileContent = async (filename: string) => {
-    try {
-      const res = await fetch(`${BACKEND}/api/admin/file-content?filename=${encodeURIComponent(filename)}`)
-      if (res.ok) {
-        const content = await res.text()
-        setSelectedFileContent({filename, content})
-      } else {
-        setMessage('Errore caricamento file')
-      }
-    } catch (e) {
-      setMessage('Errore caricamento file')
-    }
-  }
-
   useEffect(() => {
     if (authenticated) {
       loadSystemPrompt()
       loadPipeline()
       loadUsage()
       loadMemoryStats()
-      loadWhisperModels()
     }
   }, [authenticated])
-
-  // Ricarica modelli Whisper quando la config cambia
-  useEffect(() => {
-    if (config) {
-      loadWhisperModels()
-    }
-  }, [config])
 
   const loadMemoryStats = async () => {
     try {
@@ -639,160 +505,6 @@ export default function AdminPanel() {
       setMessage('Errore nel salvataggio')
     }
     setLoading(false)
-  }
-
-  // Funzioni aggiunte per compatibilità
-  const updateConfig = (key: string, value: any) => {
-    if (!config) return
-    setConfig({
-      ...config,
-      [key]: value
-    })
-  }
-
-  const updateTTSProvider = (provider: string, key: string, value: any) => {
-    if (!config) return
-    const updatedConfig = { ...config }
-    ;(updatedConfig.tts_providers as any)[provider][key] = value
-    setConfig(updatedConfig)
-  }
-
-  const loadVoices = async (provider: string) => {
-    setLoadingVoices(prev => ({ ...prev, [provider]: true }))
-    try {
-      const response = await fetch(`${BACKEND}/api/admin/tts/voices/${provider}`)
-      const data = await response.json()
-      
-      if (config && data.voices) {
-        const updatedConfig = { ...config }
-        ;(updatedConfig.tts_providers as any)[provider].voices = data.voices
-        setConfig(updatedConfig)
-      }
-    } catch (error) {
-      setMessage('Errore nel caricamento voci')
-    } finally {
-      setLoadingVoices(prev => ({ ...prev, [provider]: false }))
-    }
-  }
-
-  const testVoice = async (provider: string) => {
-    try {
-      const response = await fetch(`${BACKEND}/api/admin/tts/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          provider,
-          text: 'Questo è un test della voce.' 
-        })
-      })
-      
-      if (response.ok) {
-        setMessage('Test voce completato')
-      } else {
-        setMessage('Errore test voce')
-      }
-    } catch (error) {
-      setMessage('Errore test voce')
-    }
-  }
-
-  const testTokens = async () => {
-    setTestingTokens(true)
-    try {
-      const response = await fetch(`${BACKEND}/api/admin/test-tokens`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: 'Test di conteggio token.' })
-      })
-      
-      const result = await response.json()
-      setMessage(`Token contati: ${result.tokens || 'N/A'}`)
-    } catch (error) {
-      setMessage('Errore test token')
-    } finally {
-      setTestingTokens(false)
-    }
-  }
-
-  // Funzioni per gestione modelli Whisper
-  const loadWhisperModels = async () => {
-    try {
-      console.log('Caricamento modelli Whisper...')
-      const response = await fetch(`${BACKEND}/api/admin/whisper/models`)
-      const data = await response.json()
-      
-      console.log('Risposta backend:', data)
-      
-      if (data.models) {
-        setWhisperModels(data.models)
-        setSelectedWhisperModel(data.current_model || '')
-        setWhisperModelStatus(data.status || {})
-      } else {
-        // Fallback: prova a caricare dalla configurazione principale
-        console.log('Tentativo fallback con config principale')
-        if (config && (config as any).whisper) {
-          const whisperConfig = (config as any).whisper
-          if (whisperConfig.model) {
-            setSelectedWhisperModel(whisperConfig.model)
-            setWhisperModels([whisperConfig.model])
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Errore nel caricamento modelli Whisper:', error)
-      // Fallback: prova a caricare dalla configurazione principale
-      if (config && (config as any).whisper) {
-        const whisperConfig = (config as any).whisper
-        if (whisperConfig.model) {
-          setSelectedWhisperModel(whisperConfig.model)
-          setWhisperModels([whisperConfig.model])
-        }
-      }
-      setMessage('Errore nel caricamento modelli Whisper')
-    }
-  }
-
-  const downloadWhisperModel = async (modelName: string) => {
-    setDownloadingModel(modelName)
-    try {
-      const response = await fetch(`${BACKEND}/api/admin/whisper/download`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: modelName })
-      })
-      
-      const result = await response.json()
-      if (result.success) {
-        setMessage(`Modello ${modelName} scaricato con successo`)
-        loadWhisperModels() // Ricarica la lista
-      } else {
-        setMessage(result.message || 'Errore nel download')
-      }
-    } catch (error) {
-      setMessage('Errore nel download del modello')
-    } finally {
-      setDownloadingModel(null)
-    }
-  }
-
-  const setWhisperModel = async (modelName: string) => {
-    try {
-      const response = await fetch(`${BACKEND}/api/admin/whisper/set-model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: modelName })
-      })
-      
-      const result = await response.json()
-      if (result.success) {
-        setSelectedWhisperModel(modelName)
-        setMessage(`Modello ${modelName} impostato come predefinito`)
-      } else {
-        setMessage(result.message || 'Errore nell\'impostazione del modello')
-      }
-    } catch (error) {
-      setMessage('Errore nell\'impostazione del modello')
-    }
   }
 
   const updateProvider = (provider: string, field: string, value: any) => {
@@ -940,958 +652,746 @@ export default function AdminPanel() {
         </Alert>
       )}
 
-      {/* Pannelli Accordion - Tutti collassabili */}
-      <Stack spacing={2}>
-        
-        {/* Pannello Provider AI */}
-        <Accordion 
-          expanded={expandedPanels.ai_providers} 
-          onChange={handlePanelExpansion('ai_providers')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <AIIcon color="primary" />
-              <Typography variant="h6">Provider AI</Typography>
-              <Chip 
-                label={config ? Object.values(config.ai_providers).filter(p => p.enabled).length : 0} 
-                size="small" 
-                color="primary" 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {config && Object.entries(config.ai_providers).map(([key, provider]) => (
-              <Box key={key} sx={{ mb: 2, p: 2, border: '1px solid #eee', borderRadius: 1 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
-                    {provider.name}
-                  </Typography>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={provider.enabled}
-                        onChange={(e) => updateProvider(key, 'enabled', e.target.checked)}
-                      />
-                    }
-                    label="Attivo"
-                  />
-                </Stack>
-
-                {'api_key_status' in provider && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                    <Typography variant="body2" color="text.secondary">
-                      API Key:
-                    </Typography>
-                    <Chip
-                      size="small"
-                      label={provider.api_key_status === 'configured' ? 'Configurata' : 'Mancante'}
-                      color={provider.api_key_status === 'configured' ? 'success' : 'error'}
-                      variant="outlined"
-                    />
-                    {provider.api_key_masked && (
-                      <Typography variant="caption" color="text.secondary">
-                        {provider.api_key_masked}
-                      </Typography>
-                    )}
-                  </Box>
-                )}
-
-                {provider.enabled && (
-                  <>
-                    {'base_url' in provider && (
-                      <TextField
-                        label="Base URL"
-                        value={provider.base_url}
-                        onChange={(e) => updateProvider(key, 'base_url', e.target.value)}
-                        size="small"
-                        fullWidth
-                        sx={{ mb: 1 }}
-                      />
-                    )}
-
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <FormControl size="small" sx={{ minWidth: 200 }}>
-                        <InputLabel>Modello</InputLabel>
-                        <Select
-                          value={provider.selected_model}
-                          onChange={(e) => updateProvider(key, 'selected_model', e.target.value)}
-                        >
-                          {provider.models.map((model) => (
-                            <MenuItem key={model} value={model}>{model}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => loadModels(key)}
-                        disabled={loadingModels[key]}
-                      >
-                        {loadingModels[key] ? 'Caricamento...' : 'Ricarica Modelli'}
-                      </Button>
-
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        color="secondary"
-                        onClick={() => testModel(key, provider.selected_model)}
-                        disabled={testingModels[key]}
-                      >
-                        {testingModels[key] ? 'Test...' : 'Test Modello'}
-                      </Button>
-                    </Stack>
-
-                    {modelTestResults[key] && (
-                      <Alert 
-                        severity={modelTestResults[key].success ? 'success' : 'error'} 
-                        sx={{ mt: 1 }}
-                      >
-                        {modelTestResults[key].message}
-                      </Alert>
-                    )}
-                  </>
-                )}
-              </Box>
-            ))}
-
-            {/* Configurazione Predefinita AI */}
-            {config && Object.keys(config.ai_providers).filter(key => (config.ai_providers as any)[key].enabled).length > 0 && (
-              <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Provider AI Predefinito
-                </Typography>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Provider AI Predefinito</InputLabel>
-                  <Select
-                    value={config.default_provider}
-                    onChange={(e) => updateConfig('default_provider', e.target.value)}
-                  >
-                    {Object.entries(config.ai_providers)
-                      .filter(([, provider]) => provider.enabled)
-                      .map(([key, provider]) => (
-                        <MenuItem key={key} value={key}>
-                          {provider.name}
-                        </MenuItem>
-                      ))}
-                  </Select>
-                </FormControl>
-              </Box>
-            )}
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Provider TTS */}
-        <Accordion 
-          expanded={expandedPanels.tts_providers} 
-          onChange={handlePanelExpansion('tts_providers')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <VolumeIcon color="primary" />
-              <Typography variant="h6">Provider TTS</Typography>
-              <Chip 
-                label={config ? Object.values(config.tts_providers).filter(p => p.enabled).length : 0} 
-                size="small" 
-                color="primary" 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {config && Object.entries(config.tts_providers).map(([key, provider]) => (
-              <Box key={key} sx={{ mb: 2, p: 2, border: '1px solid #eee', borderRadius: 1 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold', color: 'primary.main' }}>
-                    {provider.name || key}
-                  </Typography>
-                  <FormControlLabel
-                    control={
-                      <Switch
-                        checked={provider.enabled}
-                        onChange={(e) => updateTTSProvider(key, 'enabled', e.target.checked)}
-                      />
-                    }
-                    label="Attivo"
-                  />
-                </Stack>
-
-                {'api_key_status' in provider && (
-                  <Box sx={{ mb: 1 }}>
-                    <Typography variant="body2" color="textSecondary">
-                      API Key: {provider.api_key_masked || 'Non configurata'}
-                      <Chip
-                        label={provider.api_key_status}
-                        size="small"
-                        color={provider.api_key_status === 'configured' ? 'success' : 'error'}
-                        sx={{ ml: 1 }}
-                      />
-                    </Typography>
-                  </Box>
-                )}
-
-                {provider.enabled && (
-                  <>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <FormControl size="small" sx={{ minWidth: 200 }}>
-                        <InputLabel>Voce</InputLabel>
-                        <Select
-                          value={provider.selected_voice}
-                          onChange={(e) => updateTTSProvider(key, 'selected_voice', e.target.value)}
-                        >
-                          {provider.voices.map((voice) => (
-                            <MenuItem key={voice} value={voice}>{voice}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        onClick={() => loadVoices(key)}
-                        disabled={loadingVoices[key]}
-                      >
-                        {loadingVoices[key] ? 'Caricamento...' : 'Ricarica Voci'}
-                      </Button>
-
-                      <Button
-                        size="small"
-                        variant="outlined"
-                        color="secondary"
-                        onClick={() => testVoice(key)}
-                        disabled={testingVoices[key]}
-                      >
-                        {testingVoices[key] ? 'Test...' : 'Test Voce'}
-                      </Button>
-                    </Stack>
-
-                    {voiceTestResults[key] && (
-                      <Alert 
-                        severity={voiceTestResults[key].success ? 'success' : 'error'} 
-                        sx={{ mt: 1 }}
-                      >
-                        {voiceTestResults[key].message}
-                      </Alert>
-                    )}
-                  </>
-                )}
-              </Box>
-            ))}
-
-            {/* Configurazione Predefinita TTS */}
-            {config && Object.keys(config.tts_providers).filter(key => (config.tts_providers as any)[key].enabled).length > 0 && (
-              <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Provider TTS Predefinito
-                </Typography>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Provider TTS Predefinito</InputLabel>
-                  <Select
-                    value={config.default_tts}
-                    onChange={(e) => updateConfig('default_tts', e.target.value)}
-                  >
-                    {Object.entries(config.tts_providers)
-                      .filter(([, provider]: [string, any]) => provider.enabled)
-                      .map(([key, provider]: [string, any]) => (
-                        <MenuItem key={key} value={key}>
-                          {provider.name || key}
-                        </MenuItem>
-                      ))}
-                  </Select>
-                </FormControl>
-              </Box>
-            )}
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Whisper */}
-        <Accordion 
-          expanded={expandedPanels.whisper} 
-          onChange={handlePanelExpansion('whisper')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <MicIcon color="primary" />
-              <Typography variant="h6">Gestione Modelli Whisper</Typography>
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
-              Gestisci i modelli Whisper per la trascrizione vocale.
-            </Typography>
-
-            {/* Modello attualmente selezionato */}
-            {selectedWhisperModel && (
-              <Box sx={{ mb: 3, p: 2, bgcolor: 'primary.light', borderRadius: 1 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
-                  Modello Attivo: {selectedWhisperModel}
-                </Typography>
-              </Box>
-            )}
-
-            {/* Lista modelli scaricati */}
-            <Typography variant="subtitle2" gutterBottom sx={{ mt: 2 }}>
-              Modelli Scaricati
-            </Typography>
-            {whisperModels.length > 0 ? (
-              <Box sx={{ mb: 3 }}>
-                {whisperModels.map((model) => (
-                  <Box key={model} sx={{ mb: 1, p: 2, border: '1px solid #eee', borderRadius: 1 }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                      <Typography variant="body2" sx={{ fontWeight: selectedWhisperModel === model ? 'bold' : 'normal' }}>
-                        {model}
-                        {selectedWhisperModel === model && (
-                          <Chip label="Attivo" size="small" color="primary" sx={{ ml: 1 }} />
-                        )}
-                      </Typography>
-                      {selectedWhisperModel !== model && (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={() => setWhisperModel(model)}
-                        >
-                          Imposta come Predefinito
-                        </Button>
-                      )}
-                    </Stack>
-                  </Box>
-                ))}
-              </Box>
-            ) : (
-              <Typography variant="body2" color="textSecondary" sx={{ mb: 3 }}>
-                Nessun modello scaricato
+      <Grid container spacing={3}>
+        {/* Configurazione AI Providers */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <AIIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Provider AI
               </Typography>
-            )}
-
-            {/* Scarica nuovi modelli */}
-            <Typography variant="subtitle2" gutterBottom>
-              Scarica Modelli
-            </Typography>
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-              {availableWhisperModels.map((model) => {
-                const isDownloaded = whisperModels.includes(model)
-                const isDownloading = downloadingModel === model
-                
-                return (
-                  <Button
-                    key={model}
-                    variant={isDownloaded ? "outlined" : "contained"}
-                    size="small"
-                    onClick={() => !isDownloaded && downloadWhisperModel(model)}
-                    disabled={isDownloaded || isDownloading}
-                    startIcon={isDownloaded ? <CheckIcon /> : (isDownloading ? <CircularProgress size={16} /> : <DownloadIcon />)}
-                  >
-                    {model}
-                    {isDownloading && ' (Download...)'}
-                    {isDownloaded && ' (Scaricato)'}
-                  </Button>
-                )
-              })}
-            </Box>
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Statistiche */}
-        <Accordion 
-          expanded={expandedPanels.stats} 
-          onChange={handlePanelExpansion('stats')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <StatsIcon color="primary" />
-              <Typography variant="h6">Statistiche Utilizzo</Typography>
-              <Chip 
-                label={stats ? stats.total : 0} 
-                size="small" 
-                color="info" 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {/* Statistiche di Utilizzo */}
-            <Typography variant="h6" gutterBottom sx={{ mt: 2 }}>
-              Statistiche di Utilizzo
-            </Typography>
-            
-            {usageStats && (
-              <Grid container spacing={2} sx={{ mb: 3 }}>
-                <Grid item xs={12} sm={3}>
-                  <Paper sx={{ p: 2, textAlign: 'center', bgcolor: 'primary.light' }}>
-                    <Typography variant="h4" color="primary.main">
-                      {usageStats.total_requests || 0}
+              
+              {config && Object.entries(config.ai_providers).map(([key, provider]) => (
+                <Box key={key} sx={{ mb: 2, p: 2, border: '1px solid #eee', borderRadius: 1 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                      {provider.name}
                     </Typography>
-                    <Typography variant="body2">Richieste Totali</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <Paper sx={{ p: 2, textAlign: 'center', bgcolor: 'success.light' }}>
-                    <Typography variant="h4" color="success.main">
-                      {usageStats.total_tokens || 0}
-                    </Typography>
-                    <Typography variant="body2">Token Utilizzati</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <Paper sx={{ p: 2, textAlign: 'center', bgcolor: 'warning.light' }}>
-                    <Typography variant="h4" color="warning.main">
-                      ${(usageStats.total_cost || 0).toFixed(4)}
-                    </Typography>
-                    <Typography variant="body2">Costo Totale</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <Paper sx={{ p: 2, textAlign: 'center', bgcolor: 'info.light' }}>
-                    <Typography variant="h4" color="info.main">
-                      {usageStats.today?.requests || 0}
-                    </Typography>
-                    <Typography variant="body2">Richieste Oggi</Typography>
-                  </Paper>
-                </Grid>
-              </Grid>
-            )}
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={provider.enabled}
+                          onChange={(e) => updateProvider(key, 'enabled', e.target.checked)}
+                        />
+                      }
+                      label="Attivo"
+                    />
+                  </Stack>
+                  
+                  {'api_key_status' in provider && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                      <Typography variant="body2" color="text.secondary">
+                        API Key:
+                      </Typography>
+                      <Chip
+                        size="small"
+                        label={provider.api_key_status === 'configured' ? 'Configurata' : 'Mancante'}
+                        color={provider.api_key_status === 'configured' ? 'success' : 'error'}
+                        variant="outlined"
+                      />
+                      {provider.api_key_masked && (
+                        <Typography variant="caption" color="text.secondary">
+                          {provider.api_key_masked}
+                        </Typography>
+                      )}
+                      <Typography variant="caption" color="text.secondary">
+                        (configurare via variabili di ambiente)
+                      </Typography>
+                    </Box>
+                  )}
+                  
+                  {'base_url' in provider && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="Base URL"
+                      value={provider.base_url || ''}
+                      onChange={(e) => updateProvider(key, 'base_url', e.target.value)}
+                      disabled={!provider.enabled}
+                    />
+                  )}
+                </Box>
+              ))}
 
-            {/* Statistiche per Provider */}
-            {usageStats && usageStats.by_provider && Object.keys(usageStats.by_provider).length > 0 && (
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle1" gutterBottom>
-                  Utilizzo per Provider AI
-                </Typography>
-                <Grid container spacing={2}>
-                  {Object.entries(usageStats.by_provider).map(([provider, data]: [string, any]) => (
-                    <Grid item xs={12} sm={6} md={4} key={provider}>
-                      <Paper sx={{ p: 2 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>
-                          {provider}
-                        </Typography>
-                        <Typography variant="body2">
-                          Richieste: {data.requests || 0}
-                        </Typography>
-                        <Typography variant="body2">
-                          Token: {data.tokens || 0}
-                        </Typography>
-                        <Typography variant="body2">
-                          Costo: ${(data.cost || 0).toFixed(4)}
-                        </Typography>
-                      </Paper>
-                    </Grid>
-                  ))}
-                </Grid>
-              </Box>
-            )}
+              <FormControl fullWidth sx={{ mt: 2 }}>
+                <InputLabel>Provider Predefinito</InputLabel>
+                <Select
+                  value={config?.default_provider || ''}
+                  onChange={(e) => setConfig(prev => prev ? {...prev, default_provider: e.target.value} : null)}
+                >
+                  {config && Object.entries(config.ai_providers)
+                    .filter(([_, p]) => p.enabled)
+                    .map(([key, provider]) => (
+                      <MenuItem key={key} value={key}>{provider.name}</MenuItem>
+                    ))}
+                </Select>
+              </FormControl>
+            </CardContent>
+          </Card>
+        </Grid>
 
-            {/* Tabella Richieste Dettagliate */}
-            {usageItems && usageItems.length > 0 && (
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="subtitle1" gutterBottom>
-                  Richieste Dettagliate ({usageItems.length} di {totalUsage} totali)
-                </Typography>
-                
-                {/* Filtri */}
-                <Grid container spacing={2} sx={{ mb: 2 }}>
-                  <Grid item xs={12} sm={3}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Provider</InputLabel>
+        {/* Configurazione TTS */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <VolumeIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Provider TTS
+              </Typography>
+              
+              {config && Object.entries(config.tts_providers).map(([key, provider]) => (
+                <Box key={key} sx={{ mb: 3, p: 2, border: '1px solid #eee', borderRadius: 1 }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                      {key.toUpperCase()}
+                    </Typography>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={provider.enabled}
+                          onChange={(e) => updateTTS(key, 'enabled', e.target.checked)}
+                        />
+                      }
+                      label="Attivo"
+                    />
+                  </Stack>
+                  
+                  {'api_key' in provider && (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label="API Key"
+                      type="password"
+                      value={provider.api_key || ''}
+                      onChange={(e) => updateTTS(key, 'api_key', e.target.value)}
+                      disabled={!provider.enabled}
+                      sx={{ mb: 2 }}
+                    />
+                  )}
+
+                  {/* Selezione voce */}
+                  {provider.voices && provider.voices.length > 0 && (
+                    <FormControl fullWidth size="small" disabled={!provider.enabled}>
+                      <InputLabel>Voce predefinita</InputLabel>
                       <Select
-                        value={filterProvider}
-                        onChange={(e) => setFilterProvider(e.target.value)}
-                        label="Provider"
+                        value={provider.selected_voice || provider.voices[0]}
+                        onChange={(e) => updateTTS(key, 'selected_voice', e.target.value)}
+                        label="Voce predefinita"
                       >
-                        <MenuItem value="">Tutti</MenuItem>
-                        <MenuItem value="openai">OpenAI</MenuItem>
-                        <MenuItem value="claude">Claude</MenuItem>
-                        <MenuItem value="gemini">Gemini</MenuItem>
-                        <MenuItem value="openrouter">OpenRouter</MenuItem>
-                        <MenuItem value="local">Local</MenuItem>
-                        <MenuItem value="ollama">Ollama</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12} sm={3}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Modello</InputLabel>
-                      <Select
-                        value={filterModel}
-                        onChange={(e) => setFilterModel(e.target.value)}
-                        label="Modello"
-                      >
-                        <MenuItem value="">Tutti</MenuItem>
-                        {Object.keys(usageModels).map((model) => (
-                          <MenuItem key={model} value={model}>
-                            {model} ({usageModels[model]})
+                        {provider.voices.map((voice: string) => (
+                          <MenuItem key={voice} value={voice}>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Chip 
+                                size="small" 
+                                label={voice}
+                                variant={provider.selected_voice === voice ? "filled" : "outlined"}
+                                color={provider.selected_voice === voice ? "primary" : "default"}
+                              />
+                            </Stack>
                           </MenuItem>
                         ))}
                       </Select>
                     </FormControl>
-                  </Grid>
-                  <Grid item xs={12} sm={3}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="Data Da"
-                      type="date"
-                      value={filterDateFrom}
-                      onChange={(e) => setFilterDateFrom(e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                    />
-                  </Grid>
-                  <Grid item xs={12} sm={3}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="Data A"
-                      type="date"
-                      value={filterDateTo}
-                      onChange={(e) => setFilterDateTo(e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                    />
-                  </Grid>
-                </Grid>
-                
-                {/* Pulsanti di controllo filtri */}
-                <Box sx={{ mb: 2, display: 'flex', gap: 1 }}>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    onClick={() => {
-                      setFilterProvider('')
-                      setFilterModel('')
-                      setFilterDateFrom('')
-                      setFilterDateTo('')
-                    }}
-                  >
-                    Pulisci Filtri
-                  </Button>
-                  <Button
-                    variant="contained"
-                    size="small"
-                    onClick={loadUsage}
-                    disabled={loadingUsage}
-                  >
-                    {loadingUsage ? 'Caricamento...' : 'Aggiorna'}
-                  </Button>
-                </Box>
-                
-                <TableContainer component={Paper} sx={{ maxHeight: 600 }}>
-                  <Table stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>Data/Ora</TableCell>
-                        <TableCell>Provider</TableCell>
-                        <TableCell>Modello</TableCell>
-                        <TableCell>Topic</TableCell>
-                        <TableCell align="right">Token Input</TableCell>
-                        <TableCell align="right">Token Output</TableCell>
-                        <TableCell align="right">Token Totali</TableCell>
-                        <TableCell align="right">Durata (ms)</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {usageItems.slice().reverse().map((item, index) => (
-                        <TableRow key={index} hover>
-                          <TableCell>
-                            <Typography variant="body2">
-                              {item.ts ? new Date(item.ts).toLocaleString('it-IT') : 'N/A'}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Chip 
-                              label={item.provider || 'unknown'} 
-                              size="small" 
-                              color="primary"
-                              variant="outlined"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              {item.model || 'N/A'}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              {item.topic || '-'}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography variant="body2">
-                              {item.tokens?.input_tokens || 0}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography variant="body2">
-                              {item.tokens?.output_tokens || 0}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
-                              {item.tokens?.total || 0}
-                            </Typography>
-                          </TableCell>
-                          <TableCell align="right">
-                            <Typography variant="body2">
-                              {item.duration_ms || 0}
-                            </Typography>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
-              </Box>
-            )}
-            
-            {!usageStats && usageItems.length === 0 && (
-              <Typography variant="body2" color="textSecondary">
-                Nessuna statistica disponibile
-              </Typography>
-            )}
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Statistiche Feedback */}
-        <Accordion 
-          expanded={expandedPanels.feedback} 
-          onChange={handlePanelExpansion('feedback')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <StatsIcon color="primary" />
-              <Typography variant="h6">Statistiche Feedback</Typography>
-              <Chip 
-                label={stats ? stats.total : 0} 
-                size="small" 
-                color="info" 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {stats && (
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={4}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h4" color="primary">
-                      {stats.total}
+                  )}
+                  
+                  <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Voci disponibili: {provider.voices?.length || 0}
                     </Typography>
-                    <Typography variant="body2">Feedback Totali</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h4" color="success.main">
-                      {stats.likes}
-                    </Typography>
-                    <Typography variant="body2">Like</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <Paper sx={{ p: 2, textAlign: 'center' }}>
-                    <Typography variant="h4" color="error.main">
-                      {stats.dislikes}
-                    </Typography>
-                    <Typography variant="body2">Dislike</Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="h6" gutterBottom>
-                    Feedback per Provider
-                  </Typography>
-                  {Object.entries(stats.by_provider).map(([provider, data]: [string, any]) => (
-                    <Box key={provider} sx={{ mb: 1 }}>
-                      <Typography variant="subtitle2">{provider}</Typography>
-                      <Grid container spacing={1}>
-                        <Grid item xs={4}>
-                          <Chip label={`Like: ${data.likes}`} size="small" color="success" />
-                        </Grid>
-                        <Grid item xs={4}>
-                          <Chip label={`Dislike: ${data.dislikes}`} size="small" color="error" />
-                        </Grid>
-                        <Grid item xs={4}>
-                          <Chip 
-                            label={`${data.likes + data.dislikes > 0 ? Math.round(data.likes / (data.likes + data.dislikes) * 100) : 0}%`} 
-                            size="small" 
-                            color={data.likes > data.dislikes ? 'success' : 'warning'} 
-                          />
-                        </Grid>
-                      </Grid>
-                    </Box>
-                  ))}
-                </Grid>
-              </Grid>
-            )}
-            
-            {!stats && (
-              <Typography variant="body2" color="textSecondary">
-                Nessuna statistica feedback disponibile
-              </Typography>
-            )}
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Gestione Prompts */}
-        <Accordion 
-          expanded={expandedPanels.prompts} 
-          onChange={handlePanelExpansion('prompts')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <PsychologyIcon color="primary" />
-              <Typography variant="h6">Gestione Prompts</Typography>
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Stack spacing={3}>
-              {/* Prompt Sistema */}
-              <Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                  <Typography variant="subtitle1">
-                    Prompt Sistema
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="caption" color="textSecondary">
-                      Righe:
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSystemPromptRows(Math.max(3, systemPromptRows - 2))}
-                      disabled={systemPromptRows <= 3}
-                    >
-                      <RemoveIcon />
-                    </IconButton>
-                    <Typography variant="caption" sx={{ minWidth: '20px', textAlign: 'center' }}>
-                      {systemPromptRows}
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSystemPromptRows(Math.min(30, systemPromptRows + 2))}
-                      disabled={systemPromptRows >= 30}
-                    >
-                      <AddIcon />
-                    </IconButton>
+                    
+                    {provider.enabled && (
+                      <Button 
+                        size="small" 
+                        variant="outlined"
+                        onClick={() => testTTSProvider(key, provider.selected_voice || provider.voices?.[0])}
+                      >
+                        Testa voce
+                      </Button>
+                    )}
                   </Box>
                 </Box>
+              ))}
+
+              <FormControl fullWidth sx={{ mt: 2 }}>
+                <InputLabel>TTS Predefinito</InputLabel>
+                <Select
+                  value={config?.default_tts || ''}
+                  onChange={(e) => setConfig(prev => prev ? {...prev, default_tts: e.target.value} : null)}
+                >
+                  {config && Object.entries(config.tts_providers)
+                    .filter(([_, p]) => p.enabled)
+                    .map(([key, _]) => (
+                      <MenuItem key={key} value={key}>{key.toUpperCase()}</MenuItem>
+                    ))}
+                </Select>
+              </FormControl>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Modelli AI */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <AIIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Selezione Modelli AI
+              </Typography>
+              
+              <Grid container spacing={2}>
+                {config && Object.entries(config.ai_providers).map(([provider, settings]) => (
+                  settings.enabled && (
+                    <Grid item xs={12} md={6} key={provider}>
+                      <Box sx={{ p: 2, border: 1, borderColor: 'grey.300', borderRadius: 1 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 2 }}>
+                          {settings.name}
+                        </Typography>
+                        
+                        <Stack spacing={2}>
+                          <FormControl fullWidth>
+                            <InputLabel>Modello Selezionato</InputLabel>
+                            <Select
+                              value={settings.selected_model || ''}
+                              label="Modello Selezionato"
+                              onChange={(e) => handleModelChange(provider as keyof AdminConfig['ai_providers'], e.target.value)}
+                            >
+                              {(settings.models || []).map((model) => (
+                                <MenuItem key={model} value={model}>
+                                  {model}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          
+                          <Box sx={{ display: 'flex', gap: 1 }}>
+                            <Button
+                              variant="outlined"
+                              size="small"
+                              onClick={() => loadModels(provider)}
+                              disabled={loadingModels[provider]}
+                              sx={{ flex: 1 }}
+                            >
+                              {loadingModels[provider] ? 'Caricamento...' : 'Aggiorna Modelli'}
+                            </Button>
+                            
+                            <Button
+                              variant="outlined"
+                              size="small"
+                              color="success"
+                              onClick={() => testModel(provider, settings.selected_model)}
+                              disabled={testingModels[provider] || !settings.selected_model}
+                              sx={{ flex: 1 }}
+                            >
+                              {testingModels[provider] ? 'Test...' : 'Test Modello'}
+                            </Button>
+                          </Box>
+                          
+                          {modelTestResults[provider] && (
+                            <Alert 
+                              severity={modelTestResults[provider].success ? 'success' : 'error'}
+                              variant="outlined"
+                            >
+                              {modelTestResults[provider].message}
+                            </Alert>
+                          )}
+                        </Stack>
+                      </Box>
+                    </Grid>
+                  )
+                ))}
+              </Grid>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Statistiche Feedback */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <StatsIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Statistiche Feedback
+              </Typography>
+              
+              {stats ? (
+                <Grid container spacing={2}>
+                  <Grid item xs={12} sm={4}>
+                    <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+                      <Typography variant="h4" color="primary">{stats.total}</Typography>
+                      <Typography variant="body2">Feedback Totali</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#e8f5e8', borderRadius: 1 }}>
+                      <Typography variant="h4" color="success.main">{stats.likes}</Typography>
+                      <Typography variant="body2">Mi Piace</Typography>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12} sm={4}>
+                    <Box sx={{ textAlign: 'center', p: 2, bgcolor: '#ffebee', borderRadius: 1 }}>
+                      <Typography variant="h4" color="error.main">{stats.dislikes}</Typography>
+                      <Typography variant="body2">Non Mi Piace</Typography>
+                    </Box>
+                  </Grid>
+                  
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 2 }} />
+                    <Typography variant="subtitle1" gutterBottom>Feedback per Provider</Typography>
+                    {Object.entries(stats.by_provider).map(([provider, data]) => {
+                      const total = data.likes + data.dislikes
+                      const percentage = total > 0 ? (data.likes / total) * 100 : 0
+                      return (
+                        <Box key={provider} sx={{ mb: 2 }}>
+                          <Stack direction="row" justifyContent="space-between" alignItems="center">
+                            <Typography variant="body2" sx={{ fontWeight:'bold' }}>{provider}</Typography>
+                            <Typography variant="caption">{data.likes}/{total} like</Typography>
+                          </Stack>
+                          <LinearProgress variant="determinate" value={percentage} sx={{ mt:0.5, height:6, borderRadius:3 }} color={percentage >= 70 ? 'success' : percentage >= 50 ? 'warning' : 'error'} />
+                        </Box>
+                      )
+                    })}
+                  </Grid>
+                  
+                </Grid>
+              ) : (
+                <Typography>Caricamento statistiche...</Typography>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Log Utilizzo / Usage Analytics */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1, flexWrap:'wrap', gap:1 }}>
+                <Typography variant="h6" gutterBottom>Log Utilizzo</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap">
+                  <Button size="small" variant={autoRefresh? 'contained':'outlined'} onClick={()=>setAutoRefresh(a=>!a)}>{autoRefresh? 'Auto ON':'Auto OFF'}</Button>
+                  <Button size="small" variant="outlined" onClick={loadUsage} disabled={loadingUsage}>Aggiorna</Button>
+                  <Button size="small" variant="outlined" onClick={()=>exportUsage('csv')}>CSV</Button>
+                  <Button size="small" variant="outlined" onClick={()=>exportUsage('jsonl')}>JSONL</Button>
+                  <Button size="small" color="error" variant="outlined" onClick={resetUsage}>Reset</Button>
+                </Stack>
+              </Stack>
+              <Stack direction="row" spacing={1} sx={{ mb:1, flexWrap:'wrap' }}>
+                <TextField size="small" label="Provider" value={filterProvider} onChange={e=>{setFilterProvider(e.target.value); setPage(1)}} select sx={{ minWidth:120 }}>
+                  <MenuItem value="">(tutti)</MenuItem>
+                  {Object.keys(usageProviders).sort().map(p=> <MenuItem key={p} value={p}>{p}</MenuItem>)}
+                </TextField>
+                <TextField size="small" label="Modello" value={filterModel} onChange={e=>{setFilterModel(e.target.value); setPage(1)}} select sx={{ minWidth:140 }}>
+                  <MenuItem value="">(tutti)</MenuItem>
+                  {Object.keys(usageModels).sort().map(m=> <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                </TextField>
+                <TextField size="small" label="Cerca" value={filterQ} onChange={e=>{setFilterQ(e.target.value); setPage(1)}} sx={{ width:160 }} />
+                <TextField size="small" type="date" label="Da" InputLabelProps={{shrink:true}} value={filterDateFrom} onChange={e=>{setFilterDateFrom(e.target.value); setPage(1)}} />
+                <TextField size="small" type="date" label="A" InputLabelProps={{shrink:true}} value={filterDateTo} onChange={e=>{setFilterDateTo(e.target.value); setPage(1)}} />
+                <TextField size="small" select label="Page Size" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value)); setPage(1)}} sx={{ width:110 }}>
+                  {[25,50,100,200].map(n=> <MenuItem key={n} value={n}>{n}</MenuItem>)}
+                </TextField>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('oggi')}>Oggi</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('ieri')}>Ieri</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('7g')}>7g</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('30g')}>30g</Button>
+                <Button size="small" variant="text" onClick={()=>presetRange('clear')}>X</Button>
+                <Button size="small" variant={showTokenDetails?'contained':'outlined'} onClick={()=>setShowTokenDetails(v=>!v)}>Dettagli Token</Button>
+              </Stack>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:1 }}>
+                <Typography variant="caption">Totale filtrato: {totalUsage}</Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Prev</Button>
+                  <Typography variant="caption">Pag {page}</Typography>
+                  <Button size="small" disabled={(page*pageSize)>=totalUsage} onClick={()=>setPage(p=>p+1)}>Next</Button>
+                </Stack>
+              </Stack>
+              {usageStats && (
+                <Box sx={{ mb:2 }}>
+                  <Chip label={`Interazioni: ${usageStats.total_interactions}`} sx={{ mr:1 }} />
+                  <Chip label={`Token totali: ${usageStats.total_tokens}`} sx={{ mr:1 }} />
+                  {Object.entries(usageStats.by_provider || {}).map(([p, v]: any) => (
+                    <Chip key={p} label={`${p}: ${(v as any).count} (${(v as any).tokens} tok)`} sx={{ mr:1, mb:1 }} />
+                  ))}
+                </Box>
+              )}
+              {Object.keys(usageDaily).length > 0 && (
+                <Box sx={{ mb:2, p:1, border:'1px solid #eee', borderRadius:1 }}>
+                  <Typography variant="caption" sx={{ display:'block', mb:1 }}>Token per giorno</Typography>
+                  <Box sx={{ display:'flex', alignItems:'flex-end', gap:1, height:120 }}>
+                    {Object.entries(usageDaily).sort(([a],[b])=> a.localeCompare(b)).map(([day, val])=>{
+                      const maxTok = Math.max(...Object.values(usageDaily).map(v=>v.tokens||1)) || 1
+                      const h = Math.max(4, (val.tokens / maxTok) * 100)
+                      return (
+                        <Box key={day} sx={{ textAlign:'center', width:32 }}>
+                          <Box sx={{ background:'#1976d2', width:'100%', height: h+'%', borderRadius:1 }} title={`${day}: ${val.tokens} tok (${val.count} int)`}></Box>
+                          <Typography variant="caption" sx={{ fontSize:10 }}>{day.slice(5)}</Typography>
+                        </Box>
+                      )
+                    })}
+                  </Box>
+                </Box>
+              )}
+              <Box sx={{ maxHeight: 300, overflow: 'auto', fontSize: '.75rem', border: '1px solid #eee', borderRadius:1 }}>
+                <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                  <thead style={{ position:'sticky', top:0, background:'#fafafa' }}>
+                    <tr>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Giorno</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Ora</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Provider</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Modello</th>
+                      <th style={{ textAlign:'right', padding:'4px' }}>Durata ms</th>
+                      {showTokenDetails && <th style={{ textAlign:'right', padding:'4px' }}>In</th>}
+                      {showTokenDetails && <th style={{ textAlign:'right', padding:'4px' }}>Out</th>}
+                      <th style={{ textAlign:'right', padding:'4px' }}>Token</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usageItems.slice().map((u, idx) => {
+                      const ts = u.ts || ''
+                      const [dayPart, timePartFull] = ts.split('T')
+                      const timePart = (timePartFull || '').replace('Z','').slice(0,8)
+                      return (
+                        <tr key={idx} style={{ borderTop:'1px solid #eee' }}>
+                          <td style={{ padding:'4px' }}>{dayPart || '-'}</td>
+                          <td style={{ padding:'4px' }}>{timePart || '-'}</td>
+                          <td style={{ padding:'4px' }}>{u.provider}</td>
+                          <td style={{ padding:'4px' }}>{u.model || '-'}</td>
+                          <td style={{ padding:'4px', textAlign:'right' }}>{u.duration_ms}</td>
+                          {showTokenDetails && <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.input_tokens ?? '-'}</td>}
+                          {showTokenDetails && <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.output_tokens ?? '-'}</td>}
+                          <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.total ?? '-'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+
+        {/* System Prompt Editor */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Prompt di Sistema</Typography>
+              <TextField multiline minRows={12} value={systemPrompt} onChange={(e) => { setSystemPrompt(e.target.value); updatePromptStats(e.target.value) }} fullWidth placeholder="Inserisci il prompt di sistema..." />
+              <Typography variant="caption" color="text.secondary">Caratteri: {promptChars} | Token stimati: {promptTokens}</Typography>
+              <Box sx={{ mt: 2, textAlign: 'right' }}>
+                <Button variant="outlined" size="small" onClick={resetSystemPrompt} sx={{ mr: 1 }}>Ripristina</Button>
+                <Button variant="outlined" size="small" onClick={loadSystemPrompt} sx={{ mr: 1 }}>Ricarica</Button>
+                <Button variant="contained" size="small" onClick={saveSystemPrompt} disabled={savingPrompt}>{savingPrompt ? 'Salvataggio...' : 'Salva Prompt'}</Button>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Pipeline Editor */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Pipeline (Routing & File)</Typography>
+              {pipelineConfig && (
+                <Stack spacing={2}>
+                  <Typography variant="subtitle2">Regole di Routing</Typography>
+                  {pipelineConfig.routes.map((r, idx) => (
+                    <Stack key={idx} direction="row" spacing={1}>
+                      <TextField
+                        label="Pattern (regex)"
+                        size="small"
+                        value={r.pattern}
+                        onChange={(e) => {
+                          const routes = [...pipelineConfig.routes]
+                          routes[idx] = { ...routes[idx], pattern: e.target.value }
+                          setPipelineConfig({ ...pipelineConfig, routes })
+                        }}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Topic"
+                        size="small"
+                        value={r.topic}
+                        onChange={(e) => {
+                          const routes = [...pipelineConfig.routes]
+                          routes[idx] = { ...routes[idx], topic: e.target.value }
+                          setPipelineConfig({ ...pipelineConfig, routes })
+                        }}
+                        sx={{ width: 180 }}
+                      />
+                      <Button color="error" size="small" onClick={() => {
+                        const routes = pipelineConfig.routes.filter((_, i) => i !== idx)
+                        setPipelineConfig({ ...pipelineConfig, routes })
+                      }}>X</Button>
+                    </Stack>
+                  ))}
+                  <Button size="small" variant="outlined" onClick={() => {
+                    setPipelineConfig(prev => prev ? { ...prev, routes: [...prev.routes, { pattern: '', topic: '' }] } : prev)
+                  }}>Aggiungi Regola</Button>
+                  <Divider />
+                  <Typography variant="subtitle2">File per Topic</Typography>
+                  {Object.entries(pipelineConfig.files).map(([topic, filename]) => (
+                    <Stack key={topic} direction="row" spacing={1} alignItems="center">
+                      <TextField
+                        label="Topic"
+                        size="small"
+                        value={topic}
+                        disabled
+                        sx={{ width: 180 }}
+                      />
+                      <TextField
+                        label="File"
+                        size="small"
+                        value={filename}
+                        onChange={(e) => {
+                          setPipelineConfig(prev => prev ? { ...prev, files: { ...prev.files, [topic]: e.target.value } } : prev)
+                        }}
+                        fullWidth
+                      />
+                      <Button color="error" size="small" onClick={() => {
+                        setPipelineConfig(prev => {
+                          if (!prev) return prev
+                          const files = { ...prev.files }
+                          delete files[topic]
+                          return { ...prev, files }
+                        })
+                      }}>X</Button>
+                    </Stack>
+                  ))}
+                  <Button size="small" variant="outlined" onClick={() => {
+                    const newTopic = prompt('Nome nuovo topic?')
+                    if (newTopic) {
+                      setPipelineConfig(prev => prev ? { ...prev, files: { ...prev.files, [newTopic]: '' } } : prev)
+                    }
+                  }}>Aggiungi Topic/File</Button>
+                  <Box sx={{ textAlign: 'right' }}>
+                    <Button variant="outlined" size="small" onClick={async () => { await fetch(`${BACKEND}/api/admin/pipeline/reset`, { method:'POST' }); loadPipeline(); }} sx={{ mr: 1 }}>Ripristina</Button>
+                    <Button variant="outlined" size="small" onClick={loadPipeline} sx={{ mr: 1 }}>Ricarica</Button>
+                    <Button variant="contained" size="small" disabled={savingPipeline} onClick={savePipeline}>
+                      {savingPipeline ? 'Salvataggio...' : 'Salva Pipeline'}
+                    </Button>
+                  </Box>
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* Memory Management */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <PsychologyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Gestione Memoria Conversazioni
+              </Typography>
+              
+              <Stack spacing={2}>
                 <TextField
+                  label="Numero massimo messaggi per sessione"
+                  type="number"
+                  value={maxMessages}
+                  onChange={(e) => setMaxMessages(Math.max(1, Math.min(100, parseInt(e.target.value) || 10)))}
+                  inputProps={{ min: 1, max: 100 }}
+                  helperText="Quanti messaggi mantenere in memoria per ogni conversazione (1-100)"
                   fullWidth
-                  multiline
-                  rows={systemPromptRows}
-                  value={systemPrompt}
-                  onChange={(e) => {
-                    setSystemPrompt(e.target.value)
-                    setPromptChars(e.target.value.length)
-                    setPromptTokens(Math.ceil(e.target.value.length / 4))
-                  }}
-                  placeholder="Inserisci il prompt sistema..."
                 />
-                <Box sx={{ mt: 1, display: 'flex', justifyContent: 'space-between' }}>
-                  <Typography variant="caption" color="textSecondary">
-                    Caratteri: {promptChars} | Token stimati: {promptTokens}
-                  </Typography>
-                  <Button
-                    variant="contained"
-                    size="small"
-                    onClick={saveSystemPrompt}
-                    disabled={savingPrompt}
+                
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button 
+                    variant="contained" 
+                    size="small" 
+                    onClick={updateMemoryConfig}
+                    disabled={loadingMemory}
                   >
-                    {savingPrompt ? 'Salvataggio...' : 'Salva Prompt Sistema'}
+                    Salva Configurazione
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    size="small" 
+                    onClick={loadMemoryStats}
+                    disabled={loadingMemory}
+                  >
+                    Aggiorna
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    color="warning" 
+                    size="small" 
+                    onClick={() => clearMemory()}
+                  >
+                    Cancella Tutto
                   </Button>
                 </Box>
-              </Box>
+                
+                {memoryStats && (
+                  <Box sx={{ p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+                    <Typography variant="subtitle2" gutterBottom>Statistiche Memoria</Typography>
+                    <Grid container spacing={1}>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Sessioni totali: <strong>{memoryStats.total_sessions}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Sessioni attive: <strong>{memoryStats.active_sessions}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Messaggi totali: <strong>{memoryStats.total_messages}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Max msg/sessione: <strong>{memoryStats.max_messages_per_session}</strong></Typography>
+                      </Grid>
+                    </Grid>
+                    
+                    {Object.keys(memoryStats.sessions || {}).length > 0 && (
+                      <Box sx={{ mt: 2 }}>
+                        <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>Sessioni dettaglio:</Typography>
+                        <Box sx={{ maxHeight: 150, overflow: 'auto' }}>
+                          {Object.entries(memoryStats.sessions).map(([sessionId, stats]: [string, any]) => (
+                            <Box key={sessionId} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, borderBottom: '1px solid #eee' }}>
+                              <Typography variant="caption">
+                                {sessionId}: {stats.messages} msg ({stats.user_messages}U/{stats.assistant_messages}A)
+                              </Typography>
+                              <Button size="small" variant="text" color="error" onClick={() => clearMemory(sessionId)}>
+                                X
+                              </Button>
+                            </Box>
+                          ))}
+                        </Box>
+                      </Box>
+                    )}
+                  </Box>
+                )}
+              </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
 
-              {/* Token Estimator */}
-              <Box>
-                <Typography variant="subtitle1" gutterBottom>
-                  Token Estimator
-                </Typography>
+  {/* Token Tester */}
+  <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>Analisi Token</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                Inserisci un messaggio di prova per stimare i token (input + output). I token vengono mostrati solo a te come amministratore.
+              </Typography>
+              <Stack spacing={2}>
                 <TextField
-                  fullWidth
+                  label="Messaggio di test"
                   multiline
-                  rows={4}
+                  minRows={3}
                   value={tokenTestInput}
                   onChange={(e) => setTokenTestInput(e.target.value)}
-                  placeholder="Inserisci testo per calcolare i token..."
-                  sx={{ mb: 2 }}
+                  fullWidth
                 />
-                <Button
-                  variant="outlined"
-                  onClick={testTokens}
-                  disabled={testingTokens || !tokenTestInput.trim()}
-                  sx={{ mb: 2 }}
-                >
-                  {testingTokens ? 'Calcolo...' : 'Calcola Token'}
-                </Button>
-                {tokenTestResult && (
-                  <Alert severity="info">
-                    <Typography variant="body2">
-                      <strong>Caratteri:</strong> {tokenTestResult.characters}<br/>
-                      <strong>Token stimati:</strong> {tokenTestResult.estimated_tokens}<br/>
-                      <strong>Parole:</strong> {tokenTestResult.words}
-                    </Typography>
-                  </Alert>
+                <Stack direction="row" spacing={2} alignItems="center">
+                  <Button variant="contained" size="small" onClick={runTokenTest} disabled={testingTokens}>
+                    {testingTokens ? 'Calcolo...' : 'Calcola Token'}
+                  </Button>
+                  {tokenTestResult?.tokens && (
+                    <Chip color="primary" label={`Totale: ${tokenTestResult.tokens.total} token (in ${tokenTestResult.tokens.input_tokens} / out ${tokenTestResult.tokens.output_tokens})`} />
+                  )}
+                  {tokenTestResult?.tokens && (
+                    <Chip variant="outlined" label={`Messaggi: ${tokenTestResult.tokens.per_message.join(',')}`} />
+                  )}
+                  {tokenTestResult?.topic && (
+                    <Chip label={`Topic: ${tokenTestResult.topic || 'n/d'}`} />
+                  )}
+                </Stack>
+                {tokenTestResult?.reply && (
+                  <Box sx={{ p:2, bgcolor:'#fafafa', borderRadius:1, fontSize:'.85rem', whiteSpace:'pre-wrap' }}>
+                    {tokenTestResult.reply}
+                  </Box>
                 )}
-              </Box>
-            </Stack>
-          </AccordionDetails>
-        </Accordion>
+                {tokenTestResult?.error && (
+                  <Alert severity="error">{tokenTestResult.error}</Alert>
+                )}
+              </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
 
-        {/* Pannello Pipeline */}
-        <Accordion 
-          expanded={expandedPanels.pipeline} 
-          onChange={handlePanelExpansion('pipeline')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <SettingsIcon color="primary" />
-              <Typography variant="h6">Pipeline Configurazione</Typography>
-              <Chip 
-                label={pipelineConfig?.routes?.length || 0} 
-                size="small" 
-                color="info" 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            {pipelineConfig && (
-              <Box>
-                <Typography variant="subtitle2" gutterBottom>
-                  Route attive: {pipelineConfig.routes?.length || 0}
-                </Typography>
-                
-                {pipelineConfig.routes?.map((route, idx) => (
-                  <Chip 
-                    key={idx}
-                    label={`${route.pattern} → ${route.topic}`}
-                    size="small"
-                    sx={{ mr: 1, mb: 1 }}
-                  />
-                ))}
-                
-                <Box sx={{ mt: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Files configurazione: {Object.keys(pipelineConfig.files || {}).length}
+        {/* Sezione Riassunti */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <PsychologyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Impostazioni Riassunti Chat
+              </Typography>
+              
+              <Grid container spacing={3}>
+                {/* Impostazioni Provider */}
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
+                    Provider per Riassunti
                   </Typography>
                   
-                  {Object.keys(pipelineConfig.files || {}).map((file) => (
-                    <Chip 
-                      key={file}
-                      label={file}
-                      size="small"
-                      variant="outlined"
-                      sx={{ mr: 1, mb: 1 }}
-                    />
-                  ))}
-                </Box>
-              </Box>
-            )}
-          </AccordionDetails>
-        </Accordion>
-
-        {/* Pannello Riassunti */}
-        <Accordion 
-          expanded={expandedPanels.summaries} 
-          onChange={handlePanelExpansion('summaries')}
-          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
-        >
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box display="flex" alignItems="center" gap={1}>
-              <SecurityIcon color="primary" />
-              <Typography variant="h6">Impostazioni Riassunti Chat</Typography>
-              <Chip 
-                label={summarySettings.enabled ? 'Attivo' : 'Disattivo'} 
-                size="small" 
-                color={summarySettings.enabled ? 'success' : 'default'} 
-              />
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <Stack spacing={3}>
-              {/* Impostazioni Provider */}
-              <Box>
-                <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
-                  Provider per Riassunti
-                </Typography>
-                
-                <FormControl fullWidth sx={{ mb: 2 }}>
-                  <InputLabel>Provider AI</InputLabel>
-                  <Select
-                    value={summarySettings.provider}
-                    onChange={(e) => setSummarySettings({...summarySettings, provider: e.target.value})}
-                    label="Provider AI"
+                  <FormControl fullWidth sx={{ mb: 2 }}>
+                    <InputLabel>Provider AI</InputLabel>
+                    <Select
+                      value={summarySettings.provider}
+                      onChange={(e) => setSummarySettings({...summarySettings, provider: e.target.value})}
+                      label="Provider AI"
+                    >
+                      <MenuItem value="anthropic">Claude (Anthropic)</MenuItem>
+                      <MenuItem value="openai">OpenAI</MenuItem>
+                      <MenuItem value="openrouter">OpenRouter</MenuItem>
+                      <MenuItem value="gemini">Google Gemini</MenuItem>
+                    </Select>
+                  </FormControl>
+                  
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={summarySettings.enabled}
+                        onChange={(e) => setSummarySettings({...summarySettings, enabled: e.target.checked})}
+                      />
+                    }
+                    label="Abilita generazione riassunti"
+                  />
+                  
+                  <Button
+                    variant="contained"
+                    onClick={saveSummarySettings}
+                    disabled={savingSummarySettings}
+                    sx={{ mt: 2 }}
                   >
-                    <MenuItem value="anthropic">Claude (Anthropic)</MenuItem>
-                    <MenuItem value="openai">OpenAI</MenuItem>
-                    <MenuItem value="openrouter">OpenRouter</MenuItem>
-                  </Select>
-                </FormControl>
-                
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={summarySettings.enabled}
-                      onChange={(e) => setSummarySettings({...summarySettings, enabled: e.target.checked})}
-                    />
-                  }
-                  label="Abilita riassunti automatici delle conversazioni"
-                />
-              </Box>
+                    {savingSummarySettings ? 'Salvataggio...' : 'Salva Impostazioni'}
+                  </Button>
+                </Grid>
 
-              {/* Configurazione Prompt */}
-              <Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                  <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                {/* Prompt dei Riassunti */}
+                <Grid item xs={12} md={6}>
+                  <Typography variant="subtitle1" sx={{ mb: 2, fontWeight: 'bold' }}>
                     Prompt per Riassunti
                   </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="caption" color="textSecondary">
-                      Righe:
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSummaryPromptRows(Math.max(3, summaryPromptRows - 2))}
-                      disabled={summaryPromptRows <= 3}
-                    >
-                      <RemoveIcon />
-                    </IconButton>
-                    <Typography variant="caption" sx={{ minWidth: '20px', textAlign: 'center' }}>
-                      {summaryPromptRows}
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSummaryPromptRows(Math.min(25, summaryPromptRows + 2))}
-                      disabled={summaryPromptRows >= 25}
-                    >
-                      <AddIcon />
-                    </IconButton>
-                  </Box>
-                </Box>
-                
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={summaryPromptRows}
-                  value={summaryPrompt}
-                  onChange={(e) => setSummaryPrompt(e.target.value)}
-                  placeholder="Inserisci il prompt per i riassunti..."
-                  label="Prompt personalizzato per la generazione dei riassunti"
-                />
-                
-                <Button
-                  variant="contained"
-                  onClick={saveSummaryPrompt}
-                  disabled={savingSummaryPrompt}
-                  sx={{ mt: 2 }}
-                >
-                  {savingSummaryPrompt ? 'Salvataggio...' : 'Salva Prompt Riassunti'}
-                </Button>
-              </Box>
-            </Stack>
-          </AccordionDetails>
-        </Accordion>
+                  
+                  <TextField
+                    label="Prompt per generazione riassunti"
+                    multiline
+                    minRows={6}
+                    value={summaryPrompt}
+                    onChange={(e) => setSummaryPrompt(e.target.value)}
+                    fullWidth
+                    sx={{ mb: 2 }}
+                    helperText="Questo prompt viene usato per generare i riassunti delle conversazioni"
+                  />
+                  
+                  <Button
+                    variant="contained"
+                    onClick={saveSummaryPrompt}
+                    disabled={savingSummaryPrompt}
+                  >
+                    {savingSummaryPrompt ? 'Salvataggio...' : 'Salva Prompt Riassunti'}
+                  </Button>
+                </Grid>
+              </Grid>
+            </CardContent>
+          </Card>
+        </Grid>
 
-      </Stack>
+        
+      </Grid>
 
       <Box sx={{ mt: 3, textAlign: 'center' }}>
         <Button 

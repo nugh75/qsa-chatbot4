@@ -8,7 +8,6 @@ from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
 from .usage import read_usage, usage_stats, reset_usage, query_usage
 from .memory import get_memory
-from .transcribe import whisper_service
 from pathlib import Path
 import re
 
@@ -694,50 +693,3 @@ async def cleanup_old_sessions(max_idle_hours: int = 24):
         return {"success": True, "message": f"Rimosse {removed_count} sessioni inattive"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore pulizia memoria: {str(e)}")
-
-# Modelli per Whisper
-class WhisperDownloadRequest(BaseModel):
-    model: str
-
-class WhisperSetModelRequest(BaseModel):
-    model: str
-
-@router.get("/admin/whisper/models")
-async def get_whisper_models():
-    """Restituisce la lista dei modelli Whisper disponibili e il modello corrente"""
-    try:
-        models_status = whisper_service.get_models_status()
-        
-        # Lista dei modelli scaricati
-        downloaded_models = [model.name for model in models_status if model.downloaded]
-        
-        # Modello corrente
-        current_model = getattr(whisper_service, 'current_model_name', 'small') if whisper_service.current_model else None
-        
-        return {
-            "success": True,
-            "models": downloaded_models,
-            "current_model": current_model,
-            "status": {model.name: model.dict() for model in models_status}
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore caricamento modelli Whisper: {str(e)}")
-
-@router.post("/admin/whisper/download")
-async def download_whisper_model(request: WhisperDownloadRequest):
-    """Scarica un modello Whisper"""
-    try:
-        await whisper_service.download_model(request.model)
-        return {"success": True, "message": f"Modello {request.model} scaricato con successo"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore download modello: {str(e)}")
-
-@router.post("/admin/whisper/set-model")
-async def set_whisper_model(request: WhisperSetModelRequest):
-    """Imposta il modello Whisper predefinito"""
-    try:
-        whisper_service.load_model(request.model)
-        whisper_service.current_model_name = request.model
-        return {"success": True, "message": f"Modello {request.model} impostato come predefinito"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore impostazione modello: {str(e)}")

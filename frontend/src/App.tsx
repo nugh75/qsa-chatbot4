@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Button } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -10,27 +10,30 @@ import DownloadIcon from '@mui/icons-material/Download'
 import ThumbUpIcon from '@mui/icons-material/ThumbUp'
 import ThumbDownIcon from '@mui/icons-material/ThumbDown'
 import CheckIcon from '@mui/icons-material/Check'
+import MenuIcon from '@mui/icons-material/Menu'
+import LoginIcon from '@mui/icons-material/Login'
+import LogoutIcon from '@mui/icons-material/Logout'
+import SearchIcon from '@mui/icons-material/Search'
+import CloseIcon from '@mui/icons-material/Close'
 import ChatAvatar from './components/ChatAvatar'
 import { DownloadChatButton } from './components/DownloadChatButton'
 import { CopyIcon, DownloadIcon as SmallDownloadIcon, LikeIcon, DislikeIcon, CheckIcon as SmallCheckIcon, SpeakerIcon, StopIcon as SmallStopIcon, MicIcon as SmallMicIcon, AIIcon, SettingsIcon } from './components/SmallIcons'
+import ImportExportManager from './components/ImportExportManager'
+import { ConversationSidebar } from './components/ConversationSidebar'
+import ConversationSearch from './components/ConversationSearch'
+import LoginDialog from './components/LoginDialog'
+import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
 
 type Msg = { role:'user'|'assistant'|'system', content:string, ts:number }
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
 
-// Genera session ID persistente per l'utente
-const getSessionId = () => {
-  let sessionId = localStorage.getItem('chat_session_id')
-  if (!sessionId) {
-    sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-    localStorage.setItem('chat_session_id', sessionId)
-  }
-  return sessionId
-}
-
-export default function App(){
-  const [sessionId] = useState(getSessionId)
+// Componente App interno che usa AuthContext
+const AppContent: React.FC = () => {
+  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth } = useAuth();
+  
   const [messages,setMessages] = useState<Msg[]>(()=>{
     const saved = localStorage.getItem('chat_messages')
     if(saved){
@@ -49,6 +52,11 @@ export default function App(){
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
   const [feedback, setFeedback] = useState<{[key: number]: 'like' | 'dislike'}>({})
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null)
+  const [showImportExport, setShowImportExport] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [showLoginDialog, setShowLoginDialog] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
   useEffect(()=>{
@@ -60,21 +68,32 @@ export default function App(){
     return ()=> window.removeEventListener('beforeunload', handler)
   },[])
 
-  const send = async () => {
+  const send = async ()=>{
     const text = input.trim()
-    if (!text) return
-    const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
+    if(!text) return
+  const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
     setMessages(next); setInput('')
     setLoading(true); setError(undefined)
     try {
+      // Ottieni il token di accesso per l'autenticazione
+      const accessToken = localStorage.getItem('qsa_access_token');
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        'X-LLM-Provider': provider
+      };
+      
+      if (accessToken) {
+        headers['Authorization'] = `Bearer ${accessToken}`;
+      }
+      
       const r = await fetch(`${BACKEND}/api/chat`, {
         method:'POST',
-        headers:{ 'Content-Type':'application/json', 'X-LLM-Provider': provider },
-        body: JSON.stringify({ message: text, sessionId: sessionId })
+        headers,
+        body: JSON.stringify({ message: text, sessionId: 'dev' })
       })
       if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
       const data = await r.json()
-      setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
+  setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
     } catch(e:any){
       setError(e.message || 'Errore di rete')
       // ripristina input per ritentare
@@ -162,26 +181,6 @@ export default function App(){
     }
   }
 
-  const clearChat = async () => {
-    if (!window.confirm('Vuoi cancellare la conversazione corrente e iniziare una nuova sessione?')) return
-    
-    try {
-      // Invia richiesta per cancellare la memoria del backend
-      await fetch(`${BACKEND}/api/chat`, {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json', 'X-LLM-Provider': provider },
-        body: JSON.stringify({ message: "", sessionId: sessionId, clearHistory: true })
-      })
-    } catch (e) {
-      console.log('Errore pulizia memoria backend:', e)
-    }
-    
-    // Reset frontend
-    setMessages([{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}])
-    setInput('')
-    setError(undefined)
-  }
-
   const downloadMessage = (text: string) => {
     const blob = new Blob([text], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -221,21 +220,32 @@ export default function App(){
 
   return (
     <Container maxWidth="md" sx={{ py: 3 }}>
+      {/* Avviso rilogin per crittografia */}
+      {needsCryptoReauth && (
+        <Alert severity="warning" sx={{ mb: 2 }} action={
+          <Button color="inherit" size="small" onClick={logout}>
+            Rilogga
+          </Button>
+        }>
+          Per accedere alle conversazioni crittografate, è necessario effettuare nuovamente il login.
+        </Alert>
+      )}
+      
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:2 }}>
         <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip title="Menu conversazioni">
+            <IconButton
+              size="small"
+              onClick={() => setSidebarOpen(true)}
+              sx={{ color: 'primary.main' }}
+            >
+              <MenuIcon />
+            </IconButton>
+          </Tooltip>
           <ChatAvatar />
           <Typography variant="h6">Counselorbot – QSA Chatbot</Typography>
         </Stack>
         <Stack direction="row" spacing={2} alignItems="center">
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={clearChat}
-            sx={{ minWidth: 'auto', px: 1 }}
-          >
-            Nuova Chat
-          </Button>
-          
           <Select size="small" value={provider} onChange={e=>setProvider(e.target.value as any)}>
             <MenuItem value="local">
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -303,8 +313,71 @@ export default function App(){
           </Select>
           
           <DownloadChatButton messages={messages} />
+          
+          <Tooltip title="Import/Export Conversazioni">
+            <IconButton
+              size="small"
+              onClick={() => setShowImportExport(true)}
+              sx={{ color: 'primary.main' }}
+            >
+              <SettingsIcon size={20} />
+            </IconButton>
+          </Tooltip>
+          
+          <Tooltip title="Cerca conversazioni">
+            <span style={{ display: 'inline-flex' }}>
+              <IconButton
+                size="small"
+                onClick={() => setShowSearch(true)}
+                sx={{ color: 'primary.main' }}
+                disabled={!isAuthenticated}
+              >
+                <SearchIcon />
+              </IconButton>
+            </span>
+          </Tooltip>
+          
+          {isAuthenticated ? (
+            <Tooltip title={`Logout (${user?.email})`}>
+              <IconButton
+                size="small"
+                onClick={logout}
+                sx={{ color: 'error.main' }}
+              >
+                <LogoutIcon />
+              </IconButton>
+            </Tooltip>
+          ) : (
+            <Tooltip title="Login">
+              <IconButton
+                size="small"
+                onClick={() => setShowLoginDialog(true)}
+                sx={{ color: 'primary.main' }}
+              >
+                <LoginIcon />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </Stack>
+
+      {!isAuthenticated && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          <Box display="flex" justifyContent="space-between" alignItems="center">
+            <Typography>
+              Accedi per salvare le conversazioni e usare la crittografia end-to-end
+            </Typography>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => setShowLoginDialog(true)}
+              startIcon={<LoginIcon />}
+            >
+              Accedi
+            </Button>
+          </Box>
+        </Alert>
+      )}
 
       <Paper variant="outlined" sx={{ p: 3, minHeight: 420, position: 'relative', bgcolor: '#fafafa' }}>
         {error && (
@@ -515,38 +588,42 @@ export default function App(){
           
           {/* Pulsante microfono */}
           <Tooltip title={isRecording ? "Registrando..." : "Registra messaggio vocale"}>
+            <span style={{ display: 'inline-flex' }}>
+              <IconButton 
+                onClick={startRecording}
+                disabled={isRecording}
+                sx={{ 
+                  bgcolor: isRecording ? 'error.main' : 'grey.300',
+                  color: isRecording ? 'white' : 'grey.600',
+                  '&:hover': { bgcolor: isRecording ? 'error.dark' : 'grey.400' },
+                  borderRadius: 2,
+                  width: 45,
+                  height: 45
+                }}
+              >
+                {isRecording ? <StopIcon /> : <MicIcon />}
+              </IconButton>
+            </span>
+          </Tooltip>
+          
+          {/* Pulsante invio */}
+          <span style={{ display: 'inline-flex' }}>
             <IconButton 
-              onClick={startRecording}
-              disabled={isRecording}
+              color="primary" 
+              onClick={send} 
+              disabled={loading || !input.trim()}
               sx={{ 
-                bgcolor: isRecording ? 'error.main' : 'grey.300',
-                color: isRecording ? 'white' : 'grey.600',
-                '&:hover': { bgcolor: isRecording ? 'error.dark' : 'grey.400' },
+                bgcolor: loading || !input.trim() ? 'grey.300' : 'primary.main',
+                color: 'white',
+                '&:hover': { bgcolor: 'primary.dark' },
                 borderRadius: 2,
                 width: 45,
                 height: 45
               }}
             >
-              {isRecording ? <StopIcon /> : <MicIcon />}
+              <SendIcon />
             </IconButton>
-          </Tooltip>
-          
-          {/* Pulsante invio */}
-          <IconButton 
-            color="primary" 
-            onClick={send} 
-            disabled={loading || !input.trim()}
-            sx={{ 
-              bgcolor: loading || !input.trim() ? 'grey.300' : 'primary.main',
-              color: 'white',
-              '&:hover': { bgcolor: 'primary.dark' },
-              borderRadius: 2,
-              width: 45,
-              height: 45
-            }}
-          >
-            <SendIcon />
-          </IconButton>
+          </span>
         </Stack>
         
         {/* Indicatori di stato */}
@@ -684,6 +761,92 @@ export default function App(){
           </Stack>
         </Stack>
       </Paper>
+      
+      <ImportExportManager
+        isOpen={showImportExport}
+        onClose={() => setShowImportExport(false)}
+        apiService={createApiService(BACKEND)}
+        conversations={messages.map((msg, index) => ({
+          id: `msg_${index}`,
+          title: msg.content.slice(0, 50) + '...',
+          created_at: new Date(msg.ts).toISOString()
+        }))}
+      />
+      
+      <ConversationSidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        currentConversationId={currentConversationId || undefined}
+        onConversationSelect={(id) => {
+          setCurrentConversationId(id);
+          // TODO: Load conversation messages
+          setSidebarOpen(false);
+        }}
+        onNewConversation={() => {
+          setMessages([{
+            role: 'assistant', 
+            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+            ts: Date.now()
+          }]);
+          setCurrentConversationId(null);
+          setSidebarOpen(false);
+        }}
+        drawerWidth={300}
+      />
+      
+      <LoginDialog
+        open={showLoginDialog}
+        onClose={() => setShowLoginDialog(false)}
+        onLoginSuccess={(userInfo, cryptoInstance) => {
+          login(userInfo, cryptoInstance);
+          setShowLoginDialog(false);
+        }}
+      />
+      
+      <Dialog
+        open={showSearch}
+        onClose={() => setShowSearch(false)}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{ sx: { minHeight: '70vh' } }}
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center" justifyContent="space-between">
+            <Box display="flex" alignItems="center" gap={1}>
+              <SearchIcon />
+              Cerca Conversazioni
+            </Box>
+            <IconButton onClick={() => setShowSearch(false)}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent sx={{ p: 0 }}>
+          <ConversationSearch
+            onResultSelect={(conversationId: string, messageId?: string) => {
+              setCurrentConversationId(conversationId);
+              // TODO: Load selected conversation and scroll to message if provided
+              setShowSearch(false);
+            }}
+            selectedConversationId={currentConversationId || undefined}
+            isCompact={false}
+          />
+        </DialogContent>
+      </Dialog>
     </Container>
-  )
+  );
+};
+
+// App wrapper con AuthProvider
+export default function App() {
+  // Routing semplice basato sull'URL
+  if (window.location.pathname === '/admin') {
+    return <AdminPanel />
+  }
+
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  );
 }

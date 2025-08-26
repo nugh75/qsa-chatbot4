@@ -7,6 +7,7 @@ from .prompts import load_system_prompt, save_system_prompt
 from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
 from .usage import read_usage, usage_stats, reset_usage, query_usage
+from .memory import get_memory
 from pathlib import Path
 import re
 
@@ -85,7 +86,11 @@ DEFAULT_CONFIG = {
     },
     "default_provider": "local",
     "default_tts": "edge",
-    "memory_buffer_size": 10
+    "memory_settings": {
+        "max_messages_per_session": 10,
+        "auto_cleanup_hours": 24,
+        "enabled": True
+    }
 }
 
 def get_config_file_path():
@@ -553,3 +558,58 @@ async def test_model(request: dict):
             
     except Exception as e:
         return {"success": False, "message": f"Errore nel test del modello: {str(e)}"}
+
+# --------------- Memory management endpoints ---------------
+@router.get("/admin/memory/stats")
+async def get_memory_stats():
+    """Ottieni statistiche della memoria delle conversazioni"""
+    try:
+        memory = get_memory()
+        return memory.get_all_sessions_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore stats memoria: {str(e)}")
+
+@router.post("/admin/memory/config")
+async def update_memory_config(max_messages: int):
+    """Aggiorna la configurazione della memoria"""
+    try:
+        if max_messages < 1 or max_messages > 100:
+            raise HTTPException(status_code=400, detail="Il numero di messaggi deve essere tra 1 e 100")
+        
+        memory = get_memory()
+        memory.set_max_messages(max_messages)
+        
+        # Salva la configurazione nel file
+        config = load_config()
+        if "memory_settings" not in config:
+            config["memory_settings"] = {}
+        config["memory_settings"]["max_messages_per_session"] = max_messages
+        save_config(config)
+        
+        return {"success": True, "message": f"Memoria configurata per {max_messages} messaggi per sessione"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore aggiornamento memoria: {str(e)}")
+
+@router.post("/admin/memory/clear")
+async def clear_memory(session_id: Optional[str] = None):
+    """Cancella la memoria (sessione specifica o tutte)"""
+    try:
+        memory = get_memory()
+        if session_id:
+            memory.clear_session(session_id)
+            return {"success": True, "message": f"Sessione {session_id} cancellata"}
+        else:
+            memory.clear_all_sessions()
+            return {"success": True, "message": "Tutte le sessioni cancellate"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore cancellazione memoria: {str(e)}")
+
+@router.post("/admin/memory/cleanup")
+async def cleanup_old_sessions(max_idle_hours: int = 24):
+    """Pulisce le sessioni inattive"""
+    try:
+        memory = get_memory()
+        removed_count = memory.cleanup_old_sessions(max_idle_hours)
+        return {"success": True, "message": f"Rimosse {removed_count} sessioni inattive"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore pulizia memoria: {str(e)}")

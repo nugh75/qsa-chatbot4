@@ -9,7 +9,8 @@ import {
   VolumeUp as VolumeIcon,
   Psychology as AIIcon,
   Analytics as StatsIcon,
-  Security as SecurityIcon
+  Security as SecurityIcon,
+  Psychology as PsychologyIcon
 } from '@mui/icons-material'
 
 interface AdminConfig {
@@ -29,7 +30,6 @@ interface AdminConfig {
   }
   default_provider: string
   default_tts: string
-  memory_buffer_size: number
 }
 
 interface FeedbackStats {
@@ -81,6 +81,10 @@ export default function AdminPanel() {
   const [autoRefresh, setAutoRefresh] = useState<boolean>(false)
   const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
+  // Memory settings
+  const [memoryStats, setMemoryStats] = useState<any | null>(null)
+  const [maxMessages, setMaxMessages] = useState<number>(10)
+  const [loadingMemory, setLoadingMemory] = useState(false)
 
   // Auto refresh effect
   useEffect(() => {
@@ -191,6 +195,10 @@ export default function AdminPanel() {
       const data = await response.json()
       setConfig(data)
       
+      // Carica impostazioni memoria
+      const memorySettings = data.memory_settings || {}
+      setMaxMessages(memorySettings.max_messages_per_session || 10)
+      
       // Carica automaticamente i modelli per ogni provider abilitato
       if (data.ai_providers) {
         Object.keys(data.ai_providers).forEach(provider => {
@@ -284,9 +292,65 @@ export default function AdminPanel() {
     if (authenticated) {
       loadSystemPrompt()
       loadPipeline()
-  loadUsage()
+      loadUsage()
+      loadMemoryStats()
     }
   }, [authenticated])
+
+  const loadMemoryStats = async () => {
+    try {
+      setLoadingMemory(true)
+      const res = await fetch(`${BACKEND}/api/admin/memory/stats`)
+      const data = await res.json()
+      setMemoryStats(data)
+    } catch (e) {
+      setMessage('Errore caricamento statistiche memoria')
+    } finally {
+      setLoadingMemory(false)
+    }
+  }
+
+  const updateMemoryConfig = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/memory/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_messages: maxMessages })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Configurazione memoria salvata')
+        loadMemoryStats()
+      } else {
+        setMessage(data.message || 'Errore salvataggio memoria')
+      }
+    } catch (e) {
+      setMessage('Errore aggiornamento memoria')
+    }
+  }
+
+  const clearMemory = async (sessionId?: string) => {
+    const confirmMsg = sessionId ? 
+      `Vuoi cancellare la sessione ${sessionId}?` : 
+      'Vuoi cancellare tutte le sessioni dalla memoria?'
+    
+    if (!window.confirm(confirmMsg)) return
+    
+    try {
+      const url = sessionId ? 
+        `${BACKEND}/api/admin/memory/clear?session_id=${sessionId}` :
+        `${BACKEND}/api/admin/memory/clear`
+      
+      const res = await fetch(url, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setMessage(data.message)
+        loadMemoryStats()
+      }
+    } catch (e) {
+      setMessage('Errore cancellazione memoria')
+    }
+  }
 
   const loadStats = async () => {
     try {
@@ -1044,6 +1108,95 @@ export default function AdminPanel() {
           </Card>
         </Grid>
 
+        {/* Memory Management */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <PsychologyIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Gestione Memoria Conversazioni
+              </Typography>
+              
+              <Stack spacing={2}>
+                <TextField
+                  label="Numero massimo messaggi per sessione"
+                  type="number"
+                  value={maxMessages}
+                  onChange={(e) => setMaxMessages(Math.max(1, Math.min(100, parseInt(e.target.value) || 10)))}
+                  inputProps={{ min: 1, max: 100 }}
+                  helperText="Quanti messaggi mantenere in memoria per ogni conversazione (1-100)"
+                  fullWidth
+                />
+                
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  <Button 
+                    variant="contained" 
+                    size="small" 
+                    onClick={updateMemoryConfig}
+                    disabled={loadingMemory}
+                  >
+                    Salva Configurazione
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    size="small" 
+                    onClick={loadMemoryStats}
+                    disabled={loadingMemory}
+                  >
+                    Aggiorna
+                  </Button>
+                  <Button 
+                    variant="outlined" 
+                    color="warning" 
+                    size="small" 
+                    onClick={() => clearMemory()}
+                  >
+                    Cancella Tutto
+                  </Button>
+                </Box>
+                
+                {memoryStats && (
+                  <Box sx={{ p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+                    <Typography variant="subtitle2" gutterBottom>Statistiche Memoria</Typography>
+                    <Grid container spacing={1}>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Sessioni totali: <strong>{memoryStats.total_sessions}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Sessioni attive: <strong>{memoryStats.active_sessions}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Messaggi totali: <strong>{memoryStats.total_messages}</strong></Typography>
+                      </Grid>
+                      <Grid item xs={6}>
+                        <Typography variant="caption">Max msg/sessione: <strong>{memoryStats.max_messages_per_session}</strong></Typography>
+                      </Grid>
+                    </Grid>
+                    
+                    {Object.keys(memoryStats.sessions || {}).length > 0 && (
+                      <Box sx={{ mt: 2 }}>
+                        <Typography variant="caption" sx={{ display: 'block', mb: 1 }}>Sessioni dettaglio:</Typography>
+                        <Box sx={{ maxHeight: 150, overflow: 'auto' }}>
+                          {Object.entries(memoryStats.sessions).map(([sessionId, stats]: [string, any]) => (
+                            <Box key={sessionId} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, borderBottom: '1px solid #eee' }}>
+                              <Typography variant="caption">
+                                {sessionId}: {stats.messages} msg ({stats.user_messages}U/{stats.assistant_messages}A)
+                              </Typography>
+                              <Button size="small" variant="text" color="error" onClick={() => clearMemory(sessionId)}>
+                                X
+                              </Button>
+                            </Box>
+                          ))}
+                        </Box>
+                      </Box>
+                    )}
+                  </Box>
+                )}
+              </Stack>
+            </CardContent>
+          </Card>
+        </Grid>
+
   {/* Token Tester */}
   <Grid item xs={12} md={6}>
           <Card>
@@ -1084,37 +1237,6 @@ export default function AdminPanel() {
                   <Alert severity="error">{tokenTestResult.error}</Alert>
                 )}
               </Stack>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Configurazione Memoria Buffer */}
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                <SecurityIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
-                Memoria Conversazione
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Configura quanti messaggi precedenti mantenere in memoria per ogni conversazione.
-              </Typography>
-              <TextField
-                type="number"
-                label="Numero messaggi in buffer"
-                value={config?.memory_buffer_size || 10}
-                onChange={(e) => setConfig(prev => prev ? {...prev, memory_buffer_size: parseInt(e.target.value) || 10} : null)}
-                fullWidth
-                inputProps={{ min: 1, max: 50 }}
-                helperText="Mantiene gli ultimi N messaggi utente/assistente per continuità conversazione (1-50)"
-              />
-              <Box sx={{ mt: 2 }}>
-                <Chip 
-                  label={`Buffer attuale: ${config?.memory_buffer_size || 10} messaggi`} 
-                  color="primary" 
-                  variant="outlined" 
-                />
-              </Box>
             </CardContent>
           </Card>
         </Grid>

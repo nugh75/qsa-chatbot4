@@ -10,6 +10,11 @@ from .chat import router as chat_router
 from .tts import router as tts_router
 from .transcribe import router as asr_router
 from .admin import router as admin_router
+from .auth_routes import router as auth_router
+from .conversation_routes import router as conversation_router
+from .search_routes import router as search_router
+from .admin_panel import router as admin_panel_router
+from .import_export import router as import_export_router
 
 # Carica le variabili di ambiente dal file .env
 load_dotenv()
@@ -35,6 +40,11 @@ app.include_router(chat_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(asr_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(conversation_router, prefix="/api")
+app.include_router(search_router, prefix="/api")
+app.include_router(admin_panel_router, prefix="/api")
+app.include_router(import_export_router, prefix="/api")
 
 @app.post("/api/feedback")
 async def save_feedback(feedback_data: FeedbackData):

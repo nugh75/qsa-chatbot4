@@ -1,115 +1,133 @@
-from pathlib import Path
+from typing import Dict, List, Any, Optional
 import json
-from typing import List, Dict, Any, Optional
-from datetime import datetime
+import time
+from pathlib import Path
 
-MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
-
-def ensure_memory_dir():
-    """Crea la directory memory se non esiste"""
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-
-def get_session_file(session_id: str) -> Path:
-    """Ottieni il percorso del file per una sessione"""
-    ensure_memory_dir()
-    # Sanitize session_id per sicurezza
-    safe_session_id = "".join(c for c in session_id if c.isalnum() or c in "._-")[:50]
-    return MEMORY_DIR / f"session_{safe_session_id}.json"
-
-def load_conversation_history(session_id: str) -> List[Dict[str, Any]]:
-    """Carica lo storico della conversazione per una sessione"""
-    session_file = get_session_file(session_id)
-    if not session_file.exists():
-        return []
+class ConversationMemory:
+    """
+    Gestisce la memoria delle conversazioni con un buffer limitato.
+    Mantiene un numero configurabile di messaggi per ogni sessione.
+    """
     
-    try:
-        with open(session_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data.get('messages', [])
-    except Exception:
-        return []
-
-def save_conversation_history(session_id: str, messages: List[Dict[str, Any]]):
-    """Salva lo storico della conversazione per una sessione"""
-    session_file = get_session_file(session_id)
-    
-    data = {
-        'session_id': session_id,
-        'messages': messages,
-        'last_updated': datetime.utcnow().isoformat() + 'Z'
-    }
-    
-    try:
-        with open(session_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-def add_message_to_conversation(session_id: str, message: Dict[str, Any], max_buffer_size: int = 10):
-    """Aggiungi un messaggio alla conversazione e mantieni solo gli ultimi max_buffer_size messaggi"""
-    messages = load_conversation_history(session_id)
-    
-    # Aggiungi timestamp se non presente
-    if 'timestamp' not in message:
-        message['timestamp'] = datetime.utcnow().isoformat() + 'Z'
-    
-    messages.append(message)
-    
-    # Mantieni solo gli ultimi messaggi (escludendo il system prompt)
-    # Contiamo solo user/assistant, non system
-    user_assistant_messages = [m for m in messages if m.get('role') in ['user', 'assistant']]
-    if len(user_assistant_messages) > max_buffer_size:
-        # Rimuovi i messaggi più vecchi
-        excess = len(user_assistant_messages) - max_buffer_size
-        # Trova gli indici dei messaggi da rimuovere
-        to_remove = []
-        count = 0
-        for i, msg in enumerate(messages):
-            if msg.get('role') in ['user', 'assistant']:
-                if count < excess:
-                    to_remove.append(i)
-                    count += 1
-                else:
-                    break
+    def __init__(self, max_messages_per_session: int = 10):
+        self.max_messages = max_messages_per_session
+        self.sessions: Dict[str, List[Dict[str, Any]]] = {}
+        self.last_access: Dict[str, float] = {}
         
-        # Rimuovi in ordine inverso per non alterare gli indici
-        for i in reversed(to_remove):
-            messages.pop(i)
+    def set_max_messages(self, max_messages: int):
+        """Aggiorna il limite massimo di messaggi per sessione"""
+        self.max_messages = max_messages
+        # Applica il nuovo limite alle sessioni esistenti
+        for session_id in self.sessions:
+            self._trim_session(session_id)
     
-    save_conversation_history(session_id, messages)
-    return messages
+    def add_message(self, session_id: str, role: str, content: str, metadata: Optional[Dict] = None):
+        """Aggiunge un messaggio alla sessione"""
+        if session_id not in self.sessions:
+            self.sessions[session_id] = []
+        
+        message = {
+            "role": role,
+            "content": content,
+            "timestamp": time.time(),
+            "metadata": metadata or {}
+        }
+        
+        self.sessions[session_id].append(message)
+        self.last_access[session_id] = time.time()
+        
+        # Mantieni solo gli ultimi N messaggi
+        self._trim_session(session_id)
+    
+    def get_conversation_history(self, session_id: str, include_system: bool = False) -> List[Dict[str, str]]:
+        """
+        Ottiene la cronologia della conversazione per una sessione.
+        Restituisce solo role e content per compatibilità con i provider LLM.
+        """
+        if session_id not in self.sessions:
+            return []
+        
+        messages = self.sessions[session_id]
+        
+        if not include_system:
+            # Filtra i messaggi di sistema se richiesto
+            messages = [msg for msg in messages if msg["role"] != "system"]
+        
+        # Restituisce solo role e content
+        return [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+    
+    def get_session_stats(self, session_id: str) -> Dict[str, Any]:
+        """Ottiene statistiche per una sessione"""
+        if session_id not in self.sessions:
+            return {"messages": 0, "last_activity": None}
+        
+        messages = self.sessions[session_id]
+        return {
+            "messages": len(messages),
+            "last_activity": self.last_access.get(session_id),
+            "user_messages": len([m for m in messages if m["role"] == "user"]),
+            "assistant_messages": len([m for m in messages if m["role"] == "assistant"])
+        }
+    
+    def clear_session(self, session_id: str):
+        """Cancella una sessione specifica"""
+        if session_id in self.sessions:
+            del self.sessions[session_id]
+        if session_id in self.last_access:
+            del self.last_access[session_id]
+    
+    def clear_all_sessions(self):
+        """Cancella tutte le sessioni"""
+        self.sessions.clear()
+        self.last_access.clear()
+    
+    def cleanup_old_sessions(self, max_idle_hours: int = 24):
+        """Rimuove sessioni inattive da più di X ore"""
+        current_time = time.time()
+        cutoff_time = current_time - (max_idle_hours * 3600)
+        
+        sessions_to_remove = [
+            session_id for session_id, last_time in self.last_access.items()
+            if last_time < cutoff_time
+        ]
+        
+        for session_id in sessions_to_remove:
+            self.clear_session(session_id)
+        
+        return len(sessions_to_remove)
+    
+    def get_all_sessions_stats(self) -> Dict[str, Any]:
+        """Ottiene statistiche globali di tutte le sessioni"""
+        total_sessions = len(self.sessions)
+        total_messages = sum(len(messages) for messages in self.sessions.values())
+        
+        active_sessions = [
+            session_id for session_id, last_time in self.last_access.items()
+            if time.time() - last_time < 3600  # Attive nell'ultima ora
+        ]
+        
+        return {
+            "total_sessions": total_sessions,
+            "active_sessions": len(active_sessions),
+            "total_messages": total_messages,
+            "max_messages_per_session": self.max_messages,
+            "sessions": {
+                session_id: self.get_session_stats(session_id)
+                for session_id in self.sessions.keys()
+            }
+        }
+    
+    def _trim_session(self, session_id: str):
+        """Mantiene solo gli ultimi N messaggi per una sessione"""
+        if session_id in self.sessions:
+            messages = self.sessions[session_id]
+            if len(messages) > self.max_messages:
+                # Mantieni gli ultimi max_messages messaggi
+                self.sessions[session_id] = messages[-self.max_messages:]
 
-def clear_session_history(session_id: str):
-    """Cancella lo storico di una sessione"""
-    session_file = get_session_file(session_id)
-    try:
-        if session_file.exists():
-            session_file.unlink()
-    except Exception:
-        pass
+# Istanza globale della memoria
+memory = ConversationMemory()
 
-def get_conversation_for_llm(session_id: str, system_prompt: str, context: str, max_buffer_size: int = 10) -> List[Dict[str, str]]:
-    """Ottieni la conversazione formattata per l'LLM con system prompt, contesto e storico"""
-    messages = load_conversation_history(session_id)
-    
-    # Filtra solo user/assistant e limita
-    user_assistant_messages = [m for m in messages if m.get('role') in ['user', 'assistant']]
-    if len(user_assistant_messages) > max_buffer_size:
-        user_assistant_messages = user_assistant_messages[-max_buffer_size:]
-    
-    # Costruisci il prompt per l'LLM
-    llm_messages = [
-        {"role": "system", "content": system_prompt}
-    ]
-    
-    if context.strip():
-        llm_messages.append({"role": "system", "content": f"[Materiali di riferimento]\n{context[:6000]}"})
-    
-    # Aggiungi lo storico
-    for msg in user_assistant_messages:
-        llm_messages.append({
-            "role": msg.get('role', 'user'),
-            "content": msg.get('content', '')
-        })
-    
-    return llm_messages
+def get_memory() -> ConversationMemory:
+    """Ottiene l'istanza globale della memoria delle conversazioni"""
+    return memory

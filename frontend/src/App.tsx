@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -15,6 +15,10 @@ import LoginIcon from '@mui/icons-material/Login'
 import LogoutIcon from '@mui/icons-material/Logout'
 import SearchIcon from '@mui/icons-material/Search'
 import CloseIcon from '@mui/icons-material/Close'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import ExpandLessIcon from '@mui/icons-material/ExpandLess'
+import TableChartIcon from '@mui/icons-material/TableChart'
+import ImageIcon from '@mui/icons-material/Image'
 import ChatAvatar from './components/ChatAvatar'
 import { DownloadChatButton } from './components/DownloadChatButton'
 import { CopyIcon, DownloadIcon as SmallDownloadIcon, LikeIcon, DislikeIcon, CheckIcon as SmallCheckIcon, SpeakerIcon, StopIcon as SmallStopIcon, MicIcon as SmallMicIcon, AIIcon } from './components/SmallIcons'
@@ -26,9 +30,108 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
 
-type Msg = { role:'user'|'assistant'|'system', content:string, ts:number }
+type Msg = { 
+  role:'user'|'assistant'|'system', 
+  content:string, 
+  ts:number
+}
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
+
+// Componente per box dati estratti espandibile
+const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: number}> = ({extractedData, messageIndex}) => {
+  const [expanded, setExpanded] = useState(false)
+  
+  const hasData = (extractedData.tables && extractedData.tables.length > 0) || 
+                  (extractedData.images && extractedData.images.length > 0)
+  
+  if (!hasData) return null
+  
+  return (
+    <Box sx={{ maxWidth: '80%', ml: 7 }}>  {/* Always left margin for assistant messages */}
+      <Card sx={{ 
+        bgcolor: '#f5f5f5', 
+        border: '1px solid #e0e0e0',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+      }}>
+        <Box 
+          sx={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            p: 1.5, 
+            cursor: 'pointer',
+            '&:hover': { bgcolor: '#eeeeee' }
+          }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexGrow: 1 }}>
+            {extractedData.tables && extractedData.tables.length > 0 && (
+              <Chip 
+                icon={<TableChartIcon />} 
+                label={`${extractedData.tables.length} Valori`}
+                size="small"
+                color="primary"
+                variant="outlined"
+              />
+            )}
+            {extractedData.images && extractedData.images.length > 0 && (
+              <Chip 
+                icon={<ImageIcon />} 
+                label={`${extractedData.images.length} Testi`}
+                size="small"
+                color="secondary"
+                variant="outlined"
+              />
+            )}
+          </Box>
+          <IconButton size="small">
+            {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+          </IconButton>
+        </Box>
+        
+        <Collapse in={expanded}>
+          <CardContent sx={{ pt: 0 }}>
+            {extractedData.tables && extractedData.tables.length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#1976d2' }}>
+                  � Valori Numerici Estratti
+                </Typography>
+                {extractedData.tables.map((table, idx) => (
+                  <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Immagine {table.image_num} ({table.source})
+                    </Typography>
+                    <Typography variant="h6" sx={{ mt: 0.5, color: '#1976d2', fontWeight: 'bold' }}>
+                      {table.data}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+            
+            {extractedData.images && extractedData.images.length > 0 && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#9c27b0' }}>
+                  🖼️ Descrizioni Immagini
+                </Typography>
+                {extractedData.images.map((img, idx) => (
+                  <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Immagine {img.image_num} ({img.source})
+                    </Typography>
+                    <Typography variant="body2" sx={{ mt: 0.5 }}>
+                      {img.full_description}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+            )}
+          </CardContent>
+        </Collapse>
+      </Card>
+    </Box>
+  )
+}
 
 // Componente App interno che usa AuthContext
 const AppContent: React.FC = () => {
@@ -212,7 +315,12 @@ const AppContent: React.FC = () => {
       })
       if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
       const data = await r.json()
-  setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
+      
+      setMessages([...next, { 
+        role:'assistant' as const, 
+        content:data.reply, 
+        ts:Date.now()
+      }])
       
       // Pulisci gli allegati dopo l'invio riuscito
       setAttachedFiles([])
@@ -480,40 +588,42 @@ const AppContent: React.FC = () => {
         )}
         <Stack spacing={3}>
           {messages.map((m,i)=>(
-            <Box key={i} display="flex" gap={2} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
-              {/* Avatar per l'assistente a sinistra */}
-              {m.role === 'assistant' && (
-                <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                  <ChatAvatar />
-                </Box>
-              )}
-              
-              {/* Bolla del messaggio */}
-              <Box sx={{ 
-                maxWidth: '75%',
-                bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
-                color: m.role === 'assistant' ? '#000' : '#fff',
-                p: 2,
-                borderRadius: 3,
-                borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
-                borderTopRightRadius: m.role === 'user' ? 1 : 3,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                position: 'relative',
-              }}>
-                <Typography variant="body1" sx={{ 
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: 1.5,
-                  fontSize: '0.95rem'
+            <Box key={i} display="flex" flexDirection="column" gap={1} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
+              {/* Messaggio principale */}
+              <Box display="flex" gap={2} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
+                {/* Avatar per l'assistente a sinistra */}
+                {m.role === 'assistant' && (
+                  <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
+                    <ChatAvatar />
+                  </Box>
+                )}
+                
+                {/* Bolla del messaggio - aumentata la dimensione */}
+                <Box sx={{ 
+                  maxWidth: '80%',  // Aumentato da 75% a 80%
+                  bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
+                  color: m.role === 'assistant' ? '#000' : '#fff',
+                  p: 2.5,  // Aumentato il padding
+                  borderRadius: 3,
+                  borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
+                  borderTopRightRadius: m.role === 'user' ? 1 : 3,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                  position: 'relative',
                 }}>
-                  {/* Rimuove i marcatori markdown e mostra testo pulito */}
-                  {m.content
-                    .replace(/\*\*(.*?)\*\*/g, '$1')  // Rimuove **grassetto**
-                    .replace(/\*(.*?)\*/g, '$1')      // Rimuove *corsivo*
-                    .replace(/`(.*?)`/g, '$1')        // Rimuove `codice`
-                    .replace(/#{1,6}\s/g, '')         // Rimuove # headers
-                    .replace(/\[.*?\]\(.*?\)/g, '')   // Rimuove link markdown
-                  }
-                </Typography>
+                  <Typography variant="body1" sx={{ 
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: 1.6,  // Aumentato line-height
+                    fontSize: '1rem'  // Aumentato font-size
+                  }}>
+                    {/* Rimuove i marcatori markdown e mostra testo pulito */}
+                    {m.content
+                      .replace(/\*\*(.*?)\*\*/g, '$1')  // Rimuove **grassetto**
+                      .replace(/\*(.*?)\*/g, '$1')      // Rimuove *corsivo*
+                      .replace(/`(.*?)`/g, '$1')        // Rimuove `codice`
+                      .replace(/#{1,6}\s/g, '')         // Rimuove # headers
+                      .replace(/\[.*?\]\(.*?\)/g, '')   // Rimuove link markdown
+                    }
+                  </Typography>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
                 {m.role === 'assistant' && (
@@ -635,6 +745,9 @@ const AppContent: React.FC = () => {
                 </Box>
               )}
             </Box>
+            
+            {/* Dati estratti rimossi - elaborazione semplificata */}
+          </Box>
           ))}
           
           {/* Indicatore di typing quando sta caricando */}
@@ -685,6 +798,29 @@ const AppContent: React.FC = () => {
             disabled={loading}
             maxFiles={3}
           />
+
+          {/* File allegati */}
+          {attachedFiles.length > 0 && (
+            <Box sx={{ mt: 1, mb: 1 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 'bold', display: 'block', mb: 0.5 }}>
+                📎 File allegati ({attachedFiles.length}):
+              </Typography>
+              {attachedFiles.map((file) => (
+                <Chip
+                  key={file.id}
+                  label={file.filename}
+                  variant="outlined"
+                  size="small"
+                  color="primary"
+                  onDelete={() => {
+                    const updatedFiles = attachedFiles.filter(f => f.id !== file.id);
+                    setAttachedFiles(updatedFiles);
+                  }}
+                  sx={{ mr: 0.5, mb: 0.5 }}
+                />
+              ))}
+            </Box>
+          )}
           
           {/* Pulsante microfono */}
           <Tooltip title={isRecording ? "Registrando..." : "Registra messaggio vocale"}>

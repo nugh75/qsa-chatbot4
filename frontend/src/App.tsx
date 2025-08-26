@@ -147,7 +147,7 @@ const AppContent: React.FC = () => {
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
+  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
   })
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
@@ -248,7 +248,7 @@ const AppContent: React.FC = () => {
     // Azzera tutto lo stato dell'interfaccia
     setMessages([{
       role: 'assistant', 
-      content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+      content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
       ts: Date.now()
     }]);
     setInput('');
@@ -616,7 +616,7 @@ const AppContent: React.FC = () => {
               onClick={() => {
                 setMessages([{
                   role: 'assistant', 
-                  content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+                  content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
                   ts: Date.now()
                 }]);
                 setCurrentConversationId(null);
@@ -1119,11 +1119,11 @@ const AppContent: React.FC = () => {
           setSidebarOpen(false);
         }}
         onNewConversation={() => {
-          setMessages([{
-            role: 'assistant', 
-            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+            setMessages([{
+            role: 'assistant',
+            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?',
             ts: Date.now()
-          }]);
+            }]);
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}

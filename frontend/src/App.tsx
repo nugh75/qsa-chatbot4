@@ -40,7 +40,7 @@ const AppContent: React.FC = () => {
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
+  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
   })
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
@@ -68,6 +68,35 @@ const AppContent: React.FC = () => {
     return ()=> window.removeEventListener('beforeunload', handler)
   },[])
 
+  // Funzione di logout personalizzata che azzera l'interfaccia
+  const handleLogout = () => {
+    // Chiama il logout del contesto auth
+    logout();
+    
+    // Azzera tutto lo stato dell'interfaccia
+    setMessages([{
+      role: 'assistant', 
+      content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+      ts: Date.now()
+    }]);
+    setInput('');
+    setError(undefined);
+    setLoading(false);
+    setCurrentConversationId(null);
+    setPlayingMessageIndex(null);
+    setIsRecording(false);
+    setCurrentAudio(null);
+    setFeedback({});
+    setCopiedMessage(null);
+    setSidebarOpen(false);
+    setShowLoginDialog(false);
+    setShowSearch(false);
+    setShowImportExport(false);
+    
+    // Pulisci localStorage
+    localStorage.removeItem('chat_messages');
+  };
+
   const send = async ()=>{
     const text = input.trim()
     if(!text) return
@@ -85,11 +114,65 @@ const AppContent: React.FC = () => {
       if (accessToken) {
         headers['Authorization'] = `Bearer ${accessToken}`;
       }
+
+      // Crea nuova conversazione se necessario e utente è autenticato
+      let conversationId = currentConversationId;
+      if (isAuthenticated && !conversationId) {
+        try {
+          // Genera titolo dalla prima parte del messaggio
+          const title = text.length > 50 ? text.substring(0, 50) + '...' : text;
+          let titleToSend = title;
+          
+          // Critta il titolo se abbiamo la chiave crypto
+          if (crypto && crypto.isKeyInitialized()) {
+            titleToSend = await crypto.encryptMessage(title);
+          }
+
+          const convResponse = await fetch(`${BACKEND}/api/conversations`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ 
+              title_encrypted: titleToSend
+            })
+          });
+
+          if (convResponse.ok) {
+            const convData = await convResponse.json();
+            conversationId = convData.conversation_id;
+            setCurrentConversationId(conversationId);
+            console.log('✅ Nuova conversazione creata:', conversationId);
+          }
+        } catch (convError) {
+          console.warn('Failed to create conversation:', convError);
+          // Continua senza conversation_id per mantenere funzionalità
+        }
+      }
+
+      // Prepara messaggio da inviare (crittografato se possibile)
+      let messageToSend = text;
+      if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
+        try {
+          messageToSend = await crypto.encryptMessage(text);
+        } catch (cryptoError) {
+          console.warn('Failed to encrypt message, sending in plain text:', cryptoError);
+          // Fallback: invia in chiaro se crittografia fallisce
+        }
+      }
+      
+      const requestBody: any = { 
+        message: messageToSend, 
+        sessionId: 'dev' 
+      };
+      
+      // Aggiungi conversation_id se disponibile
+      if (conversationId) {
+        requestBody.conversation_id = conversationId;
+      }
       
       const r = await fetch(`${BACKEND}/api/chat`, {
         method:'POST',
         headers,
-        body: JSON.stringify({ message: text, sessionId: 'dev' })
+        body: JSON.stringify(requestBody)
       })
       if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
       const data = await r.json()
@@ -223,7 +306,7 @@ const AppContent: React.FC = () => {
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
         <Alert severity="warning" sx={{ mb: 2 }} action={
-          <Button color="inherit" size="small" onClick={logout}>
+          <Button color="inherit" size="small" onClick={handleLogout}>
             Rilogga
           </Button>
         }>
@@ -341,7 +424,7 @@ const AppContent: React.FC = () => {
             <Tooltip title={`Logout (${user?.email})`}>
               <IconButton
                 size="small"
-                onClick={logout}
+                onClick={handleLogout}
                 sx={{ color: 'error.main' }}
               >
                 <LogoutIcon />
@@ -777,21 +860,74 @@ const AppContent: React.FC = () => {
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         currentConversationId={currentConversationId || undefined}
-        onConversationSelect={(id) => {
+        onConversationSelect={async (id) => {
           setCurrentConversationId(id);
-          // TODO: Load conversation messages
+          setLoading(true);
+          
+          try {
+            // Carica i messaggi della conversazione selezionata
+            if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
+              const apiService = await import('./apiService').then(m => m.apiService);
+              const response = await apiService.getConversationMessages(id);
+              
+              if (response.success && response.data) {
+                // Decripta e carica i messaggi
+                const decryptedMessages = await Promise.all(
+                  response.data.map(async (msg: any) => {
+                    try {
+                      const decryptedContent = msg.role === 'user' 
+                        ? await crypto.decryptMessage(msg.content_encrypted)
+                        : msg.content_encrypted; // Messaggi assistant in chiaro
+                      
+                      return {
+                        role: msg.role,
+                        content: decryptedContent,
+                        ts: new Date(msg.timestamp).getTime()
+                      };
+                    } catch (error) {
+                      console.warn('Failed to decrypt message:', error);
+                      return {
+                        role: msg.role,
+                        content: '[Messaggio crittografato - Login per decrittare]',
+                        ts: new Date(msg.timestamp).getTime()
+                      };
+                    }
+                  })
+                );
+                
+                setMessages(decryptedMessages);
+              } else {
+                setError('Errore nel caricamento dei messaggi');
+              }
+            } else {
+              // Utente non autenticato - mostra messaggio generico
+              setMessages([{
+                role: 'assistant' as const,
+                content: 'Questa conversazione è crittografata. Effettua il login per visualizzare i messaggi.',
+                ts: Date.now()
+              }]);
+            }
+          } catch (error) {
+            console.error('Failed to load conversation messages:', error);
+            setError('Errore nel caricamento della conversazione');
+          } finally {
+            setLoading(false);
+          }
+          
           setSidebarOpen(false);
         }}
         onNewConversation={() => {
           setMessages([{
             role: 'assistant', 
-            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
             ts: Date.now()
           }]);
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}
         drawerWidth={300}
+        // Refresh sidebar quando viene creata una nuova conversazione
+        key={currentConversationId || 'new'}
       />
       
       <LoginDialog

@@ -11,7 +11,7 @@ from .usage import log_usage
 from .admin import load_config
 from .memory import get_memory
 from .auth import get_current_active_user
-from .database import db_manager
+from .database import db_manager, MessageModel
 
 router = APIRouter()
 
@@ -72,17 +72,23 @@ async def chat(
     # Se abbiamo un conversation_id, salva nel database
     if conversation_id and current_user:
         try:
-            with db_manager.get_connection() as conn:
-                cursor = conn.cursor()
+            # Genera ID unico per il messaggio utente
+            import uuid
+            user_message_id = f"msg_{uuid.uuid4().hex}"
+            
+            # Salva messaggio utente usando MessageModel
+            success = MessageModel.add_message(
+                message_id=user_message_id,
+                conversation_id=conversation_id,
+                content_encrypted=user_msg,  # Già crittografato dal frontend se necessario
+                role="user",
+                token_count=0,
+                processing_time=0.0
+            )
+            
+            if not success:
+                print(f"Warning: Failed to save user message to database")
                 
-                # Salva messaggio utente con hash per ricerca
-                user_hash = generate_content_hash(user_msg)
-                cursor.execute("""
-                    INSERT INTO messages (conversation_id, role, content_encrypted, content_hash, timestamp)
-                    VALUES (?, ?, ?, ?, datetime('now'))
-                """, (conversation_id, "user", user_msg, user_hash))
-                
-                conn.commit()
         except Exception as e:
             print(f"Error saving user message: {e}")
     
@@ -109,6 +115,7 @@ async def chat(
     import time, datetime
     start_time = time.perf_counter()
     answer = await chat_with_provider(messages, provider=x_llm_provider, context_hint=topic or 'generale')
+    processing_time = time.perf_counter() - start_time
     
     # Aggiungi la risposta dell'assistente alla memoria
     memory.add_message(session_id, "assistant", answer, {"topic": topic, "provider": x_llm_provider})
@@ -116,24 +123,26 @@ async def chat(
     # Salva risposta assistente nel database
     if conversation_id and current_user:
         try:
-            with db_manager.get_connection() as conn:
-                cursor = conn.cursor()
+            # Genera ID unico per il messaggio assistente
+            assistant_message_id = f"msg_{uuid.uuid4().hex}"
+            
+            # Calcola token per statistiche
+            tokens_stats = compute_token_stats(messages, answer)
+            token_count = tokens_stats.get('total_tokens', 0)
+            
+            # Salva messaggio assistente usando MessageModel
+            success = MessageModel.add_message(
+                message_id=assistant_message_id,
+                conversation_id=conversation_id,
+                content_encrypted=answer,  # Il backend salva sempre in chiaro per ora
+                role="assistant",
+                token_count=token_count,
+                processing_time=processing_time
+            )
+            
+            if not success:
+                print(f"Warning: Failed to save assistant message to database")
                 
-                # Salva messaggio assistente con hash per ricerca
-                assistant_hash = generate_content_hash(answer)
-                cursor.execute("""
-                    INSERT INTO messages (conversation_id, role, content_encrypted, content_hash, timestamp)
-                    VALUES (?, ?, ?, ?, datetime('now'))
-                """, (conversation_id, "assistant", answer, assistant_hash))
-                
-                # Aggiorna timestamp conversazione
-                cursor.execute("""
-                    UPDATE conversations 
-                    SET updated_at = datetime('now')
-                    WHERE id = ? AND user_id = ?
-                """, (conversation_id, current_user["id"]))
-                
-                conn.commit()
         except Exception as e:
             print(f"Error saving assistant message: {e}")
     

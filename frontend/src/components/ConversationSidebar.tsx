@@ -33,7 +33,7 @@ import {
   Chat as ChatIcon,
 } from '@mui/icons-material';
 import { apiService, ConversationData } from '../apiService';
-import { chatCrypto } from '../crypto';
+import { useAuth } from '../contexts/AuthContext';
 
 interface ConversationSidebarProps {
   open: boolean;
@@ -75,29 +75,39 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const [error, setError] = useState('');
   const [syncing, setSyncing] = useState(false);
 
+  const { crypto: userCrypto, needsCryptoReauth } = useAuth();
+
   // Carica conversazioni
   const loadConversations = useCallback(async () => {
-    if (!chatCrypto.isKeyInitialized()) {
-      // Non mostrare errore, semplicemente non caricare le conversazioni
-      // L'utente vedrà l'avviso principale per riloggarsi
-      return;
-    }
-
     try {
       setLoading(true);
+      console.log('🔄 Caricamento conversazioni...');
+      console.log('🔑 UserCrypto disponibile:', !!userCrypto);
+      console.log('🔐 UserCrypto inizializzato:', userCrypto?.isKeyInitialized());
+      
       const response = await apiService.getConversations();
+      console.log('📥 Risposta API conversazioni:', response);
       
       if (response.success && response.data) {
         // Decripta i titoli delle conversazioni
         const decryptedConversations = await Promise.all(
           response.data.map(async (conv: ConversationData): Promise<DecryptedConversation> => {
             try {
-              const decryptedTitle = await chatCrypto.decryptMessage(conv.title_encrypted);
-              return {
-                ...conv,
-                title_decrypted: decryptedTitle,
-                decryption_error: false,
-              };
+              if (userCrypto?.isKeyInitialized()) {
+                const decryptedTitle = await userCrypto.decryptMessage(conv.title_encrypted);
+                return {
+                  ...conv,
+                  title_decrypted: decryptedTitle,
+                  decryption_error: false,
+                };
+              } else {
+                // Nessuna chiave crypto disponibile
+                return {
+                  ...conv,
+                  title_decrypted: `🔒 ${conv.title_encrypted.substring(0, 20)}...`,
+                  decryption_error: true,
+                };
+              }
             } catch (error) {
               console.warn(`Failed to decrypt title for conversation ${conv.id}:`, error);
               return {
@@ -111,10 +121,13 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
         
         setConversations(decryptedConversations);
         setError('');
+        console.log('✅ Conversazioni caricate e decrittate:', decryptedConversations.length);
       } else {
+        console.warn('❌ Errore nel caricamento conversazioni:', response.error);
         setError(response.error || 'Errore nel caricamento conversazioni');
       }
     } catch (error) {
+      console.error('💥 Errore nel caricamento conversazioni:', error);
       setError('Errore di connessione');
     } finally {
       setLoading(false);
@@ -155,9 +168,14 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   // Salva titolo modificato
   const saveTitle = async () => {
     if (!editingId || !editTitle.trim()) return;
+    
+    if (!userCrypto?.isKeyInitialized()) {
+      setError('Crittografia non disponibile. Effettua nuovamente il login.');
+      return;
+    }
 
     try {
-      const encryptedTitle = await chatCrypto.encryptMessage(editTitle.trim());
+      const encryptedTitle = await userCrypto.encryptMessage(editTitle.trim());
       const response = await apiService.updateConversationTitle(editingId, encryptedTitle);
       
       if (response.success) {
@@ -286,6 +304,21 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
       {error && (
         <Alert severity="error" sx={{ m: 1 }} onClose={() => setError('')}>
           {error}
+        </Alert>
+      )}
+
+      {/* Avviso crypto re-auth */}
+      {needsCryptoReauth && conversations.length > 0 && (
+        <Alert 
+          severity="warning" 
+          sx={{ m: 1 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+              Login
+            </Button>
+          }
+        >
+          Conversazioni crittografate. Effettua il login per decrittare i titoli.
         </Alert>
       )}
 

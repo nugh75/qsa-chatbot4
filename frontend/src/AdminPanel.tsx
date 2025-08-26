@@ -29,6 +29,7 @@ interface AdminConfig {
   }
   default_provider: string
   default_tts: string
+  memory_buffer_size: number
 }
 
 interface FeedbackStats {
@@ -65,19 +66,106 @@ export default function AdminPanel() {
   const [usageItems, setUsageItems] = useState<any[]>([])
   const [loadingUsage, setLoadingUsage] = useState(false)
   const [usageStats, setUsageStats] = useState<any | null>(null)
+  const [usageDaily, setUsageDaily] = useState<Record<string, {count:number; tokens:number}>>({})
+  const [usageProviders, setUsageProviders] = useState<any>({})
+  const [usageModels, setUsageModels] = useState<any>({})
+  // Filtri log
+  const [filterProvider, setFilterProvider] = useState<string>('')
+  const [filterModel, setFilterModel] = useState<string>('')
+  const [filterQ, setFilterQ] = useState<string>('')
+  const [filterDateFrom, setFilterDateFrom] = useState<string>('')
+  const [filterDateTo, setFilterDateTo] = useState<string>('')
+  const [page, setPage] = useState<number>(1)
+  const [pageSize, setPageSize] = useState<number>(50)
+  const [totalUsage, setTotalUsage] = useState<number>(0)
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(false)
+  const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false)
+  const [refreshTick, setRefreshTick] = useState<number>(0)
+
+  // Auto refresh effect
+  useEffect(() => {
+    if (!autoRefresh) return
+    const id = setInterval(() => setRefreshTick(t => t+1), 10000) // 10s
+    return () => clearInterval(id)
+  }, [autoRefresh])
+
+  const buildQuery = () => {
+    const params: Record<string,string|number> = { page, page_size: pageSize }
+    if (filterProvider) params.provider = filterProvider
+    if (filterModel) params.model = filterModel
+    if (filterQ) params.q = filterQ
+    if (filterDateFrom) params.start = filterDateFrom + 'T00:00:00'
+    if (filterDateTo) params.end = filterDateTo + 'T23:59:59'
+    const qs = Object.entries(params).map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
+    return qs
+  }
 
   const loadUsage = async () => {
     try {
       setLoadingUsage(true)
-      const res = await fetch(`${BACKEND}/api/admin/usage?limit=200`)
+      const qs = buildQuery()
+      const res = await fetch(`${BACKEND}/api/admin/usage?${qs}`)
       const data = await res.json()
-      setUsageItems(data.items || [])
+      if (data.mode === 'query') {
+        setUsageItems(data.items || [])
+        setUsageDaily(data.daily || {})
+        setUsageProviders(data.providers || {})
+        setUsageModels(data.models || {})
+        setTotalUsage(data.total || 0)
+      } else {
+        setUsageItems(data.items || [])
+        setTotalUsage(data.items?.length || 0)
+      }
       const statsRes = await fetch(`${BACKEND}/api/admin/usage/stats`)
       setUsageStats(await statsRes.json())
     } catch (e) {
       setMessage('Errore caricamento usage')
     } finally {
       setLoadingUsage(false)
+    }
+  }
+
+  // Ricarica quando cambiano filtri/pagina intervalli o auto refresh tick
+  useEffect(() => { if (authenticated) loadUsage() }, [page, pageSize, refreshTick, filterProvider, filterModel, filterQ, filterDateFrom, filterDateTo])
+
+  const presetRange = (type: string) => {
+    const today = new Date()
+    const toISODate = (d: Date) => d.toISOString().slice(0,10)
+    if (type === 'oggi') {
+      setFilterDateFrom(toISODate(today))
+      setFilterDateTo(toISODate(today))
+    } else if (type === 'ieri') {
+      const y = new Date(today.getTime()-86400000)
+      setFilterDateFrom(toISODate(y))
+      setFilterDateTo(toISODate(y))
+    } else if (type === '7g') {
+      const s = new Date(today.getTime()-6*86400000)
+      setFilterDateFrom(toISODate(s))
+      setFilterDateTo(toISODate(today))
+    } else if (type === '30g') {
+      const s = new Date(today.getTime()-29*86400000)
+      setFilterDateFrom(toISODate(s))
+      setFilterDateTo(toISODate(today))
+    } else if (type === 'clear') {
+      setFilterDateFrom(''); setFilterDateTo('')
+    }
+    setPage(1)
+    setTimeout(loadUsage, 0)
+  }
+
+  const exportUsage = async (format: 'csv' | 'jsonl') => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/usage/export?format=${format}`)
+      const text = await res.text()
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `usage_export.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setMessage('Errore export')
     }
   }
 
@@ -723,21 +811,15 @@ export default function AdminPanel() {
                       return (
                         <Box key={provider} sx={{ mb: 2 }}>
                           <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Chip label={provider} size="small" />
-                            <Typography variant="body2">
-                              {data.likes} 👍 / {data.dislikes} 👎 ({percentage.toFixed(1)}%)
-                            </Typography>
+                            <Typography variant="body2" sx={{ fontWeight:'bold' }}>{provider}</Typography>
+                            <Typography variant="caption">{data.likes}/{total} like</Typography>
                           </Stack>
-                          <LinearProgress 
-                            variant="determinate" 
-                            value={percentage} 
-                            sx={{ mt: 0.5, height: 6, borderRadius: 3 }}
-                            color={percentage >= 70 ? 'success' : percentage >= 50 ? 'warning' : 'error'}
-                          />
+                          <LinearProgress variant="determinate" value={percentage} sx={{ mt:0.5, height:6, borderRadius:3 }} color={percentage >= 70 ? 'success' : percentage >= 50 ? 'warning' : 'error'} />
                         </Box>
                       )
                     })}
                   </Grid>
+                  
                 </Grid>
               ) : (
                 <Typography>Caricamento statistiche...</Typography>
@@ -746,30 +828,127 @@ export default function AdminPanel() {
           </Card>
         </Grid>
 
+        {/* Log Utilizzo / Usage Analytics */}
+        <Grid item xs={12}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1, flexWrap:'wrap', gap:1 }}>
+                <Typography variant="h6" gutterBottom>Log Utilizzo</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap">
+                  <Button size="small" variant={autoRefresh? 'contained':'outlined'} onClick={()=>setAutoRefresh(a=>!a)}>{autoRefresh? 'Auto ON':'Auto OFF'}</Button>
+                  <Button size="small" variant="outlined" onClick={loadUsage} disabled={loadingUsage}>Aggiorna</Button>
+                  <Button size="small" variant="outlined" onClick={()=>exportUsage('csv')}>CSV</Button>
+                  <Button size="small" variant="outlined" onClick={()=>exportUsage('jsonl')}>JSONL</Button>
+                  <Button size="small" color="error" variant="outlined" onClick={resetUsage}>Reset</Button>
+                </Stack>
+              </Stack>
+              <Stack direction="row" spacing={1} sx={{ mb:1, flexWrap:'wrap' }}>
+                <TextField size="small" label="Provider" value={filterProvider} onChange={e=>{setFilterProvider(e.target.value); setPage(1)}} select sx={{ minWidth:120 }}>
+                  <MenuItem value="">(tutti)</MenuItem>
+                  {Object.keys(usageProviders).sort().map(p=> <MenuItem key={p} value={p}>{p}</MenuItem>)}
+                </TextField>
+                <TextField size="small" label="Modello" value={filterModel} onChange={e=>{setFilterModel(e.target.value); setPage(1)}} select sx={{ minWidth:140 }}>
+                  <MenuItem value="">(tutti)</MenuItem>
+                  {Object.keys(usageModels).sort().map(m=> <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                </TextField>
+                <TextField size="small" label="Cerca" value={filterQ} onChange={e=>{setFilterQ(e.target.value); setPage(1)}} sx={{ width:160 }} />
+                <TextField size="small" type="date" label="Da" InputLabelProps={{shrink:true}} value={filterDateFrom} onChange={e=>{setFilterDateFrom(e.target.value); setPage(1)}} />
+                <TextField size="small" type="date" label="A" InputLabelProps={{shrink:true}} value={filterDateTo} onChange={e=>{setFilterDateTo(e.target.value); setPage(1)}} />
+                <TextField size="small" select label="Page Size" value={pageSize} onChange={e=>{setPageSize(Number(e.target.value)); setPage(1)}} sx={{ width:110 }}>
+                  {[25,50,100,200].map(n=> <MenuItem key={n} value={n}>{n}</MenuItem>)}
+                </TextField>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('oggi')}>Oggi</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('ieri')}>Ieri</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('7g')}>7g</Button>
+                <Button size="small" variant="outlined" onClick={()=>presetRange('30g')}>30g</Button>
+                <Button size="small" variant="text" onClick={()=>presetRange('clear')}>X</Button>
+                <Button size="small" variant={showTokenDetails?'contained':'outlined'} onClick={()=>setShowTokenDetails(v=>!v)}>Dettagli Token</Button>
+              </Stack>
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:1 }}>
+                <Typography variant="caption">Totale filtrato: {totalUsage}</Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" disabled={page<=1} onClick={()=>setPage(p=>p-1)}>Prev</Button>
+                  <Typography variant="caption">Pag {page}</Typography>
+                  <Button size="small" disabled={(page*pageSize)>=totalUsage} onClick={()=>setPage(p=>p+1)}>Next</Button>
+                </Stack>
+              </Stack>
+              {usageStats && (
+                <Box sx={{ mb:2 }}>
+                  <Chip label={`Interazioni: ${usageStats.total_interactions}`} sx={{ mr:1 }} />
+                  <Chip label={`Token totali: ${usageStats.total_tokens}`} sx={{ mr:1 }} />
+                  {Object.entries(usageStats.by_provider || {}).map(([p, v]: any) => (
+                    <Chip key={p} label={`${p}: ${(v as any).count} (${(v as any).tokens} tok)`} sx={{ mr:1, mb:1 }} />
+                  ))}
+                </Box>
+              )}
+              {Object.keys(usageDaily).length > 0 && (
+                <Box sx={{ mb:2, p:1, border:'1px solid #eee', borderRadius:1 }}>
+                  <Typography variant="caption" sx={{ display:'block', mb:1 }}>Token per giorno</Typography>
+                  <Box sx={{ display:'flex', alignItems:'flex-end', gap:1, height:120 }}>
+                    {Object.entries(usageDaily).sort(([a],[b])=> a.localeCompare(b)).map(([day, val])=>{
+                      const maxTok = Math.max(...Object.values(usageDaily).map(v=>v.tokens||1)) || 1
+                      const h = Math.max(4, (val.tokens / maxTok) * 100)
+                      return (
+                        <Box key={day} sx={{ textAlign:'center', width:32 }}>
+                          <Box sx={{ background:'#1976d2', width:'100%', height: h+'%', borderRadius:1 }} title={`${day}: ${val.tokens} tok (${val.count} int)`}></Box>
+                          <Typography variant="caption" sx={{ fontSize:10 }}>{day.slice(5)}</Typography>
+                        </Box>
+                      )
+                    })}
+                  </Box>
+                </Box>
+              )}
+              <Box sx={{ maxHeight: 300, overflow: 'auto', fontSize: '.75rem', border: '1px solid #eee', borderRadius:1 }}>
+                <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                  <thead style={{ position:'sticky', top:0, background:'#fafafa' }}>
+                    <tr>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Giorno</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Ora</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Provider</th>
+                      <th style={{ textAlign:'left', padding:'4px' }}>Modello</th>
+                      <th style={{ textAlign:'right', padding:'4px' }}>Durata ms</th>
+                      {showTokenDetails && <th style={{ textAlign:'right', padding:'4px' }}>In</th>}
+                      {showTokenDetails && <th style={{ textAlign:'right', padding:'4px' }}>Out</th>}
+                      <th style={{ textAlign:'right', padding:'4px' }}>Token</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {usageItems.slice().map((u, idx) => {
+                      const ts = u.ts || ''
+                      const [dayPart, timePartFull] = ts.split('T')
+                      const timePart = (timePartFull || '').replace('Z','').slice(0,8)
+                      return (
+                        <tr key={idx} style={{ borderTop:'1px solid #eee' }}>
+                          <td style={{ padding:'4px' }}>{dayPart || '-'}</td>
+                          <td style={{ padding:'4px' }}>{timePart || '-'}</td>
+                          <td style={{ padding:'4px' }}>{u.provider}</td>
+                          <td style={{ padding:'4px' }}>{u.model || '-'}</td>
+                          <td style={{ padding:'4px', textAlign:'right' }}>{u.duration_ms}</td>
+                          {showTokenDetails && <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.input_tokens ?? '-'}</td>}
+                          {showTokenDetails && <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.output_tokens ?? '-'}</td>}
+                          <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.total ?? '-'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+
         {/* System Prompt Editor */}
         <Grid item xs={12} md={6}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Prompt di Sistema
-              </Typography>
-              <TextField
-                multiline
-                minRows={12}
-                value={systemPrompt}
-                onChange={(e) => { setSystemPrompt(e.target.value); updatePromptStats(e.target.value) }}
-                fullWidth
-                placeholder="Inserisci il prompt di sistema..."
-              />
-              <Typography variant="caption" color="text.secondary">
-                {promptChars} caratteri ~ {promptTokens} token stimati
-              </Typography>
+              <Typography variant="h6" gutterBottom>Prompt di Sistema</Typography>
+              <TextField multiline minRows={12} value={systemPrompt} onChange={(e) => { setSystemPrompt(e.target.value); updatePromptStats(e.target.value) }} fullWidth placeholder="Inserisci il prompt di sistema..." />
+              <Typography variant="caption" color="text.secondary">Caratteri: {promptChars} | Token stimati: {promptTokens}</Typography>
               <Box sx={{ mt: 2, textAlign: 'right' }}>
                 <Button variant="outlined" size="small" onClick={resetSystemPrompt} sx={{ mr: 1 }}>Ripristina</Button>
                 <Button variant="outlined" size="small" onClick={loadSystemPrompt} sx={{ mr: 1 }}>Ricarica</Button>
-                <Button variant="contained" size="small" onClick={saveSystemPrompt} disabled={savingPrompt}>
-                  {savingPrompt ? 'Salvataggio...' : 'Salva Prompt'}
-                </Button>
+                <Button variant="contained" size="small" onClick={saveSystemPrompt} disabled={savingPrompt}>{savingPrompt ? 'Salvataggio...' : 'Salva Prompt'}</Button>
               </Box>
             </CardContent>
           </Card>
@@ -865,8 +1044,8 @@ export default function AdminPanel() {
           </Card>
         </Grid>
 
-        {/* Token Tester */}
-        <Grid item xs={12}>
+  {/* Token Tester */}
+  <Grid item xs={12} md={6}>
           <Card>
             <CardContent>
               <Typography variant="h6" gutterBottom>Analisi Token</Typography>
@@ -909,60 +1088,38 @@ export default function AdminPanel() {
           </Card>
         </Grid>
 
-          {/* Usage Table */}
-          <Grid item xs={12}>
-            <Card>
-              <CardContent>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-                  <Typography variant="h6" gutterBottom>Log Utilizzo (ultimi {usageItems.length})</Typography>
-                  <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="outlined" onClick={loadUsage} disabled={loadingUsage}>Aggiorna</Button>
-                    <Button size="small" color="error" variant="outlined" onClick={resetUsage}>Reset</Button>
-                  </Stack>
-                </Stack>
-                {usageStats && (
-                  <Box sx={{ mb:2 }}>
-                    <Chip label={`Interazioni: ${usageStats.total_interactions}`} sx={{ mr:1 }} />
-                    <Chip label={`Token totali: ${usageStats.total_tokens}`} sx={{ mr:1 }} />
-                    {Object.entries(usageStats.by_provider || {}).map(([p, v]: any) => (
-                      <Chip key={p} label={`${p}: ${(v as any).count} (${(v as any).tokens} tok)`} sx={{ mr:1, mb:1 }} />
-                    ))}
-                  </Box>
-                )}
-                <Box sx={{ maxHeight: 300, overflow: 'auto', fontSize: '.75rem', border: '1px solid #eee', borderRadius:1 }}>
-                  <table style={{ width:'100%', borderCollapse:'collapse' }}>
-                    <thead style={{ position:'sticky', top:0, background:'#fafafa' }}>
-                      <tr>
-                        <th style={{ textAlign:'left', padding:'4px' }}>Giorno</th>
-                        <th style={{ textAlign:'left', padding:'4px' }}>Ora</th>
-                        <th style={{ textAlign:'left', padding:'4px' }}>Provider</th>
-                        <th style={{ textAlign:'left', padding:'4px' }}>Modello</th>
-                        <th style={{ textAlign:'right', padding:'4px' }}>Durata ms</th>
-                        <th style={{ textAlign:'right', padding:'4px' }}>Token</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {usageItems.slice().reverse().map((u, idx) => {
-                        const ts = u.ts || ''
-                        const [dayPart, timePartFull] = ts.split('T')
-                        const timePart = (timePartFull || '').replace('Z','').slice(0,8)
-                        return (
-                          <tr key={idx} style={{ borderTop:'1px solid #eee' }}>
-                            <td style={{ padding:'4px' }}>{dayPart || '-'}</td>
-                            <td style={{ padding:'4px' }}>{timePart || '-'}</td>
-                            <td style={{ padding:'4px' }}>{u.provider}</td>
-                            <td style={{ padding:'4px' }}>{u.model || '-'}</td>
-                            <td style={{ padding:'4px', textAlign:'right' }}>{u.duration_ms}</td>
-                            <td style={{ padding:'4px', textAlign:'right' }}>{u.tokens?.total ?? '-'}</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </Box>
-              </CardContent>
-            </Card>
-          </Grid>
+        {/* Configurazione Memoria Buffer */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardContent>
+              <Typography variant="h6" gutterBottom>
+                <SecurityIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+                Memoria Conversazione
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Configura quanti messaggi precedenti mantenere in memoria per ogni conversazione.
+              </Typography>
+              <TextField
+                type="number"
+                label="Numero messaggi in buffer"
+                value={config?.memory_buffer_size || 10}
+                onChange={(e) => setConfig(prev => prev ? {...prev, memory_buffer_size: parseInt(e.target.value) || 10} : null)}
+                fullWidth
+                inputProps={{ min: 1, max: 50 }}
+                helperText="Mantiene gli ultimi N messaggi utente/assistente per continuità conversazione (1-50)"
+              />
+              <Box sx={{ mt: 2 }}>
+                <Chip 
+                  label={`Buffer attuale: ${config?.memory_buffer_size || 10} messaggi`} 
+                  color="primary" 
+                  variant="outlined" 
+                />
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        
       </Grid>
 
       <Box sx={{ mt: 3, textAlign: 'center' }}>

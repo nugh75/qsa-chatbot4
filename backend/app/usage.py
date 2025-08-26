@@ -1,7 +1,8 @@
 from __future__ import annotations
-import os, json, time
+import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
 
 USAGE_DIR = Path(__file__).resolve().parent.parent / "usage"
 USAGE_FILE = USAGE_DIR / "usage_log.jsonl"
@@ -14,41 +15,93 @@ def log_usage(entry: Dict[str, Any]) -> None:
     except Exception:
         pass
 
-def read_usage(limit: int = 500) -> List[Dict[str, Any]]:
+def _iter_usage() -> List[Dict[str, Any]]:
     if not USAGE_FILE.exists():
         return []
-    lines: List[Dict[str, Any]] = []
-    try:
-        with open(USAGE_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                line=line.strip()
-                if not line:
-                    continue
-                try:
-                    lines.append(json.loads(line))
-                except Exception:
-                    continue
-        return lines[-limit:]
-    except Exception:
-        return []
+    out: List[Dict[str, Any]] = []
+    with open(USAGE_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line=line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    return out
+
+def read_usage(limit: int = 500) -> List[Dict[str, Any]]:
+    data = _iter_usage()
+    return data[-limit:]
+
+def query_usage(
+    start: Optional[str]=None,
+    end: Optional[str]=None,
+    provider: Optional[str]=None,
+    model: Optional[str]=None,
+    q: Optional[str]=None,
+    page: int = 1,
+    page_size: int = 50
+) -> Dict[str, Any]:
+    data = _iter_usage()
+    def parse_dt(ts: str) -> datetime:
+        try:
+            return datetime.fromisoformat(ts.replace('Z',''))
+        except Exception:
+            return datetime.min
+    start_dt = datetime.fromisoformat(start) if start else None
+    end_dt = datetime.fromisoformat(end) if end else None
+    filtered: List[Dict[str, Any]] = []
+    for e in data:
+        ts = e.get('ts') or ''
+        dt = parse_dt(ts)
+        if start_dt and dt < start_dt: continue
+        if end_dt and dt > end_dt: continue
+        if provider and e.get('provider') != provider: continue
+        if model and e.get('model') != model: continue
+        if q:
+            blob = json.dumps(e, ensure_ascii=False).lower()
+            if q.lower() not in blob: continue
+        filtered.append(e)
+    total = len(filtered)
+    # pagination
+    if page < 1: page = 1
+    if page_size < 1: page_size = 1
+    start_idx = (page-1)*page_size
+    end_idx = start_idx + page_size
+    items = filtered[start_idx:end_idx]
+    # daily aggregation for chart
+    daily: Dict[str, Dict[str, Any]] = {}
+    for e in filtered:
+        ts = e.get('ts','')
+        day = ts.split('T')[0]
+        d = daily.setdefault(day, {"count":0, "tokens":0})
+        d["count"] += 1
+        d["tokens"] += (e.get('tokens',{}) or {}).get('total',0)
+    providers: Dict[str, Dict[str, Any]] = {}
+    models: Dict[str, int] = {}
+    for e in filtered:
+        p = e.get('provider','unknown')
+        providers.setdefault(p, {"count":0})["count"] += 1
+        m = e.get('model')
+        if m:
+            models[m] = models.get(m,0)+1
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items,
+        "daily": daily,
+        "providers": providers,
+        "models": models
+    }
 
 def usage_stats() -> Dict[str, Any]:
-    data = read_usage(5000)
-    total = len(data)
-    by_provider: Dict[str, Dict[str, Any]] = {}
-    tokens_total = 0
-    for e in data:
-        prov = e.get('provider','unknown')
-        if prov not in by_provider:
-            by_provider[prov] = {"count":0, "tokens":0}
-        by_provider[prov]["count"] += 1
-        t = e.get('tokens', {}).get('total') or e.get('tokens_total') or 0
-        by_provider[prov]["tokens"] += t
-        tokens_total += t
+    q = query_usage(page_size=100000)  # full
     return {
-        "total_interactions": total,
-        "total_tokens": tokens_total,
-        "by_provider": by_provider
+        "total_interactions": q['total'],
+        "total_tokens": sum((e.get('tokens',{}) or {}).get('total',0) for e in q['items']),
+        "by_provider": {p:{"count":meta['count'], "tokens": sum((e.get('tokens',{}) or {}).get('total',0) for e in q['items'] if e.get('provider')==p)} for p, meta in q['providers'].items()}
     }
 
 def reset_usage():

@@ -6,7 +6,7 @@ import os
 from .prompts import load_system_prompt, save_system_prompt
 from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
-from .usage import read_usage, usage_stats, reset_usage
+from .usage import read_usage, usage_stats, reset_usage, query_usage
 from pathlib import Path
 import re
 
@@ -84,7 +84,8 @@ DEFAULT_CONFIG = {
         }
     },
     "default_provider": "local",
-    "default_tts": "edge"
+    "default_tts": "edge",
+    "memory_buffer_size": 10
 }
 
 def get_config_file_path():
@@ -236,10 +237,22 @@ async def reset_pipeline_config():
 
 # --------------- Usage logging endpoints ---------------
 @router.get("/admin/usage")
-async def get_usage(limit: int = 200):
+async def get_usage(
+    limit: int = 0,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50
+):
     try:
-        data = read_usage(limit=limit)
-        return {"items": data}
+        if limit:
+            data = read_usage(limit=limit)
+            return {"items": data, "mode": "simple"}
+        qres = query_usage(start=start, end=end, provider=provider, model=model, q=q, page=page, page_size=page_size)
+        return {"mode": "query", **qres}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore caricamento usage: {str(e)}")
 
@@ -257,6 +270,28 @@ async def reset_usage_logs():
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset usage: {str(e)}")
+
+@router.get("/admin/usage/export")
+async def export_usage(format: str = "csv"):
+    try:
+        data = query_usage(page_size=100000)["items"]
+        if format == "jsonl":
+            lines = "\n".join(json.dumps(e, ensure_ascii=False) for e in data)
+            return lines
+        # csv basic
+        import io, csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ts","provider","model","duration_ms","tokens_total","tokens_in","tokens_out"])
+        for e in data:
+            t = (e.get('tokens') or {})
+            writer.writerow([
+                e.get('ts',''), e.get('provider',''), e.get('model',''), e.get('duration_ms',''),
+                t.get('total',''), t.get('input_tokens',''), t.get('output_tokens','')
+            ])
+        return output.getvalue()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore export usage: {str(e)}")
 
 @router.get("/admin/test-provider/{provider}")
 async def test_ai_provider(provider: str):

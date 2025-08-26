@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Button } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -19,7 +19,18 @@ type Msg = { role:'user'|'assistant'|'system', content:string, ts:number }
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
 
+// Genera session ID persistente per l'utente
+const getSessionId = () => {
+  let sessionId = localStorage.getItem('chat_session_id')
+  if (!sessionId) {
+    sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
+    localStorage.setItem('chat_session_id', sessionId)
+  }
+  return sessionId
+}
+
 export default function App(){
+  const [sessionId] = useState(getSessionId)
   const [messages,setMessages] = useState<Msg[]>(()=>{
     const saved = localStorage.getItem('chat_messages')
     if(saved){
@@ -49,21 +60,21 @@ export default function App(){
     return ()=> window.removeEventListener('beforeunload', handler)
   },[])
 
-  const send = async ()=>{
+  const send = async () => {
     const text = input.trim()
-    if(!text) return
-  const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
+    if (!text) return
+    const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
     setMessages(next); setInput('')
     setLoading(true); setError(undefined)
     try {
       const r = await fetch(`${BACKEND}/api/chat`, {
         method:'POST',
         headers:{ 'Content-Type':'application/json', 'X-LLM-Provider': provider },
-        body: JSON.stringify({ message: text, sessionId: 'dev' })
+        body: JSON.stringify({ message: text, sessionId: sessionId })
       })
       if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
       const data = await r.json()
-  setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
+      setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
     } catch(e:any){
       setError(e.message || 'Errore di rete')
       // ripristina input per ritentare
@@ -151,6 +162,26 @@ export default function App(){
     }
   }
 
+  const clearChat = async () => {
+    if (!window.confirm('Vuoi cancellare la conversazione corrente e iniziare una nuova sessione?')) return
+    
+    try {
+      // Invia richiesta per cancellare la memoria del backend
+      await fetch(`${BACKEND}/api/chat`, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'X-LLM-Provider': provider },
+        body: JSON.stringify({ message: "", sessionId: sessionId, clearHistory: true })
+      })
+    } catch (e) {
+      console.log('Errore pulizia memoria backend:', e)
+    }
+    
+    // Reset frontend
+    setMessages([{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nHo visto che hai completato il QSA - che esperienza interessante! \n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}])
+    setInput('')
+    setError(undefined)
+  }
+
   const downloadMessage = (text: string) => {
     const blob = new Blob([text], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -196,6 +227,15 @@ export default function App(){
           <Typography variant="h6">Counselorbot – QSA Chatbot</Typography>
         </Stack>
         <Stack direction="row" spacing={2} alignItems="center">
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={clearChat}
+            sx={{ minWidth: 'auto', px: 1 }}
+          >
+            Nuova Chat
+          </Button>
+          
           <Select size="small" value={provider} onChange={e=>setProvider(e.target.value as any)}>
             <MenuItem value="local">
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>

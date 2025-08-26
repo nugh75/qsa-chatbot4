@@ -140,3 +140,5 @@ backend/piper_models/
 
 # Local development
 .local/
+backend/whisper_models/
+*.pt

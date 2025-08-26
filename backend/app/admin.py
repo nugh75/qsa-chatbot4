@@ -320,6 +320,178 @@ async def reset_pipeline_config():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset pipeline: {str(e)}")
 
+# ---------------- Nuove funzionalità pipeline avanzate -----------------
+
+class PatternTestRequest(BaseModel):
+    pattern: str
+    test_text: str
+
+class PatternTestResponse(BaseModel):
+    matches: bool
+    matched_text: Optional[str] = None
+    error: Optional[str] = None
+
+@router.post("/admin/pipeline/test-pattern")
+async def test_pattern(request: PatternTestRequest):
+    """Testa un pattern regex su un testo di esempio."""
+    try:
+        # Compila il pattern per verificare che sia valido
+        compiled_pattern = re.compile(request.pattern)
+        
+        # Testa il pattern sul testo
+        match = compiled_pattern.search(request.test_text.lower())
+        
+        return PatternTestResponse(
+            matches=bool(match),
+            matched_text=match.group() if match else None
+        )
+    except re.error as e:
+        return PatternTestResponse(
+            matches=False,
+            error=f"Pattern regex non valido: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel test pattern: {str(e)}")
+
+class RoutingPreviewRequest(BaseModel):
+    test_text: str
+
+class RoutingPreviewResponse(BaseModel):
+    detected_topic: Optional[str]
+    matched_pattern: Optional[str]
+    matched_text: Optional[str]
+
+@router.post("/admin/pipeline/preview-routing")
+async def preview_routing(request: RoutingPreviewRequest):
+    """Mostra quale topic viene rilevato da un testo di esempio."""
+    try:
+        # Usa la stessa logica del topic_router
+        from app.topic_router import detect_topic, load_routes
+        
+        # Carica le route attuali
+        routes = load_routes()
+        test_text_lower = request.test_text.lower()
+        
+        # Testa ogni pattern
+        for pattern, topic in routes:
+            try:
+                if re.search(pattern, test_text_lower):
+                    match = re.search(pattern, test_text_lower)
+                    return RoutingPreviewResponse(
+                        detected_topic=topic,
+                        matched_pattern=pattern,
+                        matched_text=match.group() if match else None
+                    )
+            except re.error:
+                continue
+        
+        return RoutingPreviewResponse(
+            detected_topic=None,
+            matched_pattern=None,
+            matched_text=None
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel preview routing: {str(e)}")
+
+class FileContentRequest(BaseModel):
+    filename: str
+
+class FileContentResponse(BaseModel):
+    content: str
+    exists: bool
+    error: Optional[str] = None
+
+@router.post("/admin/pipeline/file-content")
+async def get_file_content(request: FileContentRequest):
+    """Legge il contenuto di un file di contesto."""
+    try:
+        # Percorso dei file di contesto
+        context_dir = Path(__file__).resolve().parent.parent / "context_files"
+        file_path = context_dir / request.filename
+        
+        if not file_path.exists():
+            return FileContentResponse(
+                content="",
+                exists=False,
+                error="File non trovato"
+            )
+        
+        content = file_path.read_text(encoding="utf-8")
+        return FileContentResponse(
+            content=content,
+            exists=True
+        )
+    except Exception as e:
+        return FileContentResponse(
+            content="",
+            exists=False,
+            error=f"Errore nella lettura del file: {str(e)}"
+        )
+
+class SaveFileContentRequest(BaseModel):
+    filename: str
+    content: str
+
+@router.post("/admin/pipeline/save-file-content")
+async def save_file_content(request: SaveFileContentRequest):
+    """Salva il contenuto di un file di contesto."""
+    try:
+        # Percorso dei file di contesto
+        context_dir = Path(__file__).resolve().parent.parent / "context_files"
+        context_dir.mkdir(exist_ok=True)  # Crea la directory se non esiste
+        
+        file_path = context_dir / request.filename
+        
+        # Salva il file
+        file_path.write_text(request.content, encoding="utf-8")
+        
+        # Aggiorna la cache dei file
+        refresh_files_cache()
+        
+        return {"success": True, "message": "File salvato con successo"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel salvataggio del file: {str(e)}")
+
+@router.get("/admin/pipeline/available-files")
+async def get_available_files():
+    """Lista tutti i file di contesto disponibili."""
+    try:
+        context_dir = Path(__file__).resolve().parent.parent / "context_files"
+        
+        if not context_dir.exists():
+            return {"files": []}
+        
+        files = []
+        for file_path in context_dir.glob("*.txt"):
+            files.append({
+                "filename": file_path.name,
+                "size": file_path.stat().st_size,
+                "modified": file_path.stat().st_mtime
+            })
+        
+        return {"files": sorted(files, key=lambda x: x["filename"])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento file: {str(e)}")
+
+@router.delete("/admin/pipeline/file/{filename}")
+async def delete_file(filename: str):
+    """Elimina un file di contesto."""
+    try:
+        context_dir = Path(__file__).resolve().parent.parent / "context_files"
+        file_path = context_dir / filename
+        
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File non trovato")
+        
+        file_path.unlink()
+        refresh_files_cache()
+        
+        return {"success": True, "message": "File eliminato con successo"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nell'eliminazione del file: {str(e)}")
+
 # --------------- Usage logging endpoints ---------------
 @router.get("/admin/usage")
 async def get_usage(

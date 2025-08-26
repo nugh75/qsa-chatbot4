@@ -23,6 +23,11 @@ except ImportError:
     pypdf = None
 
 try:
+    import fitz  # PyMuPDF for image extraction from PDFs
+except ImportError:
+    fitz = None
+
+try:
     from docx import Document
 except ImportError:
     Document = None
@@ -32,7 +37,9 @@ try:
 except ImportError:
     pytesseract = None
 
-from .auth import get_current_user_optional
+from .auth import get_current_active_user
+from .llm import chat_with_provider
+from typing import Union
 
 router = APIRouter()
 
@@ -44,6 +51,7 @@ class ProcessedFile(BaseModel):
     size: int
     content: Optional[str] = None  # Extracted text content
     base64_data: Optional[str] = None  # For images
+    images: Optional[List[Dict[str, Any]]] = None  # Extracted images from PDFs with descriptions
     processed_at: datetime
     error: Optional[str] = None
 
@@ -71,24 +79,114 @@ def extract_text_from_pdf(file_path: str) -> str:
     """Extract text from PDF file"""
     text = ""
     try:
+        print(f"🔍 Attempting to extract text from PDF: {file_path}")
+        print(f"🔍 pypdf available: {pypdf is not None}")
+        print(f"🔍 PyPDF2 available: {PyPDF2 is not None}")
+        
         # Try with pypdf first (newer library)
         if pypdf:
+            print("📚 Using pypdf library")
             with open(file_path, 'rb') as file:
                 reader = pypdf.PdfReader(file)
+                print(f"📄 PDF has {len(reader.pages)} pages")
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
         # Fallback to PyPDF2
         elif PyPDF2:
+            print("📚 Using PyPDF2 library")
             with open(file_path, 'rb') as file:
                 reader = PyPDF2.PdfReader(file)
+                print(f"📄 PDF has {len(reader.pages)} pages")
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
         else:
             raise Exception("PDF processing libraries not available")
     except Exception as e:
+        print(f"❌ Error in extract_text_from_pdf: {str(e)}")
         raise Exception(f"Error extracting text from PDF: {str(e)}")
     
+    print(f"✅ Extracted {len(text)} characters from PDF")
     return text.strip()
+
+async def extract_images_from_pdf(file_path: str, filename: str) -> List[Dict[str, Any]]:
+    """Extract images from PDF and get descriptions using GPT-4o mini"""
+    images = []
+    
+    if not fitz:
+        print("PyMuPDF not available - skipping image extraction")
+        return images
+    
+    try:
+        doc = fitz.open(file_path)
+        
+        for page_num in range(doc.page_count):
+            page = doc[page_num]
+            image_list = page.get_images()
+            
+            for img_index, img in enumerate(image_list):
+                try:
+                    # Get image data
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    
+                    # Convert to base64
+                    base64_data = base64.b64encode(image_bytes).decode('utf-8')
+                    
+                    # Get description from GPT-4o mini
+                    description = await get_image_description(base64_data, image_ext)
+                    
+                    images.append({
+                        "page": page_num + 1,
+                        "index": img_index,
+                        "base64_data": base64_data,
+                        "format": image_ext,
+                        "description": description,
+                        "source": f"Page {page_num + 1} of {filename}"
+                    })
+                    
+                    print(f"✅ Extracted image {img_index + 1} from page {page_num + 1}")
+                    
+                except Exception as img_error:
+                    print(f"❌ Error extracting image {img_index} from page {page_num + 1}: {img_error}")
+                    continue
+        
+        doc.close()
+        
+    except Exception as e:
+        print(f"❌ Error extracting images from PDF: {e}")
+    
+    return images
+
+async def get_image_description(base64_data: str, image_format: str) -> str:
+    """Get image description using GPT-4o mini vision"""
+    try:
+        # Create a message with image for OpenAI using the existing format
+        messages = [
+            {
+                "role": "user",
+                "content": "Descrivi questa immagine in modo dettagliato in italiano. Includi tutti gli elementi visibili, testo eventualmente presente, e il contesto generale dell'immagine.",
+                "images": [
+                    {
+                        "data": base64_data,
+                        "type": image_format
+                    }
+                ]
+            }
+        ]
+        
+        # Use OpenAI GPT-4o mini for vision
+        response = await chat_with_provider(
+            messages=messages,
+            provider="openai"
+        )
+        
+        return response if response else "Descrizione non disponibile"
+        
+    except Exception as e:
+        print(f"❌ Error getting image description: {e}")
+        return f"Errore nella descrizione dell'immagine: {str(e)}"
 
 def extract_text_from_docx(file_path: str) -> str:
     """Extract text from Word document"""
@@ -134,6 +232,10 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
     """Process a single uploaded file"""
     file_id = str(uuid.uuid4())
     
+    print(f"🔍 Processing file: {upload_file.filename}")
+    print(f"🔍 Content type: {upload_file.content_type}")
+    print(f"🔍 File size: {upload_file.size}")
+    
     # Validate file size
     if upload_file.size and upload_file.size > MAX_FILE_SIZE:
         raise Exception(f"File too large: {upload_file.size} bytes (max: {MAX_FILE_SIZE})")
@@ -141,6 +243,8 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
     # Get file extension and mime type
     filename = upload_file.filename or "unknown"
     file_ext = filename.split('.')[-1].lower() if '.' in filename else ''
+    
+    print(f"🔍 File extension: {file_ext}")
     
     if file_ext not in SUPPORTED_EXTENSIONS:
         raise Exception(f"Unsupported file type: {file_ext}")
@@ -152,6 +256,8 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
         content = await upload_file.read()
         temp_file.write(content)
         temp_file_path = temp_file.name
+    
+    print(f"🔍 Temporary file created: {temp_file_path}")
     
     try:
         processed_file = ProcessedFile(
@@ -165,8 +271,29 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
         
         # Process based on file type
         if file_ext == 'pdf':
+            print(f"📄 Processing PDF file: {filename}")
             text_content = extract_text_from_pdf(temp_file_path)
             processed_file.content = text_content
+            
+            # Extract images from PDF and get descriptions
+            try:
+                extracted_images = await extract_images_from_pdf(temp_file_path, filename)
+                if extracted_images:
+                    processed_file.images = extracted_images
+                    print(f"✅ Extracted {len(extracted_images)} images from PDF")
+                    
+                    # Add image descriptions to content
+                    if processed_file.content:
+                        processed_file.content += "\n\n=== IMMAGINI ESTRATTE DAL PDF ===\n"
+                    else:
+                        processed_file.content = "=== IMMAGINI ESTRATTE DAL PDF ===\n"
+                    
+                    for i, img in enumerate(extracted_images):
+                        processed_file.content += f"\nImmagine {i+1} ({img['source']}):\n{img['description']}\n"
+                        
+            except Exception as img_error:
+                print(f"⚠️  Error extracting images from PDF: {img_error}")
+                # Continue without images if extraction fails
             
         elif file_ext in ['docx', 'doc']:
             text_content = extract_text_from_docx(temp_file_path)
@@ -188,8 +315,7 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
 
 @router.post("/file-upload", response_model=FileUploadResponse)
 async def upload_files(
-    files: List[UploadFile] = File(...),
-    current_user = Depends(get_current_user_optional)
+    files: List[UploadFile] = File(...)
 ):
     """Upload and process multiple files"""
     

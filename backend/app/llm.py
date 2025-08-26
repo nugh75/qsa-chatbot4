@@ -156,22 +156,64 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
 
     # Claude
     if provider == "claude" and os.getenv("ANTHROPIC_API_KEY"):
+        # Prepara i messaggi per Claude, supportando immagini
+        claude_messages = []
+        for m in messages:
+            if isinstance(m.get("content"), str):
+                # Messaggio di solo testo
+                claude_messages.append({"role": m["role"], "content": m["content"]})
+            elif "images" in m:
+                # Messaggio con immagini
+                content_parts = [{"type": "text", "text": m["content"]}]
+                for img in m["images"]:
+                    content_parts.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": f"image/{img.get('type', 'jpeg')}",
+                            "data": img["data"]
+                        }
+                    })
+                claude_messages.append({"role": m["role"], "content": content_parts})
+            else:
+                claude_messages.append({"role": m["role"], "content": m["content"]})
+        
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version":"2023-06-01"},
                 json={"model":"claude-3-5-sonnet-20241022",
                       "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
-                      "messages":[{"role":m["role"], "content":m["content"]} for m in messages]})
+                      "messages": claude_messages})
         r.raise_for_status()
         return r.json()["content"][0]["text"]
 
     # OpenAI (facoltativo)
     if provider == "openai" and os.getenv("OPENAI_API_KEY"):
+        # Prepara i messaggi per OpenAI, supportando immagini
+        openai_messages = []
+        for m in messages:
+            if isinstance(m.get("content"), str):
+                # Messaggio di solo testo
+                openai_messages.append({"role": m["role"], "content": m["content"]})
+            elif "images" in m:
+                # Messaggio con immagini (formato OpenAI)
+                content_parts = [{"type": "text", "text": m["content"]}]
+                for img in m["images"]:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/{img.get('type', 'jpeg')};base64,{img['data']}"
+                        }
+                    })
+                openai_messages.append({"role": m["role"], "content": content_parts})
+            else:
+                openai_messages.append({"role": m["role"], "content": m["content"]})
+        
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
                 json={"model":"gpt-4o-mini",
-                      "messages":[{"role":m["role"], "content":m["content"]} for m in messages],
+                      "messages": openai_messages,
                       "temperature":0.3})
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Header, HTTPException, Depends, status
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import hashlib
 import re
 from .prompts import load_system_prompt
@@ -15,12 +15,20 @@ from .database import db_manager, MessageModel
 
 router = APIRouter()
 
+class FileAttachment(BaseModel):
+    id: str
+    filename: str
+    file_type: str
+    content: Optional[str] = None  # Extracted text
+    base64_data: Optional[str] = None  # For images
+
 class ChatIn(BaseModel):
     message: str  # Messaggio in chiaro per elaborazione LLM
     sessionId: Optional[str] = None
     conversation_id: Optional[str] = None
     conversation_history: Optional[list] = None  # Cronologia dal frontend per conversazioni crittografate
     message_encrypted: Optional[str] = None  # Messaggio crittografato per salvataggio database
+    attachments: Optional[List[FileAttachment]] = None  # File allegati
 
 def generate_content_hash(content: str) -> str:
     """Generate hash for search indexing"""
@@ -65,6 +73,21 @@ async def chat(
     conversation_id = req.conversation_id
     frontend_history = req.conversation_history or []
     user_msg_encrypted = req.message_encrypted or user_msg  # Fallback al messaggio in chiaro se non crittografato
+    attachments = req.attachments or []
+    
+    # Processa gli allegati per aggiungere il contenuto al messaggio
+    attachment_content = ""
+    if attachments:
+        print(f"📎 Processing {len(attachments)} attachments")
+        for attachment in attachments:
+            if attachment.content:  # Testo estratto da PDF/Word
+                attachment_content += f"\n\n[Contenuto di {attachment.filename}]:\n{attachment.content}"
+            elif attachment.base64_data and attachment.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
+                # Per le immagini, aggiungiamo una nota che l'immagine è allegata
+                attachment_content += f"\n\n[Immagine allegata: {attachment.filename}]"
+    
+    # Combina messaggio utente con contenuto allegati
+    full_user_message = user_msg + attachment_content
     
     # Ottieni l'istanza della memoria solo se NON c'è conversation_id
     # Se c'è conversation_id usiamo solo il database per evitare conflitti
@@ -72,11 +95,11 @@ async def chat(
     
     if use_memory_buffer:
         memory = get_memory()
-        # Aggiungi il messaggio dell'utente alla memoria
-        topic = detect_topic(user_msg)
-        memory.add_message(session_id, "user", user_msg, {"topic": topic})
+        # Aggiungi il messaggio dell'utente alla memoria (con allegati)
+        topic = detect_topic(full_user_message)
+        memory.add_message(session_id, "user", full_user_message, {"topic": topic})
     else:
-        topic = detect_topic(user_msg)
+        topic = detect_topic(full_user_message)
     
     # Se abbiamo un conversation_id, salva nel database
     if conversation_id and current_user:
@@ -125,9 +148,25 @@ async def chat(
     # Aggiungi la cronologia della conversazione
     messages.extend(conversation_history)
     
-    # Se non c'è cronologia, aggiungi il messaggio corrente
-    if not any(msg["role"] == "user" and msg["content"] == user_msg for msg in conversation_history):
-        messages.append({"role": "user", "content": user_msg})
+    # Se non c'è cronologia, aggiungi il messaggio corrente (con allegati)
+    if not any(msg["role"] == "user" and msg["content"] == full_user_message for msg in conversation_history):
+        # Prepara il messaggio per l'LLM includendo immagini se presenti
+        user_message_for_llm = {"role": "user", "content": full_user_message}
+        
+        # Per modelli che supportano immagini (come Claude, GPT-4V), aggiungi le immagini
+        if attachments and x_llm_provider in ['anthropic', 'openai']:
+            image_attachments = [att for att in attachments if att.base64_data and att.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']]
+            if image_attachments:
+                # Formato per modelli che supportano immagini
+                user_message_for_llm["images"] = [
+                    {
+                        "type": "image",
+                        "data": att.base64_data,
+                        "filename": att.filename
+                    } for att in image_attachments
+                ]
+        
+        messages.append(user_message_for_llm)
     
     import time, datetime
     start_time = time.perf_counter()

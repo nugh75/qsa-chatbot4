@@ -21,6 +21,7 @@ import { CopyIcon, DownloadIcon as SmallDownloadIcon, LikeIcon, DislikeIcon, Che
 import { ConversationSidebar } from './components/ConversationSidebar'
 import ConversationSearch from './components/ConversationSearch'
 import LoginDialog from './components/LoginDialog'
+import FileUpload, { ProcessedFile } from './components/FileUpload'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
@@ -55,6 +56,7 @@ const AppContent: React.FC = () => {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
+  const [attachedFiles, setAttachedFiles] = useState<ProcessedFile[]>([])
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
   useEffect(()=>{
@@ -89,9 +91,14 @@ const AppContent: React.FC = () => {
     setSidebarOpen(false);
     setShowLoginDialog(false);
     setShowSearch(false);
+    setAttachedFiles([]);
     
     // Pulisci localStorage
     localStorage.removeItem('chat_messages');
+  };
+
+  const handleFilesProcessed = (files: ProcessedFile[]) => {
+    setAttachedFiles(files);
   };
 
   const send = async ()=>{
@@ -172,6 +179,17 @@ const AppContent: React.FC = () => {
         requestBody.message_encrypted = messageEncrypted;
       }
       
+      // Aggiungi allegati se presenti
+      if (attachedFiles.length > 0) {
+        requestBody.attachments = attachedFiles.map(file => ({
+          id: file.id,
+          filename: file.filename,
+          file_type: file.file_type,
+          content: file.content,
+          base64_data: file.base64_data
+        }));
+      }
+      
       // Aggiungi conversation_id se disponibile
       if (conversationId) {
         requestBody.conversation_id = conversationId;
@@ -195,6 +213,9 @@ const AppContent: React.FC = () => {
       if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
       const data = await r.json()
   setMessages([...next, { role:'assistant' as const, content:data.reply, ts:Date.now() }])
+      
+      // Pulisci gli allegati dopo l'invio riuscito
+      setAttachedFiles([])
     } catch(e:any){
       setError(e.message || 'Errore di rete')
       // ripristina input per ritentare
@@ -656,6 +677,13 @@ const AppContent: React.FC = () => {
             }}
             multiline
             maxRows={4}
+          />
+          
+          {/* Componente upload file */}
+          <FileUpload 
+            onFilesProcessed={handleFilesProcessed}
+            disabled={loading}
+            maxFiles={3}
           />
           
           {/* Pulsante microfono */}

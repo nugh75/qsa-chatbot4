@@ -311,8 +311,10 @@ class ApiService {
   async getPublicConfig(): Promise<ApiResponse<{
     enabled_providers: string[];
     enabled_tts_providers: string[];
+    enabled_asr_providers: string[];
     default_provider: string;
     default_tts: string;
+    default_asr: string;
   }>> {
     return this.makeRequest('/config/public');
   }

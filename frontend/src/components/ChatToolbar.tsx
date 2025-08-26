@@ -14,6 +14,7 @@ import {
 interface ChatToolbarProps {
   onSend: () => void;
   onStartRecording: () => void;
+  onStopRecording?: () => void;
   canSend: boolean;
   isRecording: boolean;
   isLoading: boolean;
@@ -22,10 +23,20 @@ interface ChatToolbarProps {
 const ChatToolbar: React.FC<ChatToolbarProps> = ({
   onSend,
   onStartRecording,
+  onStopRecording,
   canSend,
   isRecording,
   isLoading
 }) => {
+  
+  const handleMicClick = () => {
+    if (isRecording && onStopRecording) {
+      onStopRecording();
+    } else {
+      onStartRecording();
+    }
+  };
+
   return (
     <Stack direction="row" spacing={0.5} alignItems="center">
       <IconButton
@@ -43,7 +54,7 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
       </IconButton>
 
       <IconButton
-        onClick={onStartRecording}
+        onClick={handleMicClick}
         disabled={isLoading}
         color={isRecording ? "error" : "primary"}
         size="small"

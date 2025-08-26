@@ -1,55 +1,5 @@
-# README.md
-
-This file provides guidance when working with code in this repository.
-
-## Commands
-
-
-- Frontend is available at `http://localhost:5175`
-- Backend API is available at `http://localhost:8005`
-
-### Frontend
-
-The frontend is a React/Vite application. The common commands are:
-- `npm run dev`: Run the development server.
-- `npm run build`: Build for production.
-- `npm run preview`: Preview the production build.
-
-### Backend
-
-The backend is a FastAPI application. It is run through Docker, but development tasks would be standard Python/FastAPI.
-
-## Architecture
-
-This is a monorepo containing a React frontend and a FastAPI backend.
-
-### Frontend
-
-- **Framework**: React with Vite and TypeScript.
-- **UI**: Material-UI (MUI).
-- **State Management**: React Query for server state.
-- **Structure**: The main application logic resides in `frontend/src`.
-
-### Backend
-
-- **Framework**: FastAPI.
-- **Authentication**: OAuth for Google/Microsoft and a token-based system for admin access.
-- **RAG**: Uses ChromaDB for vector storage and `fastembed` for embeddings. Document ingestion and searching are handled in `backend/app/rag.py`.
-- **Chat**: Session memory is managed with Redis. See `backend/app/chat.py`.
-- **Audio**: Whisper for transcription (`transcribe.py`) and Edge-TTS for text-to-speech (`tts.py`).
-
-collega a audio antropic e elavenlabs anche
-- **Modularity**: The application is broken down into modules by feature (e.g., `chat.py`, `rag.py`, `auth.py`, `admin.py`). The main entrypoint is `backend/app/main.py`.
-
-## Development Tasks
-
-- [ ] **Chatbot Avatar**: Use `conselorbot.png` as the chatbot's avatar in the chat window.
-- [ ] **Download Chat**: Implement a feature to allow users to download the current chat conversation.
-- [ ] **Clear Chat on Disconnect**: The chat history should be cleared when the user closes the browser tab.
-- [ ] **Verify Gemini API**: Ensure the backend is using Gemini for chat responses.
-
-
 ## Prompt di sistema
+
 # Personalità
 
 Sei un compagno di apprendimento amichevole e disponibile, di nome Counselorbot. Sei entusiasta di aiutare gli utenti a migliorare le proprie strategie di apprendimento. Sei paziente, incoraggiante e fornisci feedback costruttivi.

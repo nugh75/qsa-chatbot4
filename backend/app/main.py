@@ -58,6 +58,7 @@ async def get_public_config():
             # Extract enabled providers
             enabled_providers = []
             enabled_tts_providers = []
+            enabled_asr_providers = []
             
             if 'ai_providers' in config:
                 for provider, settings in config['ai_providers'].items():
@@ -69,27 +70,38 @@ async def get_public_config():
                     if settings.get('enabled', False):
                         enabled_tts_providers.append(provider)
             
+            if 'asr_providers' in config:
+                for provider, settings in config['asr_providers'].items():
+                    if settings.get('enabled', False):
+                        enabled_asr_providers.append(provider)
+            
             return {
                 "enabled_providers": enabled_providers,
                 "enabled_tts_providers": enabled_tts_providers,
+                "enabled_asr_providers": enabled_asr_providers,
                 "default_provider": config.get('default_provider', 'local'),
-                "default_tts": config.get('default_tts', 'edge')
+                "default_tts": config.get('default_tts', 'edge'),
+                "default_asr": config.get('default_asr', 'openai')
             }
         else:
             # Fallback configuration
             return {
                 "enabled_providers": ['local'],
                 "enabled_tts_providers": ['edge'],
+                "enabled_asr_providers": ['openai'],
                 "default_provider": 'local',
-                "default_tts": 'edge'
+                "default_tts": 'edge',
+                "default_asr": 'openai'
             }
     except Exception as e:
         print(f"Error loading public config: {e}")
         return {
             "enabled_providers": ['local'],
             "enabled_tts_providers": ['edge'],
+            "enabled_asr_providers": ['openai'],
             "default_provider": 'local',
-            "default_tts": 'edge'
+            "default_tts": 'edge',
+            "default_asr": 'openai'
         }
 
 @app.post("/api/feedback")

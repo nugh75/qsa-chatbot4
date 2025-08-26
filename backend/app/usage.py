@@ -97,11 +97,36 @@ def query_usage(
     }
 
 def usage_stats() -> Dict[str, Any]:
-    q = query_usage(page_size=100000)  # full
+    # Uso _iter_usage() direttamente per ottenere tutti i dati
+    all_items = _iter_usage()
+    
+    # Calcola statistiche per oggi
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    today_items = [e for e in all_items if e.get('ts', '').startswith(today)]
+    
+    # Calcola by_provider
+    providers = {}
+    for e in all_items:
+        p = e.get('provider', 'unknown')
+        if p not in providers:
+            providers[p] = {"requests": 0, "tokens": 0, "cost": 0}
+        providers[p]["requests"] += 1
+        tokens = (e.get('tokens',{}) or {}).get('total', 0)
+        providers[p]["tokens"] += tokens
+        providers[p]["cost"] += tokens * 0.0001  # Stima approssimativa del costo
+    
+    total_tokens = sum((e.get('tokens',{}) or {}).get('total',0) for e in all_items)
+    
     return {
-        "total_interactions": q['total'],
-        "total_tokens": sum((e.get('tokens',{}) or {}).get('total',0) for e in q['items']),
-        "by_provider": {p:{"count":meta['count'], "tokens": sum((e.get('tokens',{}) or {}).get('total',0) for e in q['items'] if e.get('provider')==p)} for p, meta in q['providers'].items()}
+        "total_requests": len(all_items),
+        "total_tokens": total_tokens,
+        "total_cost": total_tokens * 0.0001,  # Stima approssimativa
+        "today": {
+            "requests": len(today_items),
+            "tokens": sum((e.get('tokens',{}) or {}).get('total',0) for e in today_items)
+        },
+        "by_provider": providers
     }
 
 def reset_usage():

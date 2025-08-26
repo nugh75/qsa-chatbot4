@@ -130,7 +130,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
         sx={{
           p: 1.5,
           mb: 1,
-          borderRadius: 3,
+          borderRadius: 4,  // Angoli più arrotondati
           border: '1px solid',
           borderColor: dragOver ? 'primary.main' : 'grey.200',
           bgcolor: dragOver ? 'primary.50' : 'grey.50',

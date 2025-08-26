@@ -54,8 +54,10 @@ import {
   AdminPanelSettings as AdminIcon,
   Description as DescriptionIcon,
   Save as SaveIcon,
-  RestartAlt as RestartAltIcon
+  RestartAlt as RestartAltIcon,
+  Mic as MicIcon
 } from '@mui/icons-material';
+import WhisperManager from './WhisperManager';
 
 // Utility per formattazione date senza date-fns
 function formatTimeAgo(dateString: string): string {
@@ -705,6 +707,7 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
           <Tab label="Utenti" icon={<PeopleIcon />} />
           <Tab label="Dispositivi" icon={<DevicesIcon />} />
           <Tab label="Prompts" icon={<DescriptionIcon />} />
+          <Tab label="Whisper" icon={<MicIcon />} />
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
@@ -712,6 +715,7 @@ const SimpleAdminPanel: React.FC<SimpleAdminPanelProps> = ({
           {currentTab === 1 && <UsersTab />}
           {currentTab === 2 && <DevicesTab />}
           {currentTab === 3 && <PromptsTab />}
+          {currentTab === 4 && <WhisperManager apiService={apiService} />}
         </Box>
       </DialogContent>
 

@@ -75,6 +75,8 @@ import { it } from 'date-fns/locale';
 
 // Import servizi
 import { apiService } from '../apiService';
+import RAGManagement from './RAGManagement';
+// import AdminUserManagement from './AdminUserManagement';
 
 interface AdminStats {
   total_users: number;
@@ -127,6 +129,21 @@ interface SyncActivity {
   device_name?: string;
 }
 
+interface PipelineRoute {
+  pattern: string;
+  topic: string;
+}
+
+interface PipelineFile {
+  topic: string;
+  filename: string;
+}
+
+interface PipelineConfig {
+  routes: PipelineRoute[];
+  files: Record<string, string>;
+}
+
 interface AdminPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -143,6 +160,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [syncActivity, setSyncActivity] = useState<SyncActivity[]>([]);
 
+  // Pipeline state
+  const [pipelineConfig, setPipelineConfig] = useState<PipelineConfig | null>(null);
+  const [availableFiles, setAvailableFiles] = useState<string[]>([]);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+  const [pipelineMessage, setPipelineMessage] = useState<string | null>(null);
+
   // State per filtri e paginazione
   const [userSearch, setUserSearch] = useState('');
   const [deviceFilter, setDeviceFilter] = useState<'all' | 'active' | 'inactive'>('all');
@@ -152,6 +175,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [deviceActionDialog, setDeviceActionDialog] = useState(false);
   const [deviceDetailsDialog, setDeviceDetailsDialog] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceInfo | null>(null);
+  
+  // Pipeline dialogs
+  const [addRouteDialog, setAddRouteDialog] = useState(false);
+  const [editRouteDialog, setEditRouteDialog] = useState(false);
+  const [addFileDialog, setAddFileDialog] = useState(false);
+  const [editFileDialog, setEditFileDialog] = useState(false);
+  const [selectedRoute, setSelectedRoute] = useState<PipelineRoute | null>(null);
+  const [selectedFileMapping, setSelectedFileMapping] = useState<{topic: string, filename: string} | null>(null);
 
   // Prompt state
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -164,6 +195,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     if (isOpen) {
       loadAdminData();
       loadPrompts();
+      loadPipelineData();
     }
   }, [isOpen]);
 
@@ -235,6 +267,130 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  // Pipeline functions
+  const loadPipelineData = async () => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      const [configRes, filesRes] = await Promise.all([
+        apiService.get('/admin/pipeline'),
+        apiService.get('/admin/pipeline/files/available')
+      ]);
+      
+      if (configRes?.data) {
+        setPipelineConfig({
+          routes: configRes.data.routes || [],
+          files: configRes.data.files || {}
+        });
+      }
+      
+      if (filesRes?.data?.files) {
+        setAvailableFiles(filesRes.data.files);
+      }
+    } catch (e) {
+      setPipelineMessage('Errore nel caricamento dati pipeline');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleAddRoute = async (pattern: string, topic: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.post('/admin/pipeline/route/add', { pattern, topic });
+      setPipelineMessage('Route aggiunta con successo');
+      await loadPipelineData();
+      setAddRouteDialog(false);
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'aggiunta route');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleUpdateRoute = async (oldPattern: string, oldTopic: string, newPattern: string, newTopic: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.post('/admin/pipeline/route/update', {
+        old_pattern: oldPattern,
+        old_topic: oldTopic,
+        new_pattern: newPattern,
+        new_topic: newTopic
+      });
+      setPipelineMessage('Route aggiornata con successo');
+      await loadPipelineData();
+      setEditRouteDialog(false);
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'aggiornamento route');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleDeleteRoute = async (pattern: string, topic: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.delete(`/admin/pipeline/route?pattern=${encodeURIComponent(pattern)}&topic=${encodeURIComponent(topic)}`);
+      setPipelineMessage('Route eliminata con successo');
+      await loadPipelineData();
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'eliminazione route');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleAddFile = async (topic: string, filename: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.post('/admin/pipeline/file/add', { topic, filename });
+      setPipelineMessage('Mapping file aggiunto con successo');
+      await loadPipelineData();
+      setAddFileDialog(false);
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'aggiunta mapping file');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleUpdateFile = async (oldTopic: string, newTopic: string, newFilename: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.post('/admin/pipeline/file/update', {
+        old_topic: oldTopic,
+        new_topic: newTopic,
+        new_filename: newFilename
+      });
+      setPipelineMessage('Mapping file aggiornato con successo');
+      await loadPipelineData();
+      setEditFileDialog(false);
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'aggiornamento mapping file');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
+  const handleDeleteFile = async (topic: string) => {
+    setPipelineLoading(true);
+    setPipelineMessage(null);
+    try {
+      await apiService.delete(`/admin/pipeline/file?topic=${encodeURIComponent(topic)}`);
+      setPipelineMessage('Mapping file eliminato con successo');
+      await loadPipelineData();
+    } catch (e: any) {
+      setPipelineMessage(e.response?.data?.detail || 'Errore nell\'eliminazione mapping file');
+    } finally {
+      setPipelineLoading(false);
+    }
+  };
+
   const PromptsTab = () => (
     <Box>
       <Box display="flex" alignItems="center" mb={2} gap={1}>
@@ -281,6 +437,168 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 <Button variant="contained" startIcon={<SaveIcon />} onClick={handleSavePrompts} disabled={promptLoading}>Salva</Button>
                 <Button variant="outlined" color="warning" startIcon={<RestartAltIcon />} onClick={handleResetSummaryPrompt} disabled={promptLoading}>Reset Riassunto</Button>
               </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+    </Box>
+  );
+
+  // Pipeline Tab Component
+  const PipelineTab = () => (
+    <Box>
+      <Box display="flex" alignItems="center" mb={2} gap={1}>
+        <SettingsIcon />
+        <Typography variant="h6">Gestione Pipeline</Typography>
+      </Box>
+      
+      {pipelineLoading && <LinearProgress sx={{ mb: 2 }} />}
+      
+      {pipelineMessage && (
+        <Alert 
+          severity={pipelineMessage.includes('Errore') ? 'error' : 'success'} 
+          sx={{ mb: 2 }}
+        >
+          {pipelineMessage}
+        </Alert>
+      )}
+
+      <Grid container spacing={3}>
+        {/* Route Management */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader 
+              title="Gestione Route" 
+              subheader="Pattern regex per il routing dei messaggi"
+              action={
+                <Button
+                  variant="contained"
+                  startIcon={<SettingsIcon />}
+                  onClick={() => setAddRouteDialog(true)}
+                  disabled={pipelineLoading}
+                >
+                  Aggiungi Route
+                </Button>
+              }
+            />
+            <CardContent>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Pattern</TableCell>
+                      <TableCell>Topic</TableCell>
+                      <TableCell>Azioni</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {pipelineConfig?.routes.map((route, index) => (
+                      <TableRow key={index}>
+                        <TableCell>
+                          <Tooltip title={route.pattern}>
+                            <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                              {route.pattern.length > 30 ? 
+                                route.pattern.substring(0, 30) + '...' : 
+                                route.pattern
+                              }
+                            </Typography>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell>
+                          <Chip size="small" label={route.topic} />
+                        </TableCell>
+                        <TableCell>
+                          <IconButton
+                            size="small"
+                            onClick={() => {
+                              setSelectedRoute(route);
+                              setEditRouteDialog(true);
+                            }}
+                            disabled={pipelineLoading}
+                          >
+                            <SettingsIcon />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => handleDeleteRoute(route.pattern, route.topic)}
+                            disabled={pipelineLoading}
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* File Mapping Management */}
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader 
+              title="Mappatura File" 
+              subheader="Associazione topic -> file di contenuto"
+              action={
+                <Button
+                  variant="contained"
+                  startIcon={<DescriptionIcon />}
+                  onClick={() => setAddFileDialog(true)}
+                  disabled={pipelineLoading}
+                >
+                  Aggiungi Mapping
+                </Button>
+              }
+            />
+            <CardContent>
+              <TableContainer>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Topic</TableCell>
+                      <TableCell>File</TableCell>
+                      <TableCell>Azioni</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {pipelineConfig && Object.entries(pipelineConfig.files).map(([topic, filename]) => (
+                      <TableRow key={topic}>
+                        <TableCell>
+                          <Chip size="small" label={topic} />
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                            {filename}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <IconButton
+                            size="small"
+                            onClick={() => {
+                              setSelectedFileMapping({ topic, filename });
+                              setEditFileDialog(true);
+                            }}
+                            disabled={pipelineLoading}
+                          >
+                            <SettingsIcon />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => handleDeleteFile(topic)}
+                            disabled={pipelineLoading}
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             </CardContent>
           </Card>
         </Grid>
@@ -770,6 +1088,251 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     </Dialog>
   );
 
+  // Pipeline Dialogs
+  const AddRouteDialog = () => {
+    const [pattern, setPattern] = useState('');
+    const [topic, setTopic] = useState('');
+
+    const handleSubmit = () => {
+      if (pattern.trim() && topic.trim()) {
+        handleAddRoute(pattern.trim(), topic.trim());
+        setPattern('');
+        setTopic('');
+      }
+    };
+
+    const handleClose = () => {
+      setAddRouteDialog(false);
+      setPattern('');
+      setTopic('');
+    };
+
+    return (
+      <Dialog open={addRouteDialog} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Nuova Route</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} mt={2}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim() || pipelineLoading}
+          >
+            Aggiungi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    );
+  };
+
+  const EditRouteDialog = () => {
+    const [pattern, setPattern] = useState(selectedRoute?.pattern || '');
+    const [topic, setTopic] = useState(selectedRoute?.topic || '');
+
+    useEffect(() => {
+      if (selectedRoute) {
+        setPattern(selectedRoute.pattern);
+        setTopic(selectedRoute.topic);
+      }
+    }, [selectedRoute]);
+
+    const handleSubmit = () => {
+      if (selectedRoute && pattern.trim() && topic.trim()) {
+        handleUpdateRoute(selectedRoute.pattern, selectedRoute.topic, pattern.trim(), topic.trim());
+        setPattern('');
+        setTopic('');
+      }
+    };
+
+    const handleClose = () => {
+      setEditRouteDialog(false);
+      setSelectedRoute(null);
+      setPattern('');
+      setTopic('');
+    };
+
+    return (
+      <Dialog open={editRouteDialog} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Route</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} mt={2}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim() || pipelineLoading}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
+    );
+  };
+
+  const AddFileDialog = () => {
+    const [topic, setTopic] = useState('');
+    const [filename, setFilename] = useState('');
+
+    const handleSubmit = () => {
+      if (topic.trim() && filename.trim()) {
+        handleAddFile(topic.trim(), filename.trim());
+        setTopic('');
+        setFilename('');
+      }
+    };
+
+    const handleClose = () => {
+      setAddFileDialog(false);
+      setTopic('');
+      setFilename('');
+    };
+
+    return (
+      <Dialog open={addFileDialog} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Mapping File</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} mt={2}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim() || pipelineLoading}
+          >
+            Aggiungi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    );
+  };
+
+  const EditFileDialog = () => {
+    const [topic, setTopic] = useState(selectedFileMapping?.topic || '');
+    const [filename, setFilename] = useState(selectedFileMapping?.filename || '');
+
+    useEffect(() => {
+      if (selectedFileMapping) {
+        setTopic(selectedFileMapping.topic);
+        setFilename(selectedFileMapping.filename);
+      }
+    }, [selectedFileMapping]);
+
+    const handleSubmit = () => {
+      if (selectedFileMapping && topic.trim() && filename.trim()) {
+        handleUpdateFile(selectedFileMapping.topic, topic.trim(), filename.trim());
+        setTopic('');
+        setFilename('');
+      }
+    };
+
+    const handleClose = () => {
+      setEditFileDialog(false);
+      setSelectedFileMapping(null);
+      setTopic('');
+      setFilename('');
+    };
+
+    return (
+      <Dialog open={editFileDialog} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Mapping File</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} mt={2}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim() || pipelineLoading}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
+    );
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -800,14 +1363,49 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
           <Tab label="Dashboard" icon={<DashboardIcon />} />
             <Tab label="Utenti" icon={<PeopleIcon />} />
             <Tab label="Dispositivi" icon={<DevicesIcon />} />
+            <Tab label="Pipeline" icon={<SettingsIcon />} />
+            <Tab label="RAG" icon={<StorageIcon />} />
             <Tab label="Prompt" icon={<DescriptionIcon />} />
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
-          {currentTab === 0 && <DashboardTab />}
-          {currentTab === 1 && <UsersTab />}
-          {currentTab === 2 && <DevicesTab />}
-          {currentTab === 3 && <PromptsTab />}
+          <Typography variant="h4" sx={{ p: 3 }}>
+            Pannello Amministrazione - Test
+          </Typography>
+          <Typography sx={{ px: 3 }}>
+            Tab corrente: {currentTab}
+          </Typography>
+          {currentTab === 0 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Dashboard Tab</Typography>
+            </Box>
+          )}
+          {currentTab === 1 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Tab Utenti</Typography>
+              <Typography>Test del tab utenti</Typography>
+            </Box>
+          )}
+          {currentTab === 2 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Tab Dispositivi</Typography>
+            </Box>
+          )}
+          {currentTab === 3 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Tab Pipeline</Typography>
+            </Box>
+          )}
+          {currentTab === 4 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Tab RAG</Typography>
+            </Box>
+          )}
+          {currentTab === 5 && (
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6">Tab Prompt</Typography>
+            </Box>
+          )}
         </Box>
       </DialogContent>
 
@@ -816,6 +1414,12 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       </DialogActions>
 
       <DeviceActionDialog />
+      
+      {/* Pipeline Dialogs */}
+      <AddRouteDialog />
+      <EditRouteDialog />
+      <AddFileDialog />
+      <EditFileDialog />
     </Dialog>
   );
 };

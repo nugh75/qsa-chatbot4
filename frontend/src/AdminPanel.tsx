@@ -4,7 +4,8 @@ import {
   FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
   Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
   Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Dialog, DialogTitle, DialogContent, DialogActions, Tooltip
 } from '@mui/material'
 import {
   Settings as SettingsIcon,
@@ -18,8 +19,13 @@ import {
   Check as CheckIcon,
   Download as DownloadIcon,
   Add as AddIcon,
-  Remove as RemoveIcon
+  Remove as RemoveIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+  Storage as StorageIcon
 } from '@mui/icons-material'
+import AdminRAGManagement from './components/AdminRAGManagement'
+// import AdminUserManagement from './components/AdminUserManagement'
 
 interface AdminConfig {
   ai_providers: {
@@ -52,6 +58,276 @@ interface FeedbackStats {
 }
 
 const BACKEND = 'http://localhost:8005'
+
+// Componente per la gestione utenti
+const UserManagementComponent: React.FC = () => {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [resetPasswordDialog, setResetPasswordDialog] = useState(false);
+  const [deleteDialog, setDeleteDialog] = useState(false);
+  const [passwordResetResult, setPasswordResetResult] = useState<any>(null);
+
+  const loadUsers = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('http://localhost:8005/api/admin/users');
+      const data = await res.json();
+      if (data.success) {
+        setUsers(data.users);
+      } else {
+        setError('Errore nel caricamento utenti');
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!selectedUser) return;
+    
+    try {
+      const res = await fetch(`http://localhost:8005/api/admin/users/${selectedUser.id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUsers(users.filter(u => u.id !== selectedUser.id));
+        setDeleteDialog(false);
+        setSelectedUser(null);
+      } else {
+        setError('Errore nell\'eliminazione utente');
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!selectedUser) return;
+    
+    try {
+      const res = await fetch(`http://localhost:8005/api/admin/users/${selectedUser.id}/reset-password`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPasswordResetResult(data);
+        setResetPasswordDialog(true);
+        setSelectedUser(null);
+      } else {
+        setError('Errore nel reset password');
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const filteredUsers = users.filter(user =>
+    user.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  React.useEffect(() => {
+    loadUsers();
+  }, []);
+
+  return (
+    <Box sx={{ width: '100%' }}>
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+
+      {loading && <LinearProgress sx={{ mb: 2 }} />}
+
+      <Card>
+        <CardContent>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6">Gestione Utenti</Typography>
+              <Chip label={`${users.length} utenti`} size="small" />
+            </Box>
+            <Button
+              variant="outlined"
+              onClick={loadUsers}
+              disabled={loading}
+              size="small"
+            >
+              Aggiorna
+            </Button>
+          </Box>
+
+          <TextField
+            fullWidth
+            size="small"
+            placeholder="Cerca utenti..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            sx={{ mb: 3 }}
+          />
+
+          <TableContainer component={Paper}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Data Registrazione</TableCell>
+                  <TableCell>Ultimo Login</TableCell>
+                  <TableCell>Stato</TableCell>
+                  <TableCell>Azioni</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredUsers.length > 0 ? (
+                  filteredUsers.map((user) => (
+                    <TableRow key={user.id}>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Typography variant="body2">{user.email}</Typography>
+                        </Box>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {new Date(user.created_at).toLocaleDateString('it-IT')}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {user.last_login ? new Date(user.last_login).toLocaleDateString('it-IT') : 'Mai'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={user.last_login ? 'Attivo' : 'Mai loggato'}
+                          color={user.last_login ? 'success' : 'default'}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Tooltip title="Reset Password">
+                            <IconButton
+                              size="small"
+                              onClick={() => {
+                                setSelectedUser(user);
+                                handleResetPassword();
+                              }}
+                            >
+                              <Typography component="span" sx={{ fontSize: '16px' }}>🔑</Typography>
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Elimina Utente">
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => {
+                                setSelectedUser(user);
+                                setDeleteDialog(true);
+                              }}
+                            >
+                              <Typography component="span" sx={{ fontSize: '16px' }}>🗑️</Typography>
+                            </IconButton>
+                          </Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={5} align="center">
+                      <Typography color="text.secondary">
+                        {searchTerm ? 'Nessun utente trovato' : 'Nessun utente registrato'}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </CardContent>
+      </Card>
+
+      {/* Dialog per conferma eliminazione */}
+      <Dialog open={deleteDialog} onClose={() => setDeleteDialog(false)}>
+        <DialogTitle>Conferma Eliminazione</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Sei sicuro di voler eliminare l'utente <strong>{selectedUser?.email}</strong>?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Questa azione eliminerà anche tutte le conversazioni dell'utente e non può essere annullata.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialog(false)}>Annulla</Button>
+          <Button
+            onClick={handleDeleteUser}
+            variant="contained"
+            color="error"
+          >
+            Elimina
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog per password reset */}
+      <Dialog open={resetPasswordDialog} onClose={() => setResetPasswordDialog(false)}>
+        <DialogTitle>Password Reset Completato</DialogTitle>
+        <DialogContent>
+          <Alert severity="success" sx={{ mb: 2 }}>
+            Password resettata con successo per {passwordResetResult?.email}
+          </Alert>
+          
+          <Typography variant="body2" gutterBottom>
+            <strong>Nuova password temporanea:</strong>
+          </Typography>
+          
+          <TextField
+            fullWidth
+            value={passwordResetResult?.temporary_password || ''}
+            InputProps={{
+              readOnly: true,
+              endAdornment: (
+                <Button
+                  size="small"
+                  onClick={() => copyToClipboard(passwordResetResult?.temporary_password || '')}
+                >
+                  Copia
+                </Button>
+              )
+            }}
+            sx={{ mb: 2 }}
+          />
+          
+          <Alert severity="info">
+            L'utente dovrà cambiare questa password al primo login.
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setResetPasswordDialog(false);
+              setPasswordResetResult(null);
+            }}
+            variant="contained"
+          >
+            Chiudi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+};
 
 export default function AdminPanel() {
   const [authenticated, setAuthenticated] = useState(false)
@@ -88,6 +364,17 @@ export default function AdminPanel() {
   const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>('')
   const [whisperModelStatus, setWhisperModelStatus] = useState<Record<string, string>>({})
   
+  // Stati per pipeline dialog
+  const [pipelineDialogs, setPipelineDialogs] = useState({
+    addRoute: false,
+    editRoute: false,
+    addFile: false,
+    editFile: false
+  })
+  const [selectedPipelineRoute, setSelectedPipelineRoute] = useState<{pattern: string, topic: string} | null>(null)
+  const [selectedPipelineFile, setSelectedPipelineFile] = useState<{topic: string, filename: string} | null>(null)
+  const [availableFiles, setAvailableFiles] = useState<string[]>([])
+  
   // Stati per pannelli collassabili
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
     ai_providers: true,
@@ -97,7 +384,9 @@ export default function AdminPanel() {
     prompts: false,
     whisper: false,
     usage: false,
-    memory: false
+    memory: false,
+    rag_management: false,
+    user_management: false
   })
   const [tokenTestInput, setTokenTestInput] = useState('')
   const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
@@ -396,6 +685,137 @@ export default function AdminPanel() {
     }
   }
 
+  // Nuove funzioni CRUD per pipeline
+  const addPipelineRoute = async (pattern: string, topic: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/route/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pattern, topic })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Route aggiunta con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'aggiunta route')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'aggiunta route')
+    }
+  }
+
+  const updatePipelineRoute = async (oldPattern: string, oldTopic: string, newPattern: string, newTopic: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/route/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          old_pattern: oldPattern,
+          old_topic: oldTopic,
+          new_pattern: newPattern,
+          new_topic: newTopic
+        })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Route aggiornata con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'aggiornamento route')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'aggiornamento route')
+    }
+  }
+
+  const deletePipelineRoute = async (pattern: string, topic: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/route?pattern=${encodeURIComponent(pattern)}&topic=${encodeURIComponent(topic)}`, {
+        method: 'DELETE'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Route eliminata con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'eliminazione route')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'eliminazione route')
+    }
+  }
+
+  const addPipelineFile = async (topic: string, filename: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/file/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic, filename })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Mapping file aggiunto con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'aggiunta mapping file')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'aggiunta mapping file')
+    }
+  }
+
+  const updatePipelineFile = async (oldTopic: string, newTopic: string, newFilename: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/file/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          old_topic: oldTopic,
+          new_topic: newTopic,
+          new_filename: newFilename
+        })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Mapping file aggiornato con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'aggiornamento mapping file')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'aggiornamento mapping file')
+    }
+  }
+
+  const deletePipelineFile = async (topic: string) => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/file?topic=${encodeURIComponent(topic)}`, {
+        method: 'DELETE'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Mapping file eliminato con successo')
+        await loadPipeline()
+      } else {
+        setMessage(data.detail || 'Errore nell\'eliminazione mapping file')
+      }
+    } catch (e) {
+      setMessage('Errore nell\'eliminazione mapping file')
+    }
+  }
+
+  const loadAvailableFiles = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/api/admin/pipeline/files/available`)
+      const data = await res.json()
+      return data.files || []
+    } catch (e) {
+      setMessage('Errore nel caricamento file disponibili')
+      return []
+    }
+  }
+
   useEffect(() => {
     if (authenticated) {
       loadSystemPrompt()
@@ -403,6 +823,8 @@ export default function AdminPanel() {
       loadUsage()
       loadMemoryStats()
       loadWhisperModels()
+      // Carica i file disponibili per la pipeline
+      loadAvailableFiles().then(files => setAvailableFiles(files))
     }
   }, [authenticated])
 
@@ -1668,36 +2090,138 @@ export default function AdminPanel() {
           </AccordionSummary>
           <AccordionDetails>
             {pipelineConfig && (
-              <Box>
-                <Typography variant="subtitle2" gutterBottom>
-                  Route attive: {pipelineConfig.routes?.length || 0}
-                </Typography>
-                
-                {pipelineConfig.routes?.map((route, idx) => (
-                  <Chip 
-                    key={idx}
-                    label={`${route.pattern} → ${route.topic}`}
-                    size="small"
-                    sx={{ mr: 1, mb: 1 }}
-                  />
-                ))}
-                
-                <Box sx={{ mt: 2 }}>
-                  <Typography variant="subtitle2" gutterBottom>
-                    Files configurazione: {Object.keys(pipelineConfig.files || {}).length}
-                  </Typography>
-                  
-                  {Object.keys(pipelineConfig.files || {}).map((file) => (
-                    <Chip 
-                      key={file}
-                      label={file}
-                      size="small"
-                      variant="outlined"
-                      sx={{ mr: 1, mb: 1 }}
-                    />
-                  ))}
-                </Box>
-              </Box>
+              <Grid container spacing={3}>
+                {/* Gestione Route */}
+                <Grid item xs={12} md={6}>
+                  <Box>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                        Route ({pipelineConfig.routes?.length || 0})
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<AddIcon />}
+                        onClick={() => setPipelineDialogs({...pipelineDialogs, addRoute: true})}
+                      >
+                        Aggiungi Route
+                      </Button>
+                    </Box>
+                    
+                    <TableContainer sx={{ maxHeight: 300 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Pattern</TableCell>
+                            <TableCell>Topic</TableCell>
+                            <TableCell width={100}>Azioni</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {pipelineConfig.routes?.map((route, idx) => (
+                            <TableRow key={idx}>
+                              <TableCell>
+                                <Tooltip title={route.pattern}>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                    {route.pattern.length > 20 ? 
+                                      route.pattern.substring(0, 20) + '...' : 
+                                      route.pattern
+                                    }
+                                  </Typography>
+                                </Tooltip>
+                              </TableCell>
+                              <TableCell>
+                                <Chip size="small" label={route.topic} />
+                              </TableCell>
+                              <TableCell>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => {
+                                    setSelectedPipelineRoute(route);
+                                    setPipelineDialogs({...pipelineDialogs, editRoute: true});
+                                  }}
+                                >
+                                  <EditIcon />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => deletePipelineRoute(route.pattern, route.topic)}
+                                >
+                                  <DeleteIcon />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Box>
+                </Grid>
+
+                {/* Gestione File */}
+                <Grid item xs={12} md={6}>
+                  <Box>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                        File Mapping ({Object.keys(pipelineConfig.files || {}).length})
+                      </Typography>
+                      <Button
+                        variant="contained"
+                        size="small"
+                        startIcon={<AddIcon />}
+                        onClick={() => setPipelineDialogs({...pipelineDialogs, addFile: true})}
+                      >
+                        Aggiungi File
+                      </Button>
+                    </Box>
+                    
+                    <TableContainer sx={{ maxHeight: 300 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>Topic</TableCell>
+                            <TableCell>File</TableCell>
+                            <TableCell width={100}>Azioni</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {Object.entries(pipelineConfig.files || {}).map(([topic, filename]) => (
+                            <TableRow key={topic}>
+                              <TableCell>
+                                <Chip size="small" label={topic} />
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                  {filename}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => {
+                                    setSelectedPipelineFile({ topic, filename });
+                                    setPipelineDialogs({...pipelineDialogs, editFile: true});
+                                  }}
+                                >
+                                  <EditIcon />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => deletePipelineFile(topic)}
+                                >
+                                  <DeleteIcon />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </Box>
+                </Grid>
+              </Grid>
             )}
           </AccordionDetails>
         </Accordion>
@@ -1804,6 +2328,46 @@ export default function AdminPanel() {
           </AccordionDetails>
         </Accordion>
 
+        {/* Pannello RAG Management */}
+        <Accordion 
+          expanded={expandedPanels.rag_management} 
+          onChange={handlePanelExpansion('rag_management')}
+          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <StorageIcon color="primary" />
+              <Typography variant="h6">Gestione RAG</Typography>
+              <Chip 
+                label="Documenti" 
+                size="small" 
+                color="primary" 
+              />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <AdminRAGManagement />
+          </AccordionDetails>
+        </Accordion>
+
+        {/* User Management Panel */}
+        <Accordion expanded={expandedPanels.user_management} onChange={handlePanelExpansion('user_management')}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <SecurityIcon />
+              <Typography>Gestione Utenti</Typography>
+              <Chip 
+                label="Account" 
+                size="small" 
+                color="secondary" 
+              />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <UserManagementComponent />
+          </AccordionDetails>
+        </Accordion>
+
       </Stack>
 
       <Box sx={{ mt: 3, textAlign: 'center' }}>
@@ -1816,6 +2380,263 @@ export default function AdminPanel() {
           {loading ? 'Salvataggio...' : 'Salva Configurazione'}
         </Button>
       </Box>
+
+      {/* Pipeline Dialogs */}
+      <PipelineRouteAddDialog />
+      <PipelineRouteEditDialog />
+      <PipelineFileAddDialog />
+      <PipelineFileEditDialog />
     </Container>
   )
+
+  // Pipeline Dialog Components
+  function PipelineRouteAddDialog() {
+    const [pattern, setPattern] = useState('')
+    const [topic, setTopic] = useState('')
+
+    const handleSubmit = () => {
+      if (pattern.trim() && topic.trim()) {
+        addPipelineRoute(pattern.trim(), topic.trim())
+        setPattern('')
+        setTopic('')
+        setPipelineDialogs({...pipelineDialogs, addRoute: false})
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, addRoute: false})
+      setPattern('')
+      setTopic('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.addRoute} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Nuova Route</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim()}
+          >
+            Aggiungi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineRouteEditDialog() {
+    const [pattern, setPattern] = useState('')
+    const [topic, setTopic] = useState('')
+
+    useEffect(() => {
+      if (selectedPipelineRoute) {
+        setPattern(selectedPipelineRoute.pattern)
+        setTopic(selectedPipelineRoute.topic)
+      }
+    }, [selectedPipelineRoute])
+
+    const handleSubmit = () => {
+      if (selectedPipelineRoute && pattern.trim() && topic.trim()) {
+        updatePipelineRoute(selectedPipelineRoute.pattern, selectedPipelineRoute.topic, pattern.trim(), topic.trim())
+        setPattern('')
+        setTopic('')
+        setPipelineDialogs({...pipelineDialogs, editRoute: false})
+        setSelectedPipelineRoute(null)
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, editRoute: false})
+      setSelectedPipelineRoute(null)
+      setPattern('')
+      setTopic('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.editRoute} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Route</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim()}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineFileAddDialog() {
+    const [topic, setTopic] = useState('')
+    const [filename, setFilename] = useState('')
+
+    const handleSubmit = () => {
+      if (topic.trim() && filename.trim()) {
+        addPipelineFile(topic.trim(), filename.trim())
+        setTopic('')
+        setFilename('')
+        setPipelineDialogs({...pipelineDialogs, addFile: false})
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, addFile: false})
+      setTopic('')
+      setFilename('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.addFile} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Mapping File</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim()}
+          >
+            Aggiungi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineFileEditDialog() {
+    const [topic, setTopic] = useState('')
+    const [filename, setFilename] = useState('')
+
+    useEffect(() => {
+      if (selectedPipelineFile) {
+        setTopic(selectedPipelineFile.topic)
+        setFilename(selectedPipelineFile.filename)
+      }
+    }, [selectedPipelineFile])
+
+    const handleSubmit = () => {
+      if (selectedPipelineFile && topic.trim() && filename.trim()) {
+        updatePipelineFile(selectedPipelineFile.topic, topic.trim(), filename.trim())
+        setTopic('')
+        setFilename('')
+        setPipelineDialogs({...pipelineDialogs, editFile: false})
+        setSelectedPipelineFile(null)
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, editFile: false})
+      setSelectedPipelineFile(null)
+      setTopic('')
+      setFilename('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.editFile} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Mapping File</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim()}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
 }

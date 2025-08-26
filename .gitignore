@@ -125,6 +125,28 @@ piper_models/
 backend/whisper_models/
 backend/piper_models/
 
+# RAG data directory with embeddings and models
+backend/rag_data/
+backend/rag_data/**/*.faiss
+backend/rag_data/embeddings/
+*.faiss
+
+# HuggingFace models cache
+.cache/
+*.bin
+*.safetensors
+
+# Model files
+*.model
+*.pt
+*.onnx
+*.h5
+*.pkl
+*.joblib
+
+# Sentence transformers cache
+sentence_transformers_cache/
+
 # Docker
 .dockerignore
 

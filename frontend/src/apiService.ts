@@ -396,6 +396,11 @@ class ApiService {
   async post(path: string, body?: any, init?: RequestInit): Promise<any> {
     return this.makeRequest(path, { method: 'POST', body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined, ...(init||{}) });
   }
+
+  // Generic DELETE helper
+  async delete(path: string, init?: RequestInit): Promise<any> {
+    return this.makeRequest(path, { method: 'DELETE', ...(init||{}) });
+  }
 }
 
 // Istanza singola del servizio API

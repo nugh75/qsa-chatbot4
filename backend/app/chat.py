@@ -5,7 +5,7 @@ import hashlib
 import re
 from .prompts import load_system_prompt
 from .topic_router import detect_topic
-from .rag import get_context
+from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
 from .usage import log_usage
 from .admin import load_config
@@ -125,8 +125,15 @@ async def chat(
         except Exception as e:
             print(f"Error saving user message: {e}")
     
-    # Ottieni il contesto RAG
-    context = get_context(topic, user_msg)
+    # Ottieni il contesto RAG con ricerca semantica avanzata
+    rag_context = get_rag_context(full_user_message, session_id)
+    
+    # Fallback al sistema legacy se RAG non trova nulla
+    if not rag_context:
+        context = get_context(topic, user_msg)
+    else:
+        context = rag_context
+        
     system = load_system_prompt()
 
     # Costruisci la cronologia della conversazione
@@ -172,6 +179,25 @@ async def chat(
     start_time = time.perf_counter()
     answer = await chat_with_provider(messages, provider=x_llm_provider, context_hint=topic or 'generale')
     processing_time = time.perf_counter() - start_time
+    
+    # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
+    if rag_context:
+        try:
+            # Recupera risultati RAG per le citazioni
+            from .rag_engine import rag_engine
+            from .rag_routes import get_user_context
+            
+            selected_groups = get_user_context(session_id)
+            if selected_groups:
+                search_results = rag_engine.search(
+                    query=full_user_message,
+                    group_ids=selected_groups,
+                    top_k=5
+                )
+                answer = format_response_with_citations(answer, search_results)
+        except Exception as e:
+            print(f"Errore nell'aggiunta citazioni: {e}")
+            # Continua senza citazioni se c'è un errore
     
     # Aggiungi la risposta alla memoria appropriata
     if use_memory_buffer:

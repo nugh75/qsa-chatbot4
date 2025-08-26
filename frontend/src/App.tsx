@@ -32,6 +32,7 @@ import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
+import RAGContextSelector from './components/RAGContextSelector'
 
 type Msg = { 
   role:'user'|'assistant'|'system', 
@@ -172,6 +173,8 @@ const AppContent: React.FC = () => {
   const [defaultTts, setDefaultTts] = useState('')
   const [defaultAsr, setDefaultAsr] = useState('')
   const [asrProvider, setAsrProvider] = useState<'openai'|'local'>('openai')
+  const [showRAGSelector, setShowRAGSelector] = useState(false)
+  const [ragContextActive, setRAGContextActive] = useState(false)
 
   // Provider mappings
   const providerLabels: Record<string, string> = {
@@ -1042,6 +1045,16 @@ const AppContent: React.FC = () => {
           onFilesChange={setAttachedFiles}
           maxFiles={3}
           disabled={loading}
+        />
+      </Box>
+
+      {/* RAG Context Selector */}
+      <Box sx={{ mt: 2 }}>
+        <RAGContextSelector 
+          compact={true}
+          onContextChange={(selectedGroups) => {
+            setRAGContextActive(selectedGroups.length > 0);
+          }}
         />
       </Box>
 

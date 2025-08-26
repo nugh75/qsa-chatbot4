@@ -11,16 +11,6 @@ from .memory import get_memory
 from .transcribe import whisper_service
 from pathlib import Path
 import re
-import sqlite3
-import bcrypt
-import secrets
-import string
-from datetime import datetime, timedelta
-from .rag_engine import RAGEngine
-
-# Configurazione database - usa il percorso relativo alla directory backend
-BASE_DIR = Path(__file__).parent.parent
-DATABASE_PATH = BASE_DIR / "qsa_chatbot.db"
 
 router = APIRouter()
 
@@ -1114,7 +1104,8 @@ class UserResetPasswordRequest(BaseModel):
 async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
+        import sqlite3
+        conn = sqlite3.connect("backend/qsa_chatbot.db")
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -1141,7 +1132,8 @@ async def admin_get_users():
 async def admin_delete_user(user_id: int):
     """Delete user account for admin panel"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
+        import sqlite3
+        conn = sqlite3.connect("backend/qsa_chatbot.db")
         cursor = conn.cursor()
         
         # First check if user exists
@@ -1168,7 +1160,8 @@ async def admin_delete_user(user_id: int):
 async def admin_reset_user_password(user_id: int):
     """Reset user password and return new temporary password"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
+        import sqlite3
+        conn = sqlite3.connect("backend/qsa_chatbot.db")
         cursor = conn.cursor()
         
         # First check if user exists
@@ -1203,18 +1196,134 @@ async def admin_reset_user_password(user_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Test endpoint semplice per debug
-@router.get("/admin/test-users")
-async def admin_test_users():
-    """Test endpoint for debugging"""
-    import os
-    return {
-        "success": True, 
-        "message": "Endpoint funziona", 
-        "users": [],
-        "database_path": str(DATABASE_PATH),
-        "database_exists": DATABASE_PATH.exists(),
-        "current_working_directory": os.getcwd(),
-        "absolute_database_path": str(DATABASE_PATH.absolute())
-    }
+# ==== ADMIN USER MANAGEMENT ENDPOINTS ====
+import secrets
+import string
+from .database import get_db_connection
+import bcrypt
 
+class UserResetPasswordRequest(BaseModel):
+    new_password: Optional[str] = None  # Se None, genera password casuale
+
+@router.get("/admin/users")
+async def admin_get_users():
+    """Get all users for admin panel (without sensitive data)"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, email, created_at, last_login, is_active, failed_login_attempts, locked_until
+            FROM users 
+            ORDER BY created_at DESC
+        """)
+        
+        users = []
+        for row in cursor.fetchall():
+            users.append({
+                "id": row[0],
+                "email": row[1],
+                "created_at": row[2],
+                "last_login": row[3],
+                "is_active": bool(row[4]),
+                "failed_login_attempts": row[5],
+                "locked_until": row[6]
+            })
+        
+        conn.close()
+        return {"success": True, "users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: int):
+    """Delete user and all associated data"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che l'utente esista
+        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+        # Elimina l'utente (CASCADE eliminerà automaticamente conversazioni, messaggi, etc.)
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        
+        return {"success": True, "message": f"Utente {user[0]} eliminato con successo"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_user_password(user_id: int, request: UserResetPasswordRequest):
+    """Reset user password"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che l'utente esista
+        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+        # Genera password casuale se non fornita
+        if request.new_password:
+            new_password = request.new_password
+        else:
+            # Genera password casuale di 12 caratteri
+            chars = string.ascii_letters + string.digits + "!@#$%&*"
+            new_password = ''.join(secrets.choice(chars) for _ in range(12))
+        
+        # Hash della nuova password
+        password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        
+        # Aggiorna password nel database
+        cursor.execute("""
+            UPDATE users 
+            SET password_hash = ?, failed_login_attempts = 0, locked_until = NULL 
+            WHERE id = ?
+        """, (password_hash, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True, 
+            "message": f"Password per {user[0]} reimpostata con successo",
+            "new_password": new_password
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/users/{user_id}/toggle-active")
+async def admin_toggle_user_active(user_id: int):
+    """Toggle user active status"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Verifica che l'utente esista e ottieni stato attuale
+        cursor.execute("SELECT email, is_active FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+        new_status = not bool(user[1])
+        
+        # Aggiorna stato
+        cursor.execute("UPDATE users SET is_active = ? WHERE id = ?", (new_status, user_id))
+        conn.commit()
+        conn.close()
+        
+        status_text = "attivato" if new_status else "disattivato"
+        return {
+            "success": True, 
+            "message": f"Utente {user[0]} {status_text} con successo",
+            "new_status": new_status
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

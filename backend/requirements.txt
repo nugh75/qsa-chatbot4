@@ -18,3 +18,11 @@ PyMuPDF
 python-docx
 Pillow
 pytesseract
+# RAG dependencies
+sentence-transformers
+faiss-cpu
+chromadb
+numpy
+scikit-learn
+langchain-text-splitters
+tiktoken

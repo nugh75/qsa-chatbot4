@@ -262,14 +262,28 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
     if provider == "ollama":
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         print(f"🦙 Ollama URL: {base_url}")
-        
+
+        # Risolvi modello dinamicamente: 1) variabile d'ambiente OLLAMA_MODEL 2) admin_config selected_model 3) fallback hardcoded
+        model_name = os.getenv("OLLAMA_MODEL")
+        if not model_name:
+            try:
+                # Importa pigramente per evitare dipendenza circolare
+                from .admin import load_config  # type: ignore
+                cfg = load_config()
+                model_name = cfg.get("ai_providers", {}).get("ollama", {}).get("selected_model") or "llama3.1:8b"
+            except Exception as e:  # pragma: no cover - robustezza
+                print(f"⚠️ Impossibile leggere admin_config per modello Ollama: {e}")
+                model_name = "llama3.1:8b"
+
+        print(f"🦙 Modello Ollama scelto: {model_name}")
+
         try:
             print(f"📤 Chiamata a Ollama")
-            
+
             async with httpx.AsyncClient(timeout=120) as cx:  # Timeout più alto per modelli locali
                 r = await cx.post(f"{base_url}/api/chat",
                     json={
-                        "model": "llama3.1:8b",  # Modello di default, cambiabile
+                        "model": model_name,
                         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
                         "stream": False,
                         "options": {
@@ -277,17 +291,20 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
                             "top_p": 0.9,
                         }
                     })
-            
+
             print(f"📥 Risposta Ollama: Status {r.status_code}")
-            
+
             if not r.is_success:
                 print(f"❌ Errore Ollama: {r.status_code} - {r.text}")
+                # Se il modello non esiste, suggerisci il pull
+                if r.status_code == 404 and 'model' in r.text.lower():
+                    print(f"💡 Suggerimento: esegui 'ollama pull {model_name}' sul server dove gira Ollama")
                 return await _local_reply(messages, context_hint)
-            
+
             data = r.json()
             print(f"✅ Ollama risposta ricevuta")
             return data["message"]["content"]
-            
+
         except Exception as e:
             print(f"💥 Errore Ollama: {e}")
             print("💡 Assicurati che Ollama sia in esecuzione: ollama serve")

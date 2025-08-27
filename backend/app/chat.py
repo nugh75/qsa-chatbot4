@@ -12,6 +12,8 @@ from .admin import load_config
 from .memory import get_memory
 from .auth import get_current_active_user
 from .database import db_manager, MessageModel
+from fastapi.responses import StreamingResponse
+import asyncio
 
 router = APIRouter()
 
@@ -268,3 +270,189 @@ async def chat(
         "tokens": tokens_full,
     })
     return resp
+
+@router.post("/chat/stream")
+async def chat_stream(
+    req: ChatIn,
+    x_llm_provider: Optional[str] = Header(default="local"),
+    x_admin_password: Optional[str] = Header(default=None),
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Endpoint streaming (SSE-like) che invia la risposta incrementale.
+    Formato eventi: linee 'data: {"delta":"..."}\n\n' e finale 'data: {"done":true,"reply":"FULL"}\n\n'"""
+
+    provider = (x_llm_provider or 'local').lower()
+    user_msg = req.message.strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Messaggio vuoto")
+
+    session_id = req.sessionId or "default"
+    conversation_id = req.conversation_id
+    frontend_history = req.conversation_history or []
+    attachments = req.attachments or []
+    use_memory_buffer = conversation_id is None
+
+    # Salvataggio messaggio utente (come nell'endpoint non streaming)
+    if conversation_id and current_user:
+        try:
+            import uuid
+            user_message_id = f"msg_{uuid.uuid4().hex}"
+            success = MessageModel.add_message(
+                message_id=user_message_id,
+                conversation_id=conversation_id,
+                content_encrypted=req.message_encrypted or user_msg,
+                role="user",
+                token_count=0,
+                processing_time=0.0
+            )
+            if not success:
+                print("Warning: Failed to save user message to database (stream)")
+        except Exception as e:
+            print(f"Error saving user message (stream): {e}")
+
+    # Contesto & topic
+    from .topic_router import detect_topic
+    from .rag import get_context, get_rag_context
+    topic = detect_topic(user_msg)
+    rag_context = get_rag_context(user_msg, session_id)
+    context = rag_context or get_context(topic, user_msg)
+    system = load_system_prompt()
+
+    if use_memory_buffer:
+        memory = get_memory()
+        memory.add_message(session_id, "user", user_msg, {"topic": topic})
+        conversation_history = memory.get_conversation_history(session_id)
+    else:
+        conversation_history = frontend_history
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic or 'generale'}]\n{context[:6000]}"}
+    ] + conversation_history
+    if not any(m.get('role') == 'user' and m.get('content') == user_msg for m in conversation_history):
+        messages.append({"role": "user", "content": user_msg})
+
+    start_time = asyncio.get_event_loop().time()
+    answer_accum = []  # parti accumulate
+
+    async def event_generator():
+        nonlocal answer_accum
+        try:
+            if provider == 'ollama':
+                # Streaming reale da Ollama
+                import httpx, json as _json, os as _os
+                base_url = _os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+                model_env = _os.getenv('OLLAMA_MODEL')
+                if not model_env:
+                    try:
+                        from .admin import load_config as _load_cfg  # type: ignore
+                        cfg = _load_cfg()
+                        model_env = cfg.get('ai_providers', {}).get('ollama', {}).get('selected_model') or 'llama3.1:8b'
+                    except Exception:
+                        model_env = 'llama3.1:8b'
+                payload = {
+                    "model": model_env,
+                    "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
+                    "stream": True,
+                    "options": {"temperature": 0.3, "top_p": 0.9}
+                }
+                async with httpx.AsyncClient(timeout=None) as cx:
+                    async with cx.stream('POST', f"{base_url}/api/chat", json=payload) as resp:
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            try:
+                                data = _json.loads(line)
+                            except Exception:
+                                continue
+                            msg_part = (data.get('message') or {}).get('content')
+                            if msg_part:
+                                answer_accum.append(msg_part)
+                                yield f"data: {{\"delta\":{_json.dumps(msg_part)} }}\n\n"
+                            if data.get('done'):
+                                break
+            else:
+                # Ottiene risposta completa e la spezza in chunk simulati
+                from .llm import chat_with_provider, compute_token_stats
+                import json as _json_local
+                full = await chat_with_provider(messages, provider=provider, context_hint=topic or 'generale')
+                # Spezza per frasi o blocchi ~40 char
+                import re
+                parts = re.findall(r'.{1,60}(?:\s|$)', full)
+                for p in parts:
+                    answer_accum.append(p)
+                    yield f"data: {{\"delta\":{_json_local.dumps(p)} }}\n\n"
+                    await asyncio.sleep(0.02)
+        except Exception as e:
+            err = f"Errore streaming: {e}"
+            print(err)
+            try:
+                import json as _json_err
+                yield f"data: {{\"error\":{_json_err.dumps(str(e))}}}\n\n"
+            except Exception:
+                yield "data: {\"error\":\"stream error\"}\n\n"
+        finally:
+            # Evento finale
+            full_answer = ''.join(answer_accum).strip()
+            # Salvataggio nel memory buffer e DB + logging
+            try:
+                from .llm import compute_token_stats
+                tokens_full = compute_token_stats(messages, full_answer)
+            except Exception:
+                tokens_full = {}
+
+            duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+
+            if full_answer:
+                if use_memory_buffer:
+                    try:
+                        memory.add_message(session_id, 'assistant', full_answer, {"topic": topic, "provider": provider})
+                    except Exception:
+                        pass
+                if conversation_id and current_user:
+                    try:
+                        import uuid
+                        assistant_message_id = f"msg_{uuid.uuid4().hex}"
+                        success = MessageModel.add_message(
+                            message_id=assistant_message_id,
+                            conversation_id=conversation_id,
+                            content_encrypted=full_answer,
+                            role='assistant',
+                            token_count=tokens_full.get('total', 0),
+                            processing_time=duration_ms/1000.0
+                        )
+                        if not success:
+                            print("Warning: failed to save assistant message (stream)")
+                    except Exception as e:
+                        print(f"Error saving assistant message (stream): {e}")
+                # Logging usage
+                try:
+                    cfg = load_config()
+                    model_selected = cfg.get('ai_providers', {}).get(provider, {}).get('selected_model')
+                except Exception:
+                    model_selected = None
+                try:
+                    log_usage({
+                        "ts": __import__('datetime').datetime.utcnow().isoformat() + 'Z',
+                        "provider": provider,
+                        "model": model_selected,
+                        "topic": topic,
+                        "session_id": session_id,
+                        "duration_ms": duration_ms,
+                        "tokens": tokens_full,
+                    })
+                except Exception:
+                    pass
+            try:
+                import json as _json_final
+                yield f"data: {{\"done\":true,\"reply\":{_json_final.dumps(full_answer)} }}\n\n"
+            except Exception:
+                yield "data: {\"done\":true}\n\n"
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Content-Type": "text/event-stream",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no"
+    }
+    return StreamingResponse(event_generator(), headers=headers)

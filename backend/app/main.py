@@ -16,6 +16,7 @@ from .search_routes import router as search_router
 from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
+from .survey_routes import router as survey_router
 
 # Carica le variabili di ambiente dal file .env
 load_dotenv()
@@ -47,6 +48,7 @@ app.include_router(search_router, prefix="/api")
 app.include_router(admin_panel_router, prefix="/api")
 app.include_router(file_processing_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
+app.include_router(survey_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():

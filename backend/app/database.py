@@ -119,6 +119,28 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_user_id ON user_devices (user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON user_devices (device_fingerprint)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_actions_timestamp ON admin_actions (timestamp DESC)")
+
+            # Tabella risposte survey anonime (non legata a user_id)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS survey_responses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    session_id TEXT, -- identificatore client anonimo per prevenire duplicati semplici
+                    q_utilita INTEGER,
+                    q_pertinenza INTEGER,
+                    q_chiarezza INTEGER,
+                    q_dettaglio INTEGER,
+                    q_facilita INTEGER,
+                    q_velocita INTEGER,
+                    q_fiducia INTEGER,
+                    q_riflessione INTEGER,
+                    q_coinvolgimento INTEGER,
+                    q_riuso INTEGER,
+                    q_riflessioni TEXT,
+                    q_commenti TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_survey_session ON survey_responses (session_id)")
             
             conn.commit()
             print("Database initialized successfully")
@@ -332,3 +354,61 @@ class AdminModel:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (admin_email, action_type, target_user_id, target_email, description, ip_address, success))
             conn.commit()
+
+class SurveyModel:
+    """Modello per risposte del questionario anonimo"""
+
+    FIELDS = [
+        'q_utilita','q_pertinenza','q_chiarezza','q_dettaglio','q_facilita','q_velocita',
+        'q_fiducia','q_riflessione','q_coinvolgimento','q_riuso'
+    ]
+
+    @staticmethod
+    def add_response(data: dict) -> bool:
+        try:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cols = [*SurveyModel.FIELDS, 'q_riflessioni','q_commenti','session_id']
+                placeholders = ','.join(['?']*len(cols))
+                values = [data.get(f) for f in SurveyModel.FIELDS]
+                values.append(data.get('q_riflessioni'))
+                values.append(data.get('q_commenti'))
+                values.append(data.get('session_id'))
+                cursor.execute(f"INSERT INTO survey_responses ({','.join(cols)}) VALUES ({placeholders})", values)
+                conn.commit()
+                return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_summary() -> dict:
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            summary = {}
+            for f in SurveyModel.FIELDS:
+                cursor.execute(f"SELECT COUNT({f}) as n, AVG({f}) as avg, MIN({f}) as min, MAX({f}) as max FROM survey_responses WHERE {f} IS NOT NULL")
+                row = cursor.fetchone()
+                # distribuzione valori 1-5
+                cursor.execute(f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
+                dist_rows = cursor.fetchall()
+                dist = {i:0 for i in range(1,6)}
+                for dr in dist_rows:
+                    dist[dr['val']] = dr['c']
+                summary[f] = { 'count': row['n'], 'avg': row['avg'], 'min': row['min'], 'max': row['max'], 'distribution': dist }
+            cursor.execute("SELECT COUNT(*) as total FROM survey_responses")
+            total = cursor.fetchone()['total']
+            return { 'total': total, 'questions': summary }
+
+    @staticmethod
+    def get_open_answers(limit: int = 500):
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT q_riflessioni, q_commenti, submitted_at FROM survey_responses ORDER BY submitted_at DESC LIMIT ?", (limit,))
+            rows = cursor.fetchall()
+            results = []
+            for r in rows:
+                if r['q_riflessioni']:
+                    results.append({'type':'riflessioni','text': r['q_riflessioni'], 'submitted_at': r['submitted_at']})
+                if r['q_commenti']:
+                    results.append({'type':'commenti','text': r['q_commenti'], 'submitted_at': r['submitted_at']})
+            return results

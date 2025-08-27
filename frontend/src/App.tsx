@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip, FormControl, CircularProgress } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -33,6 +33,15 @@ import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
 import RAGContextSelector from './components/RAGContextSelector'
+import SurveyForm from './SurveyForm'
+// (SurveyLink rimosso: inline link custom)
+import SurveyResults from './SurveyResults'
+
+// Tipo minimo per dati estratti (placeholder se non definito altrove)
+type ExtractedData = {
+  tables?: { image_num: number; source: string; data: string }[]
+  images?: { image_num: number; source: string; full_description: string }[]
+}
 
 type Msg = { 
   role:'user'|'assistant'|'system', 
@@ -100,7 +109,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#1976d2' }}>
                   � Valori Numerici Estratti
                 </Typography>
-                {extractedData.tables.map((table, idx) => (
+                {extractedData.tables.map((table: { image_num: number; source: string; data: string }, idx: number) => (
                   <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
                     <Typography variant="caption" color="text.secondary">
                       Immagine {table.image_num} ({table.source})
@@ -118,7 +127,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#9c27b0' }}>
                   🖼️ Descrizioni Immagini
                 </Typography>
-                {extractedData.images.map((img, idx) => (
+                {extractedData.images.map((img: { image_num: number; source: string; full_description: string }, idx: number) => (
                   <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
                     <Typography variant="caption" color="text.secondary">
                       Immagine {img.image_num} ({img.source})
@@ -175,6 +184,9 @@ const AppContent: React.FC = () => {
   const [asrProvider, setAsrProvider] = useState<'openai'|'local'>('openai')
   const [showRAGSelector, setShowRAGSelector] = useState(false)
   const [ragContextActive, setRAGContextActive] = useState(false)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
+  const [showSurvey, setShowSurvey] = useState(false)
 
   // Provider mappings
   const providerLabels: Record<string, string> = {
@@ -277,8 +289,8 @@ const AppContent: React.FC = () => {
     const text = input.trim()
     if(!text) return
   const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
-    setMessages(next); setInput('')
-    setLoading(true); setError(undefined)
+  setMessages(next); setInput('')
+  setLoading(true); setError(undefined)
     try {
       // Ottieni il token di accesso per l'autenticazione
       const accessToken = localStorage.getItem('qsa_access_token');
@@ -380,21 +392,68 @@ const AppContent: React.FC = () => {
         console.log('📝 Invio cronologia recente:', recentHistory.length, 'messaggi');
       }
       
-      const r = await fetch(`${BACKEND}/api/chat`, {
-        method:'POST',
+  // Streaming: crea placeholder messaggio assistant (unica bolla) con testo iniziale
+  let assistantIndex = next.length
+  const placeholder = '… sto pensando'
+  setMessages([...next, { role:'assistant', content: placeholder, ts:Date.now() }])
+  setIsStreaming(true)
+  setStreamingAssistantIndex(assistantIndex)
+
+      const streamResp = await fetch(`${BACKEND}/api/chat/stream`, {
+        method: 'POST',
         headers,
         body: JSON.stringify(requestBody)
       })
-      if(!r.ok){ throw new Error(`HTTP ${r.status}`) }
-      const data = await r.json()
-      
-      setMessages([...next, { 
-        role:'assistant' as const, 
-        content:data.reply, 
-        ts:Date.now()
-      }])
-      
-      // Pulisci gli allegati dopo l'invio riuscito
+      if(!streamResp.ok){ throw new Error(`HTTP ${streamResp.status}`) }
+
+      const reader = streamResp.body?.getReader()
+      if(!reader){ throw new Error('Streaming non supportato') }
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+
+  // Non mostrare il bubble "sta scrivendo" separato mentre streamma
+  setLoading(false)
+
+      const commitDelta = (delta: string) => {
+        setMessages(prev => {
+          const updated = [...prev]
+          const current = updated[assistantIndex]
+          if(current){
+            if(current.content === placeholder) {
+              // sostituisce il placeholder col primo delta
+              updated[assistantIndex] = { ...current, content: delta }
+            } else {
+              updated[assistantIndex] = { ...current, content: current.content + delta }
+            }
+          }
+          return updated
+        })
+      }
+
+      while(true){
+        const {done, value} = await reader.read()
+        if(done) break
+        buffer += decoder.decode(value, {stream:true})
+
+        const parts = buffer.split('\n\n')
+        // conserva l'ultima se incompleta
+        buffer = parts.pop() || ''
+        for(const part of parts){
+          const line = part.trim()
+          if(!line.startsWith('data:')) continue
+          const jsonStr = line.slice(5).trim()
+          try {
+            const evt = JSON.parse(jsonStr)
+            if(evt.delta){ commitDelta(evt.delta) }
+            if(evt.error){ setError(evt.error) }
+            if(evt.done){
+              if(evt.reply){ commitDelta('') /* reply già completa */ }
+            }
+          } catch(e){ /* ignora parse */ }
+        }
+      }
+
+  // Allegati usati una volta
       setAttachedFiles([])
     } catch(e:any){
       setError(e.message || 'Errore di rete')
@@ -402,7 +461,9 @@ const AppContent: React.FC = () => {
       setInput(text)
       setMessages(messages)
     } finally {
-      setLoading(false)
+  setLoading(false)
+  setIsStreaming(false)
+  setStreamingAssistantIndex(null)
     }
   }
 
@@ -752,7 +813,7 @@ const AppContent: React.FC = () => {
                   </Typography>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
-                {m.role === 'assistant' && (
+                {m.role === 'assistant' && !(isStreaming && streamingAssistantIndex === i) && (
                   <Box sx={{ 
                     display: 'flex', 
                     gap: 0.5, 
@@ -877,7 +938,7 @@ const AppContent: React.FC = () => {
           ))}
           
           {/* Indicatore di typing quando sta caricando */}
-          {loading && (
+          {loading && !isStreaming && (
             <Box display="flex" gap={2} justifyContent="flex-start">
               <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
                 <ChatAvatar />
@@ -897,6 +958,7 @@ const AppContent: React.FC = () => {
           )}
         </Stack>
       </Paper>
+
 
       {/* Feedback conversazione - in basso a destra */}
       <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
@@ -1011,9 +1073,9 @@ const AppContent: React.FC = () => {
               onSend={send}
               onStartRecording={startRecording}
               onStopRecording={stopRecording}
-              canSend={!!input.trim() && !loading && !isRecording && !isTranscribing}
+              canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
               isRecording={isRecording}
-              isLoading={loading || isTranscribing}
+              isLoading={loading || isTranscribing || isStreaming}
             />
           </Stack>
         </Box>
@@ -1059,6 +1121,20 @@ const AppContent: React.FC = () => {
             setRAGContextActive(selectedGroups.length > 0);
           }}
         />
+      </Box>
+
+      {/* Survey link riposizionato: distanza maggiore e inline con stesso font */}
+      <Box sx={{ mt: 4, display:'flex', flexWrap:'wrap', alignItems:'center', gap:1 }}>
+        <Typography variant="body2" component="span">
+          Hai 30 secondi per dirci se il chatbot ti sta aiutando?
+        </Typography>
+        <Link component="button" type="button" underline="hover" onClick={()=> setShowSurvey(true)} sx={{ fontSize: '0.875rem', p:0 }}>
+          Compila il questionario anonimo
+        </Link>
+        <Typography variant="body2" component="span" sx={{ color:'text.secondary' }}>·</Typography>
+        <Link href="/survey-results" underline="hover" sx={{ fontSize: '0.875rem', p:0 }}>
+          Vedi risultati
+        </Link>
       </Box>
 
       <ConversationSidebar
@@ -1174,6 +1250,13 @@ const AppContent: React.FC = () => {
           />
         </DialogContent>
       </Dialog>
+
+      <Dialog open={showSurvey} onClose={()=> setShowSurvey(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Valuta l'esperienza</DialogTitle>
+        <DialogContent>
+          <SurveyForm backendUrl={BACKEND} onSubmitted={()=> setTimeout(()=> setShowSurvey(false), 1500)} />
+        </DialogContent>
+      </Dialog>
     </Container>
   );
 };
@@ -1183,6 +1266,13 @@ export default function App() {
   // Routing semplice basato sull'URL
   if (window.location.pathname === '/admin') {
     return <AdminPanel />
+  }
+  if (window.location.pathname === '/survey-results') {
+    return (
+      <AuthProvider>
+        <SurveyResults />
+      </AuthProvider>
+    )
   }
 
   return (

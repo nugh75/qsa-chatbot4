@@ -7,7 +7,7 @@ from .rag_engine import rag_engine
 from .rag_routes import get_user_context
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-CONFIG_FILE = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 @lru_cache(maxsize=1)
 def load_files_mapping() -> Dict[str, str]:

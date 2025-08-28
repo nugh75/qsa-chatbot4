@@ -1,0 +1,28 @@
+{
+  "default_id": "counselor",
+  "personalities": [
+    {
+      "id": "counselor",
+      "name": "Counselor",
+      "system_prompt_id": "default",
+      "provider": "ollama",
+      "model": "gpt-oss:latest",
+      "avatar": null
+    },
+    {
+      "id": "tutor",
+      "name": "Tutor",
+      "system_prompt_id": "tutor",
+      "provider": "ollama",
+      "model": "gpt-oss:latest",
+      "avatar": null
+    },
+    {
+      "id": "prova",
+      "name": "prova",
+      "system_prompt_id": "tutor",
+      "provider": "ollama",
+      "model": "gpt-oss:latest"
+    }
+  ]
+}

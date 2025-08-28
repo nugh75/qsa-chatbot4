@@ -1,5 +1,5 @@
 import os, httpx, json, re
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 def estimate_tokens(text: str) -> int:
     """Stima semplice del numero di token (fallback se tiktoken non disponibile)."""
@@ -112,7 +112,7 @@ async def _local_reply(messages: List[Dict], context_hint: str) -> str:
     
     return "Che interessante! Per aiutarti al meglio, mi piacerebbe conoscere prima la tua impressione generale sul QSA. Poi, se vuoi, possiamo analizzare insieme i tuoi punteggi dei fattori cognitivi (C1–C7) e successivamente quelli affettivo-motivazionali (A1–A7)."
 
-async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "") -> str:
+async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None) -> str:
     provider = (provider or 'local').lower()
     print(f"🤖 Provider selezionato: {provider}")
     
@@ -135,9 +135,10 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             
             print(f"📤 Chiamata a Gemini con payload: {len(combined_prompt)} caratteri")
             
+            gemini_model = model or "gemini-1.5-pro"
             async with httpx.AsyncClient(timeout=60) as cx:
                 r = await cx.post(
-                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent",
+                  f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
                   params={"key": api_key}, json=payload)
             
             print(f"📥 Risposta Gemini: Status {r.status_code}")
@@ -181,7 +182,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version":"2023-06-01"},
-                json={"model":"claude-3-5-sonnet-20241022",
+                json={"model": (model or "claude-3-5-sonnet-20241022"),
                       "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
                       "messages": claude_messages})
         r.raise_for_status()
@@ -212,7 +213,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-                json={"model":"gpt-4o-mini",
+                json={"model": (model or "gpt-4o-mini"),
                       "messages": openai_messages,
                       "temperature":0.3})
         r.raise_for_status()

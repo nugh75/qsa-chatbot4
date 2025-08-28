@@ -31,7 +31,7 @@ class WhisperModelInfo(BaseModel):
 
 class WhisperService:
     def __init__(self):
-        self.models_dir = Path(__file__).parent.parent / "whisper_models"
+        self.models_dir = Path(__file__).parent.parent / "models" / "whisper"
         self.models_dir.mkdir(exist_ok=True)
         self.current_model = None
         self.current_model_name = None

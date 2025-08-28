@@ -63,6 +63,9 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
   const [loginForm, setLoginForm] = useState<LoginForm>({
     email: '',
@@ -116,7 +119,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           const userInfo: UserInfo = {
             id: userResponse.data.id,
             email: userResponse.data.email,
-            is_admin: false, // TODO: add admin field to backend
+            is_admin: (userResponse.data as any).is_admin ?? false,
             created_at: userResponse.data.created_at
           };
 
@@ -131,6 +134,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           const crypto = new ChatCrypto();
           await crypto.deriveKeyFromPassword(loginForm.password, loginForm.email);
 
+          // Ignora il flusso di cambio password forzato: accesso diretto
           onLoginSuccess(userInfo, crypto);
           onClose();
         } else {
@@ -146,6 +150,37 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       setLoading(false);
     }
   };
+
+  const handleChangePassword = async () => {
+    if (!newPassword || newPassword !== confirmNewPassword) {
+      setError('Le nuove password non corrispondono');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await apiService.changePassword(loginForm.password, newPassword);
+      if (resp.success) {
+        // re-derive crypto with new password
+        const crypto = new ChatCrypto();
+        await crypto.deriveKeyFromPassword(newPassword, loginForm.email);
+        const me = await apiService.getCurrentUser();
+        if (me.success && me.data) {
+          const userInfo: UserInfo = { id: me.data.id, email: me.data.email, is_admin: (me.data as any).is_admin ?? false, created_at: me.data.created_at };
+          onLoginSuccess(userInfo, crypto);
+          onClose();
+        } else {
+          onClose();
+        }
+      } else {
+        setError(resp.error || 'Errore nel cambio password');
+      }
+    } catch (e) {
+      setError('Errore nel cambio password');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const handleRegister = async () => {
     if (!registerForm.email || !registerForm.password || !registerForm.confirmPassword) {
@@ -258,12 +293,13 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           </Alert>
         )}
 
-        <Tabs value={currentTab} onChange={(_, newValue) => setCurrentTab(newValue)} sx={{ mb: 3 }}>
-          <Tab label="Accedi" />
-          <Tab label="Registrati" />
-        </Tabs>
-
-        <form onSubmit={handleSubmit}>
+        {!mustChangePassword && (
+          <>
+            <Tabs value={currentTab} onChange={(_, newValue) => setCurrentTab(newValue)} sx={{ mb: 3 }}>
+              <Tab label="Accedi" />
+              <Tab label="Registrati" />
+            </Tabs>
+            <form onSubmit={handleSubmit}>
           {currentTab === 0 ? (
             // Login Tab
             <Box display="flex" flexDirection="column" gap={3}>
@@ -386,19 +422,66 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
               </Typography>
             </Box>
           )}
-        </form>
+            </form>
+          </>
+        )}
+
+        {mustChangePassword && (
+          <Box display="flex" flexDirection="column" gap={2}>
+            <Alert severity="info">
+              Password resettata. Imposta una nuova password per continuare.
+            </Alert>
+            <TextField
+              fullWidth
+              label="Nuova password"
+              type={showPassword ? 'text' : 'password'}
+              value={newPassword}
+              onChange={(e)=> setNewPassword(e.target.value)}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LockIcon />
+                  </InputAdornment>
+                ),
+              }}
+            />
+            <TextField
+              fullWidth
+              label="Conferma nuova password"
+              type={showPassword ? 'text' : 'password'}
+              value={confirmNewPassword}
+              onChange={(e)=> setConfirmNewPassword(e.target.value)}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LockIcon />
+                  </InputAdornment>
+                ),
+              }}
+            />
+          </Box>
+        )}
       </DialogContent>
 
       <DialogActions>
-        <Button onClick={onClose}>Annulla</Button>
-        <Button
-          variant="contained"
-          onClick={currentTab === 0 ? handleLogin : handleRegister}
-          disabled={loading}
-          startIcon={loading && <CircularProgress size={16} />}
-        >
-          {loading ? 'Attendere...' : currentTab === 0 ? 'Accedi' : 'Registrati'}
-        </Button>
+        {!mustChangePassword ? (
+          <>
+            <Button onClick={onClose}>Annulla</Button>
+            <Button
+              variant="contained"
+              onClick={currentTab === 0 ? handleLogin : handleRegister}
+              disabled={loading}
+              startIcon={loading && <CircularProgress size={16} />}
+            >
+              {loading ? 'Attendere...' : currentTab === 0 ? 'Accedi' : 'Registrati'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button onClick={onClose}>Chiudi</Button>
+            <Button variant="contained" onClick={handleChangePassword} disabled={loading} startIcon={loading && <CircularProgress size={16} />}>Salva nuova password</Button>
+          </>
+        )}
       </DialogActions>
     </Dialog>
   );

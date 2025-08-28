@@ -6,9 +6,13 @@ import hashlib
 import os
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+import math
+from pathlib import Path
 from contextlib import contextmanager
 
-DATABASE_PATH = "qsa_chatbot.db"
+# Configura il percorso del database nella nuova struttura
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATABASE_PATH = str(BASE_DIR / "storage" / "databases" / "qsa_chatbot.db")
 
 class DatabaseManager:
     """Gestisce la connessione e le operazioni sul database SQLite"""
@@ -47,6 +51,22 @@ class DatabaseManager:
                     locked_until TIMESTAMP NULL
                 )
             """)
+            # Ensure column must_change_password exists
+            cursor.execute("PRAGMA table_info(users)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'must_change_password' not in cols:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
+            # Ensure column is_admin exists
+            cursor.execute("PRAGMA table_info(users)")
+            cols = [row[1] for row in cursor.fetchall()]
+            if 'is_admin' not in cols:
+                try:
+                    cursor.execute("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0")
+                except Exception:
+                    pass
             
             # Tabella conversazioni
             cursor.execute("""
@@ -126,6 +146,13 @@ class DatabaseManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     session_id TEXT, -- identificatore client anonimo per prevenire duplicati semplici
+                    -- Dati anagrafici (facoltativi)
+                    demo_eta INTEGER,
+                    demo_sesso TEXT,
+                    demo_istruzione TEXT,
+                    demo_tipo_istituto TEXT,
+                    demo_provenienza TEXT,
+                    demo_area TEXT,
                     q_utilita INTEGER,
                     q_pertinenza INTEGER,
                     q_chiarezza INTEGER,
@@ -141,7 +168,29 @@ class DatabaseManager:
                 )
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_survey_session ON survey_responses (session_id)")
+
+            # Aggiungi colonne demografiche se mancanti (migrazione leggera)
+            cursor.execute("PRAGMA table_info(survey_responses)")
+            existing_cols = [row[1] for row in cursor.fetchall()]
+            for col, ddl in [
+                ('demo_eta', 'INTEGER'),
+                ('demo_sesso', 'TEXT'),
+                ('demo_istruzione', 'TEXT'),
+                ('demo_tipo_istituto', 'TEXT'),
+                ('demo_provenienza', 'TEXT'),
+                ('demo_area', 'TEXT'),
+            ]:
+                if col not in existing_cols:
+                    try:
+                        cursor.execute(f"ALTER TABLE survey_responses ADD COLUMN {col} {ddl}")
+                    except Exception:
+                        pass
             
+            # Promote default admin if present
+            try:
+                cursor.execute("UPDATE users SET is_admin = 1 WHERE email = ?", ("daniele.dragoni@gmail.com",))
+            except Exception:
+                pass
             conn.commit()
             print("Database initialized successfully")
 
@@ -368,9 +417,18 @@ class SurveyModel:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cols = [*SurveyModel.FIELDS, 'q_riflessioni','q_commenti','session_id']
+                cols = [
+                    # demografia
+                    'demo_eta','demo_sesso','demo_istruzione','demo_tipo_istituto','demo_provenienza','demo_area',
+                    # likert
+                    *SurveyModel.FIELDS,
+                    'q_riflessioni','q_commenti','session_id'
+                ]
                 placeholders = ','.join(['?']*len(cols))
-                values = [data.get(f) for f in SurveyModel.FIELDS]
+                values = [
+                    data.get('demo_eta'), data.get('demo_sesso'), data.get('demo_istruzione'), data.get('demo_tipo_istituto'), data.get('demo_provenienza'), data.get('demo_area')
+                ]
+                values += [data.get(f) for f in SurveyModel.FIELDS]
                 values.append(data.get('q_riflessioni'))
                 values.append(data.get('q_commenti'))
                 values.append(data.get('session_id'))
@@ -386,18 +444,136 @@ class SurveyModel:
             cursor = conn.cursor()
             summary = {}
             for f in SurveyModel.FIELDS:
-                cursor.execute(f"SELECT COUNT({f}) as n, AVG({f}) as avg, MIN({f}) as min, MAX({f}) as max FROM survey_responses WHERE {f} IS NOT NULL")
+                cursor.execute(
+                    f"SELECT COUNT({f}) as n, AVG({f}) as avg, MIN({f}) as min, MAX({f}) as max, SUM({f}) as sum, SUM({f}*{f}) as sumsq FROM survey_responses WHERE {f} IS NOT NULL"
+                )
                 row = cursor.fetchone()
+                n = row['n'] or 0
+                avg = row['avg']
                 # distribuzione valori 1-5
                 cursor.execute(f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
                 dist_rows = cursor.fetchall()
                 dist = {i:0 for i in range(1,6)}
                 for dr in dist_rows:
                     dist[dr['val']] = dr['c']
-                summary[f] = { 'count': row['n'], 'avg': row['avg'], 'min': row['min'], 'max': row['max'], 'distribution': dist }
+                # deviazione standard (popolazione)
+                std = None
+                if n and avg is not None and row['sumsq'] is not None:
+                    var = (row['sumsq'] / n) - (avg * avg)
+                    std = math.sqrt(var) if var is not None and var > 0 else 0.0
+                # mediana
+                median = None
+                cursor.execute(f"SELECT {f} as val FROM survey_responses WHERE {f} IS NOT NULL ORDER BY {f}")
+                vals = [r['val'] for r in cursor.fetchall()]
+                if vals:
+                    m = len(vals)
+                    if m % 2 == 1:
+                        median = vals[m//2]
+                    else:
+                        median = (vals[m//2 - 1] + vals[m//2]) / 2.0
+                summary[f] = {
+                    'count': n,
+                    'avg': avg,
+                    'min': row['min'],
+                    'max': row['max'],
+                    'std': std,
+                    'median': median,
+                    'distribution': dist
+                }
             cursor.execute("SELECT COUNT(*) as total FROM survey_responses")
             total = cursor.fetchone()['total']
-            return { 'total': total, 'questions': summary }
+
+            # Demografia
+            # Età: min, max, avg e distribuzione per fasce
+            cursor.execute("SELECT MIN(demo_eta) as min, MAX(demo_eta) as max, AVG(demo_eta) as avg FROM survey_responses WHERE demo_eta IS NOT NULL")
+            eta_row = cursor.fetchone()
+            cursor.execute("SELECT demo_eta as eta FROM survey_responses WHERE demo_eta IS NOT NULL")
+            bins = {'<=17':0,'18-24':0,'25-34':0,'35-44':0,'45-54':0,'55+':0}
+            for r in cursor.fetchall():
+                e = r['eta']
+                if e is None: continue
+                if e <= 17: bins['<=17'] += 1
+                elif e <= 24: bins['18-24'] += 1
+                elif e <= 34: bins['25-34'] += 1
+                elif e <= 44: bins['35-44'] += 1
+                elif e <= 54: bins['45-54'] += 1
+                else: bins['55+'] += 1
+
+            # Sesso e istruzione
+            cursor.execute("SELECT demo_sesso as k, COUNT(*) as c FROM survey_responses WHERE demo_sesso IS NOT NULL AND demo_sesso!='' GROUP BY demo_sesso")
+            sesso = {row['k']: row['c'] for row in cursor.fetchall()}
+            cursor.execute("SELECT demo_istruzione as k, COUNT(*) as c FROM survey_responses WHERE demo_istruzione IS NOT NULL AND demo_istruzione!='' GROUP BY demo_istruzione")
+            istruzione = {row['k']: row['c'] for row in cursor.fetchall()}
+
+            # Top categorie per tipo istituto e provenienza
+            cursor.execute("SELECT demo_tipo_istituto as k, COUNT(*) as c FROM survey_responses WHERE demo_tipo_istituto IS NOT NULL AND demo_tipo_istituto!='' GROUP BY demo_tipo_istituto ORDER BY c DESC LIMIT 20")
+            tipo_istituto = {row['k']: row['c'] for row in cursor.fetchall()}
+            cursor.execute("SELECT demo_provenienza as k, COUNT(*) as c FROM survey_responses WHERE demo_provenienza IS NOT NULL AND demo_provenienza!='' GROUP BY demo_provenienza ORDER BY c DESC LIMIT 20")
+            provenienza = {row['k']: row['c'] for row in cursor.fetchall()}
+
+            demographics = {
+                'eta': { 'min': eta_row['min'], 'max': eta_row['max'], 'avg': eta_row['avg'], 'bins': bins },
+                'sesso': sesso,
+                'istruzione': istruzione,
+                'tipo_istituto': tipo_istituto,
+                'provenienza': provenienza
+            }
+
+            # Confronto per area (STEM vs Umanistiche)
+            by_area = {}
+            for area in ['STEM','Umanistiche']:
+                area_avgs = {}
+                for f in SurveyModel.FIELDS:
+                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_area = ? AND {f} IS NOT NULL", (area,))
+                    row = cursor.fetchone()
+                    area_avgs[f] = row['avg']
+                by_area[area] = area_avgs
+            demographics['by_area'] = by_area
+
+            # Correlazioni dinamiche: medie per età (bin), sesso, istruzione
+            correlations = {}
+            # Age bins averages
+            age_bins_def = [
+                ('<=17', 'demo_eta <= 17'),
+                ('18-24', 'demo_eta BETWEEN 18 AND 24'),
+                ('25-34', 'demo_eta BETWEEN 25 AND 34'),
+                ('35-44', 'demo_eta BETWEEN 35 AND 44'),
+                ('45-54', 'demo_eta BETWEEN 45 AND 54'),
+                ('55+', 'demo_eta >= 55'),
+            ]
+            by_age_bins = {}
+            for label, cond in age_bins_def:
+                avgs = {}
+                for f in SurveyModel.FIELDS:
+                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE {cond} AND {f} IS NOT NULL")
+                    r = cursor.fetchone()
+                    avgs[f] = r['avg']
+                by_age_bins[label] = avgs
+            correlations['by_age_bins'] = by_age_bins
+
+            # By sesso
+            by_sesso = {}
+            for s in ['F','M','Altro','ND']:
+                avgs = {}
+                for f in SurveyModel.FIELDS:
+                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_sesso = ? AND {f} IS NOT NULL", (s,))
+                    r = cursor.fetchone()
+                    avgs[f] = r['avg']
+                by_sesso[s] = avgs
+            correlations['by_sesso'] = by_sesso
+
+            # By istruzione
+            by_istruzione = {}
+            for istr in ['Scuola','Università','Dottorato','Altro']:
+                avgs = {}
+                for f in SurveyModel.FIELDS:
+                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_istruzione = ? AND {f} IS NOT NULL", (istr,))
+                    r = cursor.fetchone()
+                    avgs[f] = r['avg']
+                by_istruzione[istr] = avgs
+            correlations['by_istruzione'] = by_istruzione
+
+            return { 'total': total, 'questions': summary, 'demographics': demographics, 'correlations': correlations }
 
     @staticmethod
     def get_open_answers(limit: int = 500):

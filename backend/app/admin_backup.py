@@ -100,7 +100,7 @@ DEFAULT_CONFIG = {
 
 def get_config_file_path():
     """Ottieni il percorso del file di configurazione"""
-    return os.path.join(os.path.dirname(__file__), "..", "admin_config.json")
+    return os.path.join(os.path.dirname(__file__), "..", "config", "admin_config.json")
 
 def load_config():
     """Carica la configurazione dal file o usa quella predefinita"""
@@ -269,7 +269,7 @@ async def update_summary_settings(payload: SummarySettingsIn):
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio impostazioni summary: {str(e)}")
 
 # ---------------- Pipeline (routing + files) -----------------
-PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -327,7 +327,7 @@ async def reset_pipeline_config():
     """Ripristina pipeline_config.json ai valori iniziali se presenti nel repository."""
     try:
         # Carica il file originale dal repository (se esiste) oppure fallback hardcoded
-        default_path = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+        default_path = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
         if default_path.exists():
             original = json.loads(default_path.read_text(encoding="utf-8"))
         else:
@@ -1105,7 +1105,9 @@ async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""
     try:
         import sqlite3
-        conn = sqlite3.connect("backend/qsa_chatbot.db")
+        from pathlib import Path
+        db_path = Path(__file__).resolve().parent.parent / "storage" / "databases" / "qsa_chatbot.db"
+        conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -1133,7 +1135,9 @@ async def admin_delete_user(user_id: int):
     """Delete user account for admin panel"""
     try:
         import sqlite3
-        conn = sqlite3.connect("backend/qsa_chatbot.db")
+        from pathlib import Path
+        db_path = Path(__file__).resolve().parent.parent / "storage" / "databases" / "qsa_chatbot.db"
+        conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
         # First check if user exists
@@ -1161,7 +1165,9 @@ async def admin_reset_user_password(user_id: int):
     """Reset user password and return new temporary password"""
     try:
         import sqlite3
-        conn = sqlite3.connect("backend/qsa_chatbot.db")
+        from pathlib import Path
+        db_path = Path(__file__).resolve().parent.parent / "storage" / "databases" / "qsa_chatbot.db"
+        conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
         
         # First check if user exists

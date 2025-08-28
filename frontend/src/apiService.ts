@@ -29,6 +29,7 @@ export interface TokenResponse {
   token_type: string;
   expires_in: number;
   user_id: number;
+  must_change_password?: boolean;
 }
 
 export interface UserInfo {
@@ -202,6 +203,13 @@ class ApiService {
     });
   }
 
+  async forceChangePassword(newPassword: string): Promise<ApiResponse> {
+    return this.makeRequest('/auth/force-change-password', {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword })
+    });
+  }
+
   // Conversation endpoints (da implementare nel backend)
   async getConversations(): Promise<ApiResponse<ConversationData[]>> {
     return this.makeRequest<ConversationData[]>('/conversations');
@@ -317,6 +325,10 @@ class ApiService {
     default_asr: string;
   }>> {
     return this.makeRequest('/config/public');
+  }
+
+  async getPersonalities(): Promise<ApiResponse<{ default_id: string|null; personalities: { id: string; name: string; provider: string; model: string; system_prompt_id: string; avatar_url?: string|null }[] }>> {
+    return this.makeRequest('/personalities');
   }
   
   async getConversationSummary(conversationId: string): Promise<ApiResponse<{ conversation_id: string; summary: string }>> {

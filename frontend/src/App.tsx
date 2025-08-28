@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
@@ -11,6 +11,7 @@ import ThumbUpIcon from '@mui/icons-material/ThumbUp'
 import ThumbDownIcon from '@mui/icons-material/ThumbDown'
 import CheckIcon from '@mui/icons-material/Check'
 import MenuIcon from '@mui/icons-material/Menu'
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
 import LoginIcon from '@mui/icons-material/Login'
 import LogoutIcon from '@mui/icons-material/Logout'
 import SearchIcon from '@mui/icons-material/Search'
@@ -36,6 +37,7 @@ import RAGContextSelector from './components/RAGContextSelector'
 import SurveyForm from './SurveyForm'
 // (SurveyLink rimosso: inline link custom)
 import SurveyResults from './SurveyResults'
+import { authFetch } from './utils/authFetch'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -148,7 +150,11 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
 
 // Componente App interno che usa AuthContext
 const AppContent: React.FC = () => {
-  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth } = useAuth();
+  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus } = useAuth();
+  const [forcePwdOpen, setForcePwdOpen] = useState(false)
+  const [forceNewPwd, setForceNewPwd] = useState('')
+  const [forceNewPwd2, setForceNewPwd2] = useState('')
+  const [forcePwdError, setForcePwdError] = useState<string|undefined>()
   
   const [messages,setMessages] = useState<Msg[]>(()=>{
     const saved = localStorage.getItem('chat_messages')
@@ -160,6 +166,8 @@ const AppContent: React.FC = () => {
   })
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
+  const [personalities, setPersonalities] = useState<{id:string; name:string; provider:string; model:string; system_prompt_id:string; avatar_url?: string | null}[]>([])
+  const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
   const [error,setError] = useState<string|undefined>()
   const [loading,setLoading] = useState(false)
   const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'>('edge')
@@ -174,7 +182,9 @@ const AppContent: React.FC = () => {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<ProcessedFile[]>([])
+  const [userAvatar, setUserAvatar] = useState<string | null>(()=>{ try { return localStorage.getItem('user_avatar') } catch { return null } })
   const [enabledProviders, setEnabledProviders] = useState<string[]>([])
   const [enabledTtsProviders, setEnabledTtsProviders] = useState<string[]>([])
   const [enabledAsrProviders, setEnabledAsrProviders] = useState<string[]>([])
@@ -211,6 +221,9 @@ const AppContent: React.FC = () => {
   }
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
+  // Avatar assistente: fisso (rimuoviamo avatar legati alla personalità)
+  const assistantAvatarSrc = '/volto.png'
+
   // Load public configuration
   useEffect(() => {
     const loadConfig = async () => {
@@ -236,12 +249,29 @@ const AppContent: React.FC = () => {
             setAsrProvider(response.data.default_asr as any)
           }
         }
+        // Load personalities after config
+        const pers = await apiService.getPersonalities()
+        if (pers.success && pers.data) {
+          setPersonalities(pers.data.personalities || [])
+          const defId = pers.data.default_id || (pers.data.personalities?.[0]?.id || '')
+          if (defId) setSelectedPersonalityId(defId)
+          // If a default personality exists, prefer its provider
+          const def = (pers.data.personalities || []).find(p => p.id === defId)
+          if (def && response?.data?.enabled_providers?.includes(def.provider)) {
+            setProvider(def.provider as any)
+          }
+        }
       } catch (error) {
         console.error('Error loading config:', error)
       }
     }
     loadConfig()
   }, [])
+
+  // Disabilitato: non aprire più il dialog di cambio password forzato
+  useEffect(() => {
+    // Intenzionalmente non mostra nulla anche se mustChangePassword è true
+  }, [isAuthenticated, mustChangePassword])
 
   useEffect(()=>{
     const handler = ()=>{
@@ -298,6 +328,9 @@ const AppContent: React.FC = () => {
         'Content-Type': 'application/json',
         'X-LLM-Provider': provider
       };
+      if (selectedPersonalityId) {
+        headers['X-Personality-Id'] = selectedPersonalityId
+      }
       
       if (accessToken) {
         headers['Authorization'] = `Bearer ${accessToken}`;
@@ -318,7 +351,7 @@ const AppContent: React.FC = () => {
             titleToSend = await crypto.encryptMessage(title);
           }
 
-          const convResponse = await fetch(`${BACKEND}/api/conversations`, {
+          const convResponse = await authFetch(`${BACKEND}/api/conversations`, {
             method: 'POST',
             headers,
             body: JSON.stringify({ 
@@ -399,7 +432,7 @@ const AppContent: React.FC = () => {
   setIsStreaming(true)
   setStreamingAssistantIndex(assistantIndex)
 
-      const streamResp = await fetch(`${BACKEND}/api/chat/stream`, {
+      const streamResp = await authFetch(`${BACKEND}/api/chat/stream`, {
         method: 'POST',
         headers,
         body: JSON.stringify(requestBody)
@@ -480,7 +513,7 @@ const AppContent: React.FC = () => {
 
     try {
       setPlayingMessageIndex(messageIndex)
-      const response = await fetch(`${BACKEND}/api/tts`, {
+      const response = await authFetch(`${BACKEND}/api/tts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -549,7 +582,7 @@ const AppContent: React.FC = () => {
           formData.append('audio', audioBlob, 'recording.wav')
           formData.append('provider', asrProvider)
 
-          const response = await fetch(`${BACKEND}/api/transcribe`, {
+          const response = await authFetch(`${BACKEND}/api/transcribe`, {
             method: 'POST',
             body: formData
           })
@@ -667,8 +700,9 @@ const AppContent: React.FC = () => {
               <MenuIcon />
             </IconButton>
           </Tooltip>
-          <ChatAvatar />
-          <Typography variant="h6">Counselorbot – QSA Chatbot</Typography>
+          <ChatAvatar key={selectedPersonalityId || 'default'} src={assistantAvatarSrc} />
+          <Typography variant="h6">Counselorbot</Typography>
+          {user?.is_admin && <Chip label="Admin" color="warning" size="small" sx={{ ml: 1 }} />}
         </Stack>
         
         {/* Controlli principali */}
@@ -691,43 +725,81 @@ const AppContent: React.FC = () => {
             </IconButton>
           </Tooltip>
           
-          {/* Selezione modello */}
-          <FormControl size="small" sx={{ minWidth: 100 }}>
-            <Select
-              value={provider}
-              onChange={(e) => setProvider(e.target.value as any)}
-              sx={{ 
-                height: 32,
-                borderRadius: 2,
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
-              }}
-            >
-              {enabledProviders.map(providerKey => (
-                <MenuItem key={providerKey} value={providerKey}>
-                  {providerLabels[providerKey] || providerKey}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          {/* Selezione personalità (preset) con icona */}
+          <Box sx={{ display:'flex', alignItems:'center', gap: 0.5 }}>
+            <PersonIcon sx={{ color:'text.secondary', fontSize: 20 }} />
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <Select
+                value={selectedPersonalityId || ''}
+                onChange={(e) => {
+                  const id = e.target.value as string
+                  setSelectedPersonalityId(id)
+                  const p = personalities.find(pp=>pp.id===id)
+                  if (p && enabledProviders.includes(p.provider)) setProvider(p.provider as any)
+                }}
+                displayEmpty
+                renderValue={(value) => {
+                  const p = personalities.find(pp => pp.id === value)
+                  if (!p) return <em>Nessuna personalità</em> as any
+                  return (<Typography variant="body2">{p.name}</Typography>)
+                }}
+                sx={{ height: 32, borderRadius: 2, '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' } }}
+              >
+                {personalities.length === 0 && (
+                  <MenuItem value="">
+                    <em>Nessuna personalità</em>
+                  </MenuItem>
+                )}
+                {personalities.map(p => (
+                  <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
 
-          {/* Selezione voce */}
-          <FormControl size="small" sx={{ minWidth: 100 }}>
-            <Select
-              value={ttsProvider}
-              onChange={(e) => setTtsProvider(e.target.value as any)}
-              sx={{ 
+          {/* Selezione voce (TTS) con icona */}
+          <Box sx={{ display:'flex', alignItems:'center', gap: 0.5 }}>
+            <VolumeUpIcon sx={{ color:'text.secondary', fontSize: 20 }} />
+            <FormControl size="small" sx={{ minWidth: 120 }}>
+              <Select
+                value={enabledTtsProviders.includes(ttsProvider) ? ttsProvider : ''}
+                onChange={(e) => setTtsProvider((e.target.value as any) || ttsProvider)}
+                sx={{ 
+                  height: 32,
+                  borderRadius: 2,
+                  '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
+                }}
+              >
+                {enabledTtsProviders.length === 0 && (
+                  <MenuItem value=""><em>Nessuna voce disponibile</em></MenuItem>
+                )}
+                {enabledTtsProviders.map(ttsKey => (
+                  <MenuItem key={ttsKey} value={ttsKey}>
+                    {ttsLabels[ttsKey] || ttsKey}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+
+          {/* Guida rapida */}
+          <Tooltip title="Guida">
+            <IconButton
+              size="small"
+              onClick={() => setShowHelp(true)}
+              sx={{
+                width: 32,
                 height: 32,
-                borderRadius: 2,
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
+                borderRadius: '50%',
+                border: '1px solid #ddd',
+                color: 'primary.main',
+                bgcolor: '#fff',
+                '&:hover': { bgcolor: '#f7f7f7' }
               }}
             >
-              {enabledTtsProviders.map(ttsKey => (
-                <MenuItem key={ttsKey} value={ttsKey}>
-                  {ttsLabels[ttsKey] || ttsKey}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+              <HelpOutlineIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
 
           {/* Download Chat + Report */}
           <DownloadChatButton messages={messages} conversationId={currentConversationId} />
@@ -781,7 +853,7 @@ const AppContent: React.FC = () => {
                 {/* Avatar per l'assistente a sinistra */}
                 {m.role === 'assistant' && (
                   <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <ChatAvatar />
+                    <ChatAvatar key={`msg-${selectedPersonalityId || 'default'}`} src={assistantAvatarSrc} />
                   </Box>
                 )}
                 
@@ -924,11 +996,15 @@ const AppContent: React.FC = () => {
               </Box>
               
               {/* Avatar per l'utente a destra */}
-              {m.role === 'user' && (
+                {m.role === 'user' && (
                 <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                  <Avatar sx={{ width: 40, height: 40, bgcolor: '#1976d2' }}>
-                    <PersonIcon sx={{ fontSize: 24 }} />
-                  </Avatar>
+                  {isAuthenticated && userAvatar ? (
+                    <Avatar alt="Tu" src={userAvatar} sx={{ width: 40, height: 40 }} />
+                  ) : (
+                    <Avatar sx={{ width: 40, height: 40, bgcolor: '#1976d2' }}>
+                      <PersonIcon sx={{ fontSize: 24 }} />
+                    </Avatar>
+                  )}
                 </Box>
               )}
             </Box>
@@ -941,7 +1017,7 @@ const AppContent: React.FC = () => {
           {loading && !isStreaming && (
             <Box display="flex" gap={2} justifyContent="flex-start">
               <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                <ChatAvatar />
+                <ChatAvatar key={`typing-${selectedPersonalityId || 'default'}`} src={assistantAvatarSrc} />
               </Box>
               <Box sx={{
                 bgcolor: '#e3f2fd',
@@ -1105,6 +1181,13 @@ const AppContent: React.FC = () => {
 
       {/* File Manager */}
       <Box sx={{ mt: 2 }}>
+        <Box sx={{ display:'flex', alignItems:'center', gap:1, mb: 0.5 }}>
+          <ImageIcon sx={{ color:'text.secondary' }} fontSize="small" />
+          <Typography variant="body2" color="text.secondary">Allegati</Typography>
+          <Tooltip title="Carica PDF o immagini: il chatbot userà i contenuti nelle risposte.">
+            <HelpOutlineIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+          </Tooltip>
+        </Box>
         <FileManagerCompact
           attachedFiles={attachedFiles}
           onFilesChange={setAttachedFiles}
@@ -1115,6 +1198,13 @@ const AppContent: React.FC = () => {
 
       {/* RAG Context Selector */}
       <Box sx={{ mt: 2 }}>
+        <Box sx={{ display:'flex', alignItems:'center', gap:1, mb: 0.5 }}>
+          <TableChartIcon sx={{ color:'text.secondary' }} fontSize="small" />
+          <Typography variant="body2" color="text.secondary">Contesto documenti</Typography>
+          <Tooltip title="Attiva uno o più contesti per risposte basate sui documenti selezionati.">
+            <HelpOutlineIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+          </Tooltip>
+        </Box>
         <RAGContextSelector 
           compact={true}
           onContextChange={(selectedGroups) => {
@@ -1206,6 +1296,9 @@ const AppContent: React.FC = () => {
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}
+        userAvatar={userAvatar}
+        isAuthenticated={isAuthenticated}
+        onUserAvatarChange={(dataUrl)=> setUserAvatar(dataUrl)}
         drawerWidth={300}
         // Refresh sidebar quando viene creata una nuova conversazione
         key={currentConversationId || 'new'}
@@ -1220,6 +1313,28 @@ const AppContent: React.FC = () => {
         }}
       />
       
+      <Dialog
+        open={showHelp}
+        onClose={() => setShowHelp(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Come usare il chatbot</DialogTitle>
+        <DialogContent>
+          <Box sx={{ display:'flex', flexDirection:'column', gap: 1 }}>
+            <Typography variant="body2">- Scrivi e invia: digita il messaggio e premi Invio (Shift+Invio va a capo).</Typography>
+            <Typography variant="body2">- Personalità: in alto puoi scegliere una personalità diversa (icona persona). Cambia lo stile della conversazione e l’avatar dell’assistente.</Typography>
+            <Typography variant="body2">- Allegati: carica PDF o immagini dalla sezione “Allegati” sotto la chat; il chatbot userà i contenuti nelle risposte.</Typography>
+            <Typography variant="body2">- Contesto documenti: attiva i contesti per risposte basate sui file selezionati.</Typography>
+            <Typography variant="body2">- Voce: ascolta le risposte (icona altoparlante) o registra un messaggio vocale (icona microfono).</Typography>
+            <Typography variant="body2">- Conversazioni: apri il menu (☰) per creare, rinominare o eliminare le chat.</Typography>
+            <Typography variant="body2">- Esporta: scarica la chat o la chat con report quando ti serve.</Typography>
+            <Typography variant="body2">- Feedback: usa pollice su/giù per dirci se la risposta è utile.</Typography>
+            <Typography variant="body2">- Privacy: evita di condividere dati personali o sensibili.</Typography>
+          </Box>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={showSearch}
         onClose={() => setShowSearch(false)}
@@ -1249,6 +1364,41 @@ const AppContent: React.FC = () => {
             isCompact={false}
           />
         </DialogContent>
+      </Dialog>
+
+      {/* Dialog obbligatorio cambio password */}
+      <Dialog open={forcePwdOpen} onClose={() => {}} maxWidth="sm" fullWidth>
+        <DialogTitle>Imposta una nuova password</DialogTitle>
+        <DialogContent>
+          {forcePwdError && <Alert severity="error" sx={{ mb:2 }}>{forcePwdError}</Alert>}
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField type="password" label="Nuova password" value={forceNewPwd} onChange={(e)=> setForceNewPwd(e.target.value)} fullWidth />
+            <TextField type="password" label="Conferma nuova password" value={forceNewPwd2} onChange={(e)=> setForceNewPwd2(e.target.value)} fullWidth />
+            <Alert severity="info">Per motivi di sicurezza, devi impostare una nuova password prima di continuare.</Alert>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            variant="contained"
+            onClick={async()=>{
+              setForcePwdError(undefined)
+              if (!forceNewPwd || forceNewPwd !== forceNewPwd2) { setForcePwdError('Le password non corrispondono'); return }
+              try {
+                const { apiService } = await import('./apiService')
+                const resp = await apiService.forceChangePassword(forceNewPwd)
+                if (resp.success) {
+                  setForcePwdOpen(false)
+                  setForceNewPwd(''); setForceNewPwd2('')
+                  await checkAuthStatus()
+                } else {
+                  setForcePwdError(resp.error || 'Errore nel cambio password')
+                }
+              } catch (e:any) {
+                setForcePwdError('Errore nel cambio password')
+              }
+            }}
+          >Salva</Button>
+        </DialogActions>
       </Dialog>
 
       <Dialog open={showSurvey} onClose={()=> setShowSurvey(false)} maxWidth="sm" fullWidth>

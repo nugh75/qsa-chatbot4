@@ -1,0 +1,23 @@
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = "app/.*\.py$"
+exclude = "(?x)(\\.venv|__pycache__|models|storage)"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip = [".venv", "models", "storage", "app/__pycache__"]
+known_first_party = ["app"]
+
+[tool.ruff]
+line-length = 100
+extend-select = ["E", "F", "I"]
+exclude = [
+  ".venv",
+  "app/__pycache__",
+  "models",
+  "storage",
+]
+src = ["app"]
+

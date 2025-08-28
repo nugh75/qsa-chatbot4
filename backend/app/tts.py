@@ -168,7 +168,7 @@ async def piper_tts_generate(text: str, voice: str = "it_IT-riccardo-x_low"):
         import wave
         
         # Directory per i modelli Piper (scaricati automaticamente)
-        models_dir = os.path.join(os.path.dirname(__file__), "..", "piper_models")
+        models_dir = os.path.join(os.path.dirname(__file__), "..", "models", "piper")
         os.makedirs(models_dir, exist_ok=True)
         
         # Path del modello basato sulla voce

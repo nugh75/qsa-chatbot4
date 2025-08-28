@@ -15,6 +15,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   needsCryptoReauth: boolean; // Indica se è necessario riloggarsi per la crittografia
+  mustChangePassword: boolean;
   login: (user: UserInfo, crypto: ChatCrypto) => void;
   logout: () => void;
   checkAuthStatus: () => Promise<void>;
@@ -43,6 +44,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [crypto, setCrypto] = useState<ChatCrypto | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [needsCryptoReauth, setNeedsCryptoReauth] = useState(false);
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   // Usa sempre il prefisso /api per evitare 404 (/auth/me prima restituiva 404)
   const apiService = createApiService(API_BASE);
@@ -62,7 +64,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setIsLoading(true);
     
     try {
-  const token = getStoredToken();
+      const token = getStoredToken();
       
       if (!token) {
         setUser(null);
@@ -87,20 +89,35 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         }
         setUser(response.data);
         setNeedsCryptoReauth(true); // Utente autenticato ma senza chiave crypto
+        setMustChangePassword(!!response.data.must_change_password);
         // Non possiamo ricreare la chiave crittografica senza password – l'utente dovrà riloggarsi per operazioni di decrittazione se necessario
       } else {
-        // Token non valido
+        // Fallback: mantieni sessione locale se presente
+        const storedInfo = CredentialManager.getUserInfo();
+        if (storedInfo) {
+          setUser(storedInfo);
+          setNeedsCryptoReauth(true);
+        } else {
+          clearStoredTokens();
+          setUser(null);
+          setCrypto(null);
+          setNeedsCryptoReauth(false);
+          setMustChangePassword(false);
+        }
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      // Non slogghiamo: usiamo user info locale se presente
+      const storedInfo = CredentialManager.getUserInfo();
+      if (storedInfo) {
+        setUser(storedInfo);
+        setNeedsCryptoReauth(true);
+      } else {
         clearStoredTokens();
         setUser(null);
         setCrypto(null);
         setNeedsCryptoReauth(false);
       }
-    } catch (error) {
-      console.error('Auth check failed:', error);
-      clearStoredTokens();
-      setUser(null);
-      setCrypto(null);
-      setNeedsCryptoReauth(false);
     } finally {
       setIsLoading(false);
     }
@@ -110,6 +127,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setUser(userInfo);
     setCrypto(cryptoInstance);
     setNeedsCryptoReauth(false); // Reset flag dopo login completo
+    setMustChangePassword(false);
   };
 
   const logout = () => {
@@ -139,6 +157,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isAuthenticated: !!user,
     isLoading,
     needsCryptoReauth,
+    mustChangePassword,
     login,
     logout,
     checkAuthStatus,

@@ -118,12 +118,23 @@ admin_config.json
 # Feedback data
 feedback/
 
-# Piper TTS models
+## Large models and generated indexes (do not commit)
+# Legacy model dirs
 piper_models/
-
-# Backend model directories (local large model files)
 backend/whisper_models/
 backend/piper_models/
+# Current model/cache locations
+backend/models/
+backend/storage/
+# Common large artifacts
+*.pt
+*.onnx
+*.bin
+*.safetensors
+*.faiss
+*.hnsw
+*.npy
+*.npz
 
 # RAG data directory with embeddings and models
 backend/rag_data/

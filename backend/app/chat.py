@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import hashlib
 import re
-from .prompts import load_system_prompt
+from .prompts import load_system_prompt, get_system_prompt_by_id
+from .personalities import get_personality
 from .topic_router import detect_topic
 from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
@@ -67,6 +68,7 @@ ADMIN_PASSWORD = "Lagom192."
 async def chat(
     req: ChatIn, 
     x_llm_provider: Optional[str] = Header(default="local"), 
+    x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     current_user: dict = Depends(get_current_active_user)
 ):
@@ -136,7 +138,22 @@ async def chat(
     else:
         context = rag_context
         
+    # Personality override
+    effective_provider = (x_llm_provider or "local").lower()
+    model_override: Optional[str] = None
     system = load_system_prompt()
+    if x_personality_id:
+        try:
+            p = get_personality(x_personality_id)
+            if p:
+                if p.get("system_prompt_id"):
+                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
+                if p.get("provider"):
+                    effective_provider = p["provider"].lower()
+                if p.get("model"):
+                    model_override = p["model"]
+        except Exception as e:
+            print(f"Personality load failed: {e}")
 
     # Costruisci la cronologia della conversazione
     if use_memory_buffer:
@@ -179,7 +196,7 @@ async def chat(
     
     import time, datetime
     start_time = time.perf_counter()
-    answer = await chat_with_provider(messages, provider=x_llm_provider, context_hint=topic or 'generale')
+    answer = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override)
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -256,13 +273,13 @@ async def chat(
     # Recupera modello selezionato da config
     try:
         cfg = load_config()
-        model_selected = cfg.get('ai_providers', {}).get(x_llm_provider, {}).get('selected_model')
+        model_selected = model_override or cfg.get('ai_providers', {}).get(effective_provider, {}).get('selected_model')
     except Exception:
         model_selected = None
     
     log_usage({
         "ts": datetime.datetime.utcnow().isoformat() + 'Z',
-        "provider": x_llm_provider,
+        "provider": effective_provider,
         "model": model_selected,
         "topic": topic,
         "session_id": session_id,
@@ -275,6 +292,7 @@ async def chat(
 async def chat_stream(
     req: ChatIn,
     x_llm_provider: Optional[str] = Header(default="local"),
+    x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     current_user: dict = Depends(get_current_active_user)
 ):
@@ -316,7 +334,24 @@ async def chat_stream(
     topic = detect_topic(user_msg)
     rag_context = get_rag_context(user_msg, session_id)
     context = rag_context or get_context(topic, user_msg)
+    # Personality override
+    effective_provider = provider
+    model_override: Optional[str] = None
     system = load_system_prompt()
+    if x_personality_id:
+        try:
+            from .personalities import get_personality
+            from .prompts import get_system_prompt_by_id
+            p = get_personality(x_personality_id)
+            if p:
+                if p.get("system_prompt_id"):
+                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
+                if p.get("provider"):
+                    effective_provider = p["provider"].lower()
+                if p.get("model"):
+                    model_override = p["model"]
+        except Exception as e:
+            print(f"Personality load failed (stream): {e}")
 
     if use_memory_buffer:
         memory = get_memory()
@@ -375,7 +410,7 @@ async def chat_stream(
                 # Ottiene risposta completa e la spezza in chunk simulati
                 from .llm import chat_with_provider, compute_token_stats
                 import json as _json_local
-                full = await chat_with_provider(messages, provider=provider, context_hint=topic or 'generale')
+                full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override)
                 # Spezza per frasi o blocchi ~40 char
                 import re
                 parts = re.findall(r'.{1,60}(?:\s|$)', full)
@@ -428,13 +463,13 @@ async def chat_stream(
                 # Logging usage
                 try:
                     cfg = load_config()
-                    model_selected = cfg.get('ai_providers', {}).get(provider, {}).get('selected_model')
+                    model_selected = model_override or cfg.get('ai_providers', {}).get(effective_provider, {}).get('selected_model')
                 except Exception:
                     model_selected = None
                 try:
                     log_usage({
                         "ts": __import__('datetime').datetime.utcnow().isoformat() + 'Z',
-                        "provider": provider,
+                        "provider": effective_provider,
                         "model": model_selected,
                         "topic": topic,
                         "session_id": session_id,

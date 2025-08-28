@@ -22,6 +22,7 @@ import {
   useTheme,
   alpha,
 } from '@mui/material';
+import Avatar from '@mui/material/Avatar';
 import {
   Add as AddIcon,
   MoreVert as MoreVertIcon,
@@ -43,6 +44,9 @@ interface ConversationSidebarProps {
   onConversationSelect: (conversationId: string) => void;
   onNewConversation: () => void;
   drawerWidth?: number;
+  userAvatar?: string | null;
+  onUserAvatarChange?: (dataUrl: string | null) => void;
+  isAuthenticated?: boolean;
 }
 
 interface DecryptedConversation {
@@ -64,6 +68,9 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   onConversationSelect,
   onNewConversation,
   drawerWidth = 280,
+  userAvatar = null,
+  onUserAvatarChange,
+  isAuthenticated = false,
 }) => {
   const theme = useTheme();
   const [conversations, setConversations] = useState<DecryptedConversation[]>([]);
@@ -303,6 +310,43 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
           }}
         />
       </Box>
+
+      {/* Avatar Utente (solo se loggato) */}
+      {isAuthenticated && (
+        <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>Avatar Utente</Typography>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <Avatar src={userAvatar || undefined} alt="Tu" sx={{ width: 40, height: 40 }} />
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'image/*';
+                input.onchange = (e:any) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = reader.result as string;
+                      try { localStorage.setItem('user_avatar', dataUrl); } catch {}
+                      onUserAvatarChange && onUserAvatarChange(dataUrl);
+                    };
+                    reader.readAsDataURL(file);
+                  }
+                };
+                input.click();
+              }}
+            >
+              Carica
+            </Button>
+            {userAvatar && (
+              <Button variant="text" color="error" size="small" onClick={()=>{ try { localStorage.removeItem('user_avatar'); } catch {}; onUserAvatarChange && onUserAvatarChange(null); }}>Rimuovi</Button>
+            )}
+          </Box>
+        </Box>
+      )}
 
       {/* Errori */}
       {error && (

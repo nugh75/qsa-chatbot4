@@ -7,6 +7,7 @@ import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Dialog, DialogTitle, DialogContent, DialogActions, Tooltip
 } from '@mui/material'
+import Avatar from '@mui/material/Avatar'
 import {
   Settings as SettingsIcon,
   VolumeUp as VolumeIcon,
@@ -23,10 +24,14 @@ import {
   Edit as EditIcon,
   Delete as DeleteIcon,
   Key as KeyIcon,
-  Storage as StorageIcon
+  Storage as StorageIcon,
+  Upload as UploadIcon,
+  Description as DescriptionIcon
 } from '@mui/icons-material'
 import AdminRAGManagement from './components/AdminRAGManagement'
 // import AdminUserManagement from './components/AdminUserManagement'
+import { useAuth } from './contexts/AuthContext'
+import { CredentialManager } from './crypto'
 
 interface AdminConfig {
   ai_providers: {
@@ -75,12 +80,12 @@ const UserManagementComponent: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('http://localhost:8005/api/admin/users');
-      const data = await res.json();
-      if (data.success) {
-        setUsers(data.users);
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.get('/auth/admin/users')
+      if (resp.success && resp.data) {
+        setUsers((resp.data as any).users || [])
       } else {
-        setError('Errore nel caricamento utenti');
+        setError((resp as any).error || 'Errore nel caricamento utenti')
       }
     } catch (err) {
       setError('Errore di connessione');
@@ -93,11 +98,9 @@ const UserManagementComponent: React.FC = () => {
     if (!selectedUser) return;
     
     try {
-      const res = await fetch(`http://localhost:8005/api/admin/users/${selectedUser.id}`, {
-        method: 'DELETE'
-      });
-      const data = await res.json();
-      if (data.success) {
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.delete(`/admin/users/${selectedUser.id}`)
+      if ((resp as any).success) {
         setUsers(users.filter(u => u.id !== selectedUser.id));
         setDeleteDialog(false);
         setSelectedUser(null);
@@ -113,12 +116,10 @@ const UserManagementComponent: React.FC = () => {
     if (!selectedUser) return;
     
     try {
-      const res = await fetch(`http://localhost:8005/api/admin/users/${selectedUser.id}/reset-password`, {
-        method: 'POST'
-      });
-      const data = await res.json();
-      if (data.success) {
-        setPasswordResetResult(data);
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.post(`/admin/users/${selectedUser.id}/reset-password`)
+      if ((resp as any).success) {
+        setPasswordResetResult((resp as any).data || (resp as any));
         setResetPasswordDialog(true);
         setSelectedUser(null);
       } else {
@@ -184,6 +185,7 @@ const UserManagementComponent: React.FC = () => {
                   <TableCell>Email</TableCell>
                   <TableCell>Data Registrazione</TableCell>
                   <TableCell>Ultimo Login</TableCell>
+                  <TableCell>Ruolo</TableCell>
                   <TableCell>Stato</TableCell>
                   <TableCell>Azioni</TableCell>
                 </TableRow>
@@ -206,6 +208,28 @@ const UserManagementComponent: React.FC = () => {
                         <Typography variant="body2">
                           {user.last_login ? new Date(user.last_login).toLocaleDateString('it-IT') : 'Mai'}
                         </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <FormControlLabel
+                          control={
+                            <Switch
+                              size="small"
+                              checked={!!(user as any).is_admin}
+                              onChange={async (e)=>{
+                                try {
+                                  const { apiService } = await import('./apiService')
+                                  const resp = await apiService.post(`/auth/admin/users/${user.id}/role`, { is_admin: e.target.checked })
+                                  if ((resp as any).success) {
+                                    setUsers(prev => prev.map(u => u.id===user.id ? { ...u, is_admin: e.target.checked } : u))
+                                  }
+                                } catch (e) {
+                                  console.error('Errore aggiornamento ruolo')
+                                }
+                              }}
+                            />
+                          }
+                          label={(user as any).is_admin ? 'Amministratore' : 'Utente'}
+                        />
                       </TableCell>
                       <TableCell>
                         <Chip
@@ -331,8 +355,9 @@ const UserManagementComponent: React.FC = () => {
 };
 
 export default function AdminPanel() {
-  const [authenticated, setAuthenticated] = useState(false)
-  const [password, setPassword] = useState('')
+  const authenticated = true
+  const { logout } = useAuth()
+  const [authWarning, setAuthWarning] = useState(false)
   const [config, setConfig] = useState<AdminConfig | null>(null)
   const [stats, setStats] = useState<FeedbackStats | null>(null)
   const [loading, setLoading] = useState(false)
@@ -344,6 +369,22 @@ export default function AdminPanel() {
   const [testingVoices, setTestingVoices] = useState<Record<string, boolean>>({})
   const [voiceTestResults, setVoiceTestResults] = useState<Record<string, {success: boolean, message: string}>>({})
   const [systemPrompt, setSystemPrompt] = useState('')
+  const [systemPrompts, setSystemPrompts] = useState<{id:string; name:string; text:string}[]>([])
+  const [activeSystemPromptId, setActiveSystemPromptId] = useState<string>('')
+  const [selectedSystemPromptId, setSelectedSystemPromptId] = useState<string>('')
+  const [selectedSystemPromptName, setSelectedSystemPromptName] = useState<string>('')
+  // Personalità (presets)
+  const [personalities, setPersonalities] = useState<{id:string; name:string; provider:string; model:string; system_prompt_id:string; avatar?: string}[]>([])
+  const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
+  const [defaultPersonalityId, setDefaultPersonalityId] = useState<string>('')
+  const [personalityName, setPersonalityName] = useState<string>('')
+  const [personalityProvider, setPersonalityProvider] = useState<string>('openai')
+  const [personalityModel, setPersonalityModel] = useState<string>('gpt-4o-mini')
+  const [personalityPromptId, setPersonalityPromptId] = useState<string>('')
+  // Avatars for personalities (optional)
+  const [avatars, setAvatars] = useState<string[]>([])
+  const [personalityAvatar, setPersonalityAvatar] = useState<string>('')
+  // Avatar personalità disabilitati
   const [systemPromptRows, setSystemPromptRows] = useState(8)
   const [pipelineConfig, setPipelineConfig] = useState<{routes: {pattern: string; topic: string}[]; files: Record<string,string>} | null>(null)
   const [savingPrompt, setSavingPrompt] = useState(false)
@@ -375,6 +416,47 @@ export default function AdminPanel() {
   const [selectedPipelineRoute, setSelectedPipelineRoute] = useState<{pattern: string, topic: string} | null>(null)
   const [selectedPipelineFile, setSelectedPipelineFile] = useState<{topic: string, filename: string} | null>(null)
   const [availableFiles, setAvailableFiles] = useState<string[]>([])
+  // File editor dialog state
+  const [fileEditorOpen, setFileEditorOpen] = useState(false)
+  const [fileEditorFilename, setFileEditorFilename] = useState<string>('')
+  const [fileEditorContent, setFileEditorContent] = useState<string>('')
+  const [fileEditorLoading, setFileEditorLoading] = useState<boolean>(false)
+  const [fileEditorSaving, setFileEditorSaving] = useState<boolean>(false)
+  // Helper fetch con token e refresh automatico
+  const authFetch = async (url: string, init: RequestInit = {}) => {
+    const attachAuth = (token: string | null) => ({
+      ...(init.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    } as HeadersInit)
+
+    let access = CredentialManager.getAccessToken()
+    let res = await fetch(url, { ...init, headers: attachAuth(access) })
+
+    if (res.status === 401) {
+      // Prova il refresh token
+      const refresh = CredentialManager.getRefreshToken()
+      if (refresh) {
+        try {
+          const r = await fetch(`${BACKEND}/api/auth/refresh`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${refresh}` }
+          })
+          if (r.ok) {
+            const data = await r.json()
+            if (data?.access_token) {
+              CredentialManager.updateAccessToken(data.access_token)
+              access = data.access_token
+              // Riprova la richiesta originale con il nuovo token
+              res = await fetch(url, { ...init, headers: attachAuth(access) })
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (res.status === 401 || res.status === 403) setAuthWarning(true)
+    return res
+  }
   
   // Stati per pannelli collassabili
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
@@ -383,6 +465,7 @@ export default function AdminPanel() {
     stats: false,
     feedback: false,
     prompts: false,
+    personalities: false,
     whisper: false,
     usage: false,
     memory: false,
@@ -445,7 +528,7 @@ export default function AdminPanel() {
     try {
       setLoadingUsage(true)
       const qs = buildQuery()
-      const res = await fetch(`${BACKEND}/api/admin/usage?${qs}`)
+      const res = await authFetch(`${BACKEND}/api/admin/usage?${qs}`)
       const data = await res.json()
       if (data.mode === 'query') {
         setUsageItems(data.items || [])
@@ -457,7 +540,7 @@ export default function AdminPanel() {
         setUsageItems(data.items || [])
         setTotalUsage(data.items?.length || 0)
       }
-      const statsRes = await fetch(`${BACKEND}/api/admin/usage/stats`)
+      const statsRes = await authFetch(`${BACKEND}/api/admin/usage/stats`)
       const statsData = await statsRes.json()
       console.log('Usage stats loaded:', statsData)
       setUsageStats(statsData)
@@ -469,7 +552,7 @@ export default function AdminPanel() {
   }
 
   // Ricarica quando cambiano filtri/pagina intervalli o auto refresh tick
-  useEffect(() => { if (authenticated) loadUsage() }, [page, pageSize, refreshTick, filterProvider, filterModel, filterQ, filterDateFrom, filterDateTo])
+  useEffect(() => { loadUsage() }, [page, pageSize, refreshTick, filterProvider, filterModel, filterQ, filterDateFrom, filterDateTo])
 
   const presetRange = (type: string) => {
     const today = new Date()
@@ -498,7 +581,7 @@ export default function AdminPanel() {
 
   const exportUsage = async (format: 'csv' | 'jsonl') => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/usage/export?format=${format}`)
+      const res = await authFetch(`${BACKEND}/api/admin/usage/export?format=${format}`)
       const text = await res.text()
       const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
       const url = URL.createObjectURL(blob)
@@ -514,25 +597,15 @@ export default function AdminPanel() {
 
   const resetUsage = async () => {
     if (!window.confirm('Sicuro di voler cancellare i log di utilizzo?')) return
-    await fetch(`${BACKEND}/api/admin/usage/reset`, { method: 'POST' })
+    await authFetch(`${BACKEND}/api/admin/usage/reset`, { method: 'POST' })
     loadUsage()
   }
 
-  const authenticate = () => {
-    if (password === 'Lagom192.') {
-      setAuthenticated(true)
-      loadConfig()
-      loadStats()
-      loadSummaryPrompt()
-      loadSummarySettings()
-    } else {
-      setMessage('Password errata')
-    }
-  }
+  // Rimosso: autenticazione via password. L'accesso al pannello è protetto a livello di route e token.
 
   const loadConfig = async () => {
     try {
-      const response = await fetch(`${BACKEND}/api/admin/config`)
+      const response = await authFetch(`${BACKEND}/api/admin/config`)
       const data = await response.json()
       setConfig(data)
       
@@ -558,12 +631,37 @@ export default function AdminPanel() {
     setPromptTokens(Math.max(1, Math.round(text.length / 4)))
   }
 
-  const loadSystemPrompt = async () => {
+  const loadSystemPrompts = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/system-prompt`)
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`)
+      if (res.ok) {
+        const data = await res.json()
+        const list = (data.prompts || []) as {id:string; name:string; text:string}[]
+        const activeId = data.active_id as string
+        setSystemPrompts(list)
+        setActiveSystemPromptId(activeId)
+        const current = list.find(p=>p.id===activeId) || list[0]
+        if (current) {
+          setSelectedSystemPromptId(current.id)
+          setSelectedSystemPromptName(current.name)
+          setSystemPrompt(current.text || '')
+          updatePromptStats(current.text || '')
+        }
+        return
+      }
+    } catch {}
+    // Fallback legacy single prompt
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompt`)
       const data = await res.json()
-      setSystemPrompt(data.prompt || '')
-      updatePromptStats(data.prompt || '')
+      const text = data.prompt || ''
+      const fallback = [{id:'default', name:'Default', text}]
+      setSystemPrompts(fallback)
+      setActiveSystemPromptId('default')
+      setSelectedSystemPromptId('default')
+      setSelectedSystemPromptName('Default')
+      setSystemPrompt(text)
+      updatePromptStats(text)
     } catch (e) {
       setMessage('Errore caricamento system prompt')
     }
@@ -572,14 +670,22 @@ export default function AdminPanel() {
   const saveSystemPrompt = async () => {
     try {
       setSavingPrompt(true)
-      const res = await fetch(`${BACKEND}/api/admin/system-prompt`, {
+      const payload = {
+        id: selectedSystemPromptId || undefined,
+        name: selectedSystemPromptName || 'Profilo',
+        text: systemPrompt,
+        set_active: false
+      }
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: systemPrompt })
+        body: JSON.stringify(payload)
       })
       const data = await res.json()
-      if (data.success) setMessage('Prompt salvato con successo')
-      else setMessage('Errore salvataggio prompt')
+      if (data.success) {
+        setMessage('Prompt salvato con successo')
+        await loadSystemPrompts()
+      } else setMessage('Errore salvataggio prompt')
       updatePromptStats(systemPrompt)
     } catch (e) {
       setMessage('Errore salvataggio prompt')
@@ -588,9 +694,72 @@ export default function AdminPanel() {
     }
   }
 
+  const setActiveSystemPrompt = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts/activate?prompt_id=${encodeURIComponent(selectedSystemPromptId)}`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setActiveSystemPromptId(selectedSystemPromptId)
+        setMessage('Profilo attivato')
+      } else setMessage('Errore attivazione profilo')
+    } catch (e) {
+      setMessage('Errore attivazione profilo')
+    }
+  }
+
+  const createNewSystemPrompt = async () => {
+    const baseName = 'Nuovo profilo'
+    const name = window.prompt('Nome del nuovo profilo:', baseName) || baseName
+    try {
+      setSavingPrompt(true)
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, text: '', set_active: false })
+      })
+      const data = await res.json()
+      if (data.success) {
+        // Optimistic update
+        setSystemPrompts(prev => {
+          const exists = prev.some(p => p.id === data.id)
+          const next = exists ? prev.map(p => p.id === data.id ? ({...p, name, text: ''}) : p)
+                               : [...prev, { id: data.id, name, text: '' }]
+          return next
+        })
+        setSelectedSystemPromptId(data.id)
+        setSelectedSystemPromptName(name)
+        setSystemPrompt('')
+        updatePromptStats('')
+        // Refresh from server to ensure consistency
+        await loadSystemPrompts()
+      } else setMessage('Errore creazione profilo')
+    } catch (e) {
+      setMessage('Errore creazione profilo')
+    } finally {
+      setSavingPrompt(false)
+    }
+  }
+
+  const deleteSystemPromptEntry = async () => {
+    if (!selectedSystemPromptId) return
+    if (!window.confirm('Eliminare questo profilo di prompt?')) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts/${encodeURIComponent(selectedSystemPromptId)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Profilo eliminato')
+        await loadSystemPrompts()
+      } else setMessage('Errore eliminazione profilo')
+    } catch (e) {
+      setMessage('Errore eliminazione profilo')
+    }
+  }
+
   const resetSystemPrompt = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/system-prompt/reset`, { method: 'POST' })
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompt/reset`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         setSystemPrompt(data.prompt)
@@ -603,7 +772,7 @@ export default function AdminPanel() {
   // Funzioni per gestire i riassunti
   const loadSummaryPrompt = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/summary-prompt`)
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompt`)
       const data = await res.json()
       setSummaryPrompt(data.prompt || '')
     } catch (e) {
@@ -614,7 +783,7 @@ export default function AdminPanel() {
   const saveSummaryPrompt = async () => {
     try {
       setSavingSummaryPrompt(true)
-      const res = await fetch(`${BACKEND}/api/admin/summary-prompt`, {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: summaryPrompt })
@@ -631,7 +800,7 @@ export default function AdminPanel() {
 
   const loadSummarySettings = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/summary-settings`)
+      const res = await authFetch(`${BACKEND}/api/admin/summary-settings`)
       const data = await res.json()
       setSummarySettings(data.settings || {provider: 'anthropic', enabled: true})
     } catch (e) {
@@ -642,7 +811,7 @@ export default function AdminPanel() {
   const saveSummarySettings = async () => {
     try {
       setSavingSummarySettings(true)
-      const res = await fetch(`${BACKEND}/api/admin/summary-settings`, {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(summarySettings)
@@ -659,7 +828,7 @@ export default function AdminPanel() {
 
   const loadPipeline = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline`)
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline`)
       const data = await res.json()
       setPipelineConfig(data)
     } catch (e) {
@@ -671,7 +840,7 @@ export default function AdminPanel() {
     if (!pipelineConfig) return
     try {
       setSavingPipeline(true)
-      const res = await fetch(`${BACKEND}/api/admin/pipeline`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(pipelineConfig)
@@ -689,7 +858,7 @@ export default function AdminPanel() {
   // Nuove funzioni CRUD per pipeline
   const addPipelineRoute = async (pattern: string, topic: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/route/add`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/route/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pattern, topic })
@@ -708,7 +877,7 @@ export default function AdminPanel() {
 
   const updatePipelineRoute = async (oldPattern: string, oldTopic: string, newPattern: string, newTopic: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/route/update`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/route/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -732,7 +901,7 @@ export default function AdminPanel() {
 
   const deletePipelineRoute = async (pattern: string, topic: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/route?pattern=${encodeURIComponent(pattern)}&topic=${encodeURIComponent(topic)}`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/route?pattern=${encodeURIComponent(pattern)}&topic=${encodeURIComponent(topic)}`, {
         method: 'DELETE'
       })
       const data = await res.json()
@@ -749,7 +918,7 @@ export default function AdminPanel() {
 
   const addPipelineFile = async (topic: string, filename: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/file/add`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/file/add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic, filename })
@@ -768,7 +937,7 @@ export default function AdminPanel() {
 
   const updatePipelineFile = async (oldTopic: string, newTopic: string, newFilename: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/file/update`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/file/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -791,7 +960,7 @@ export default function AdminPanel() {
 
   const deletePipelineFile = async (topic: string) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/file?topic=${encodeURIComponent(topic)}`, {
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/file?topic=${encodeURIComponent(topic)}`, {
         method: 'DELETE'
       })
       const data = await res.json()
@@ -808,7 +977,7 @@ export default function AdminPanel() {
 
   const loadAvailableFiles = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/pipeline/files/available`)
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/files/available`)
       const data = await res.json()
       return data.files || []
     } catch (e) {
@@ -817,17 +986,94 @@ export default function AdminPanel() {
     }
   }
 
-  useEffect(() => {
-    if (authenticated) {
-      loadSystemPrompt()
-      loadPipeline()
-      loadUsage()
-      loadMemoryStats()
-      loadWhisperModels()
-      // Carica i file disponibili per la pipeline
-      loadAvailableFiles().then(files => setAvailableFiles(files))
+  const openFileEditor = async (filename: string) => {
+    try {
+      setFileEditorLoading(true)
+      setFileEditorFilename(filename)
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/file/content?filename=${encodeURIComponent(filename)}`)
+      const data = await res.json()
+      if (res.ok) {
+        setFileEditorContent(data.content || '')
+        setFileEditorOpen(true)
+      } else {
+        setMessage(data.detail || 'Errore apertura file')
+      }
+    } catch (e) {
+      setMessage('Errore apertura file')
+    } finally {
+      setFileEditorLoading(false)
     }
-  }, [authenticated])
+  }
+
+  const saveFileEditor = async () => {
+    try {
+      setFileEditorSaving(true)
+      const res = await authFetch(`${BACKEND}/api/admin/pipeline/file/content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: fileEditorFilename, content: fileEditorContent })
+      })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setMessage('File salvato')
+        setFileEditorOpen(false)
+      } else {
+        setMessage(data.detail || 'Errore salvataggio file')
+      }
+    } catch (e) {
+      setMessage('Errore salvataggio file')
+    } finally {
+      setFileEditorSaving(false)
+    }
+  }
+
+  const uploadPipelineFile = async () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.onchange = async (e: any) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const fd = new FormData()
+      fd.append('file', file)
+      try {
+        const res = await authFetch(`${BACKEND}/api/admin/pipeline/file/upload`, { method: 'POST', body: fd })
+        const data = await res.json()
+        if (res.ok && data.success) {
+          setMessage('File caricato')
+          const files = await loadAvailableFiles()
+          setAvailableFiles(files)
+        } else {
+          setMessage(data.detail || 'Errore upload file')
+        }
+      } catch (e) {
+        setMessage('Errore upload file')
+      }
+    }
+    input.click()
+  }
+
+  const loadAvatars = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/avatars`)
+      const data = await res.json()
+      setAvatars(data.avatars || [])
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  useEffect(() => {
+    loadConfig()
+    loadStats()
+    loadSystemPrompts()
+    loadPersonalities()
+    loadPipeline()
+    loadUsage()
+    loadMemoryStats()
+    loadWhisperModels()
+    // Carica i file disponibili per la pipeline
+    loadAvailableFiles().then(files => setAvailableFiles(files))
+  }, [])
 
   // Ricarica modelli Whisper quando la config cambia
   useEffect(() => {
@@ -839,7 +1085,7 @@ export default function AdminPanel() {
   const loadMemoryStats = async () => {
     try {
       setLoadingMemory(true)
-      const res = await fetch(`${BACKEND}/api/admin/memory/stats`)
+      const res = await authFetch(`${BACKEND}/api/admin/memory/stats`)
       const data = await res.json()
       setMemoryStats(data)
     } catch (e) {
@@ -851,7 +1097,7 @@ export default function AdminPanel() {
 
   const updateMemoryConfig = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/memory/config`, {
+      const res = await authFetch(`${BACKEND}/api/admin/memory/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ max_messages: maxMessages })
@@ -868,6 +1114,89 @@ export default function AdminPanel() {
     }
   }
 
+  const loadPersonalities = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/personalities`)
+      const data = await res.json()
+      const list = data.personalities || []
+      setPersonalities(list)
+      setDefaultPersonalityId(data.default_id || '')
+      if (list.length > 0) {
+        const first = list.find((p:any)=>p.id===data.default_id) || list[0]
+        setSelectedPersonalityId(first.id)
+        setPersonalityName(first.name)
+        setPersonalityProvider(first.provider)
+        setPersonalityModel(first.model)
+        setPersonalityPromptId(first.system_prompt_id)
+        // ensure models list loaded for selected provider
+        if (getProviderModels(first.provider).length === 0) {
+          loadModels(first.provider)
+        }
+      }
+    } catch (e) {
+      setMessage('Errore caricamento personalità')
+    }
+  }
+
+  const getProviderModels = (prov: string): string[] => {
+    const m = (config?.ai_providers as any)?.[prov]?.models
+    return Array.isArray(m) ? m : []
+  }
+
+  const savePersonality = async () => {
+    try {
+      const payload = {
+        id: selectedPersonalityId || undefined,
+        name: personalityName || 'Nuova personalità',
+        provider: personalityProvider || 'openai',
+        model: personalityModel || getProviderModels(personalityProvider)[0] || 'gpt-4o-mini',
+        system_prompt_id: personalityPromptId || activeSystemPromptId || (systemPrompts[0]?.id || 'default'),
+      }
+      const res = await authFetch(`${BACKEND}/api/admin/personalities`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setMessage('Personalità salvata')
+        await loadPersonalities()
+        setSelectedPersonalityId(data.id)
+      } else setMessage(data.detail || 'Errore salvataggio personalità')
+    } catch (e:any) {
+      setMessage(e?.message || 'Errore salvataggio personalità')
+    }
+  }
+
+  const createPersonality = async () => {
+    const name = window.prompt('Nome personalità:', 'Tutor') || 'Tutor'
+    try {
+      const defaultModel = getProviderModels('openai')[0] || 'gpt-4o-mini'
+      const sysId = activeSystemPromptId || (systemPrompts[0]?.id||'default')
+      const res = await authFetch(`${BACKEND}/api/admin/personalities`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, provider:'openai', model: defaultModel, system_prompt_id: sysId, avatar: personalityAvatar || undefined }) })
+      const data = await res.json()
+      if (res.ok && data.success) { setMessage('Personalità creata'); await loadPersonalities() }
+      else setMessage(data.detail || 'Errore creazione personalità')
+    } catch (e:any) { setMessage(e?.message || 'Errore creazione personalità') }
+  }
+
+  const deletePersonality = async () => {
+    if (!selectedPersonalityId) return
+    if (!window.confirm('Eliminare questa personalità?')) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/personalities/${encodeURIComponent(selectedPersonalityId)}`, { method:'DELETE' })
+      const data = await res.json()
+      if (data.success) { setMessage('Personalità eliminata'); await loadPersonalities() }
+      else setMessage('Errore eliminazione personalità')
+    } catch { setMessage('Errore eliminazione personalità') }
+  }
+
+  const setDefaultPersonality = async () => {
+    if (!selectedPersonalityId) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/personalities/default?personality_id=${encodeURIComponent(selectedPersonalityId)}`, { method:'POST' })
+      const data = await res.json()
+      if (data.success) { setMessage('Default aggiornato'); setDefaultPersonalityId(selectedPersonalityId) }
+      else setMessage('Errore impostazione default')
+    } catch { setMessage('Errore impostazione default') }
+  }
+
   const clearMemory = async (sessionId?: string) => {
     const confirmMsg = sessionId ? 
       `Vuoi cancellare la sessione ${sessionId}?` : 
@@ -880,7 +1209,7 @@ export default function AdminPanel() {
         `${BACKEND}/api/admin/memory/clear?session_id=${sessionId}` :
         `${BACKEND}/api/admin/memory/clear`
       
-      const res = await fetch(url, { method: 'POST' })
+      const res = await authFetch(url, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         setMessage(data.message)
@@ -904,7 +1233,7 @@ export default function AdminPanel() {
   const loadModels = async (provider: string) => {
     setLoadingModels(prev => ({ ...prev, [provider]: true }))
     try {
-      const response = await fetch(`${BACKEND}/api/admin/models/${provider}`)
+      const response = await authFetch(`${BACKEND}/api/admin/models/${provider}`)
       const data = await response.json()
       
       if (config) {
@@ -933,7 +1262,7 @@ export default function AdminPanel() {
   const testModel = async (provider: string, model: string) => {
     setTestingModels(prev => ({ ...prev, [provider]: true }))
     try {
-      const response = await fetch(`${BACKEND}/api/admin/test-model`, {
+      const response = await authFetch(`${BACKEND}/api/admin/test-model`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, model })
@@ -965,7 +1294,7 @@ export default function AdminPanel() {
     
     setLoading(true)
     try {
-      await fetch(`${BACKEND}/api/admin/config`, {
+      await authFetch(`${BACKEND}/api/admin/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -996,7 +1325,7 @@ export default function AdminPanel() {
   const loadVoices = async (provider: string) => {
     setLoadingVoices(prev => ({ ...prev, [provider]: true }))
     try {
-      const response = await fetch(`${BACKEND}/api/admin/tts/voices/${provider}`)
+      const response = await authFetch(`${BACKEND}/api/admin/tts/voices/${provider}`)
       const data = await response.json()
       
       if (config && data.voices) {
@@ -1013,7 +1342,7 @@ export default function AdminPanel() {
 
   const testVoice = async (provider: string) => {
     try {
-      const response = await fetch(`${BACKEND}/api/admin/tts/test`, {
+      const response = await authFetch(`${BACKEND}/api/admin/tts/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -1035,7 +1364,7 @@ export default function AdminPanel() {
   const testTokens = async () => {
     setTestingTokens(true)
     try {
-      const response = await fetch(`${BACKEND}/api/admin/test-tokens`, {
+      const response = await authFetch(`${BACKEND}/api/admin/test-tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: 'Test di conteggio token.' })
@@ -1054,7 +1383,7 @@ export default function AdminPanel() {
   const loadWhisperModels = async () => {
     try {
       console.log('Caricamento modelli Whisper...')
-      const response = await fetch(`${BACKEND}/api/admin/whisper/models`)
+      const response = await authFetch(`${BACKEND}/api/admin/whisper/models`)
       const data = await response.json()
       
       console.log('Risposta backend:', data)
@@ -1091,7 +1420,7 @@ export default function AdminPanel() {
   const downloadWhisperModel = async (modelName: string) => {
     setDownloadingModel(modelName)
     try {
-      const response = await fetch(`${BACKEND}/api/admin/whisper/download`, {
+      const response = await authFetch(`${BACKEND}/api/admin/whisper/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: modelName })
@@ -1113,7 +1442,7 @@ export default function AdminPanel() {
 
   const setWhisperModel = async (modelName: string) => {
     try {
-      const response = await fetch(`${BACKEND}/api/admin/whisper/set-model`, {
+      const response = await authFetch(`${BACKEND}/api/admin/whisper/set-model`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: modelName })
@@ -1203,8 +1532,7 @@ export default function AdminPanel() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-LLM-Provider': config?.default_provider || 'local',
-          'X-Admin-Password': password
+          'X-LLM-Provider': config?.default_provider || 'local'
         },
         body: JSON.stringify({ message: tokenTestInput })
       })
@@ -1217,55 +1545,274 @@ export default function AdminPanel() {
     }
   }
 
-  if (!authenticated) {
+  // Rimosso lo schermo "Inserisci la password": il pannello è protetto dal login/ruolo a livello di route
+
+  // Pipeline Dialog Components
+  function PipelineRouteAddDialog() {
+    const [pattern, setPattern] = useState('')
+    const [topic, setTopic] = useState('')
+
+    const handleSubmit = () => {
+      if (pattern.trim() && topic.trim()) {
+        addPipelineRoute(pattern.trim(), topic.trim())
+        setPattern('')
+        setTopic('')
+        setPipelineDialogs({...pipelineDialogs, addRoute: false})
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, addRoute: false})
+      setPattern('')
+      setTopic('')
+    }
+
     return (
-      <Container maxWidth="sm" sx={{ py: 8 }}>
-        <Paper sx={{ p: 4, textAlign: 'center' }}>
-          <SecurityIcon sx={{ fontSize: 64, color: 'primary.main', mb: 2 }} />
-          <Typography variant="h4" gutterBottom>
-            Pannello Amministratore
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Inserisci la password per accedere alle impostazioni
-          </Typography>
-          
-          <TextField
-            fullWidth
-            type="password"
-            label="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && authenticate()}
-            sx={{ mb: 2 }}
-          />
-          
-          <Button 
-            variant="contained" 
-            onClick={authenticate}
-            fullWidth
-            size="large"
+      <Dialog open={pipelineDialogs.addRoute} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Nuova Route</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim()}
           >
-            Accedi
+            Aggiungi
           </Button>
-          
-          {message && (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {message}
-            </Alert>
-          )}
-        </Paper>
-      </Container>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineRouteEditDialog() {
+    const [pattern, setPattern] = useState('')
+    const [topic, setTopic] = useState('')
+
+    useEffect(() => {
+      if (selectedPipelineRoute) {
+        setPattern(selectedPipelineRoute.pattern)
+        setTopic(selectedPipelineRoute.topic)
+      }
+    }, [selectedPipelineRoute])
+
+    const handleSubmit = () => {
+      if (selectedPipelineRoute && pattern.trim() && topic.trim()) {
+        updatePipelineRoute(selectedPipelineRoute.pattern, selectedPipelineRoute.topic, pattern.trim(), topic.trim())
+        setPattern('')
+        setTopic('')
+        setPipelineDialogs({...pipelineDialogs, editRoute: false})
+        setSelectedPipelineRoute(null)
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, editRoute: false})
+      setSelectedPipelineRoute(null)
+      setPattern('')
+      setTopic('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.editRoute} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Route</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Pattern Regex"
+              value={pattern}
+              onChange={(e) => setPattern(e.target.value)}
+              fullWidth
+              placeholder="\\b(parola|frase)\\b"
+              helperText="Inserisci un pattern regex valido per il matching"
+            />
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic per questa route"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!pattern.trim() || !topic.trim()}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineFileAddDialog() {
+    const [topic, setTopic] = useState('')
+    const [filename, setFilename] = useState('')
+
+    const handleSubmit = () => {
+      if (topic.trim() && filename.trim()) {
+        addPipelineFile(topic.trim(), filename.trim())
+        setTopic('')
+        setFilename('')
+        setPipelineDialogs({...pipelineDialogs, addFile: false})
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, addFile: false})
+      setTopic('')
+      setFilename('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.addFile} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Aggiungi Mapping File</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim()}
+          >
+            Aggiungi
+          </Button>
+        </DialogActions>
+      </Dialog>
+    )
+  }
+
+  function PipelineFileEditDialog() {
+    const [topic, setTopic] = useState('')
+    const [filename, setFilename] = useState('')
+
+    useEffect(() => {
+      if (selectedPipelineFile) {
+        setTopic(selectedPipelineFile.topic)
+        setFilename(selectedPipelineFile.filename)
+      }
+    }, [selectedPipelineFile])
+
+    const handleSubmit = () => {
+      if (selectedPipelineFile && topic.trim() && filename.trim()) {
+        updatePipelineFile(selectedPipelineFile.topic, topic.trim(), filename.trim())
+        setTopic('')
+        setFilename('')
+        setPipelineDialogs({...pipelineDialogs, editFile: false})
+        setSelectedPipelineFile(null)
+      }
+    }
+
+    const handleClose = () => {
+      setPipelineDialogs({...pipelineDialogs, editFile: false})
+      setSelectedPipelineFile(null)
+      setTopic('')
+      setFilename('')
+    }
+
+    return (
+      <Dialog open={pipelineDialogs.editFile} onClose={handleClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Modifica Mapping File</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Topic"
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              fullWidth
+              placeholder="nome_topic"
+              helperText="Nome del topic da associare al file"
+            />
+            <FormControl fullWidth>
+              <InputLabel>File</InputLabel>
+              <Select
+                value={filename}
+                onChange={(e) => setFilename(e.target.value)}
+                label="File"
+              >
+                {availableFiles.map((file) => (
+                  <MenuItem key={file} value={file}>{file}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleClose}>Annulla</Button>
+          <Button
+            variant="contained"
+            onClick={handleSubmit}
+            disabled={!topic.trim() || !filename.trim()}
+          >
+            Salva
+          </Button>
+        </DialogActions>
+      </Dialog>
     )
   }
 
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
+      {authWarning && (
+        <Alert severity="warning" sx={{ mb: 2 }}
+          action={<Button color="inherit" size="small" onClick={()=> { logout(); window.location.href = '/admin' }}>Rilogga</Button>}
+        >
+          Sessione scaduta o permessi insufficienti. Accedi di nuovo come amministratore.
+        </Alert>
+      )}
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
         <Typography variant="h4">
           <SettingsIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
           Pannello Amministratore
         </Typography>
-        <Button variant="outlined" onClick={() => setAuthenticated(false)}>
+        <Button variant="outlined" onClick={() => { logout(); window.location.href = '/'; }}>
           Esci
         </Button>
       </Stack>
@@ -1289,11 +1836,22 @@ export default function AdminPanel() {
             <Box display="flex" alignItems="center" gap={1}>
               <AIIcon color="primary" />
               <Typography variant="h6">Provider AI</Typography>
-              <Chip 
-                label={config ? Object.values(config.ai_providers).filter(p => p.enabled).length : 0} 
-                size="small" 
-                color="primary" 
-              />
+              {config && (
+                <>
+                  <Chip label={`Attivi: ${Object.values(config.ai_providers).filter((p:any)=>p.enabled).length}`} size="small" color="primary" />
+                  {(() => {
+                    const providers = Object.values(config.ai_providers) as any[]
+                    const keys = providers.filter(p=> 'api_key_status' in p && p.api_key_status === 'configured').length
+                    const models = providers.reduce((sum,p)=> sum + (Array.isArray(p.models)? p.models.length:0), 0)
+                    return (
+                      <>
+                        <Chip label={`API keys: ${keys}`} size="small" variant="outlined" />
+                        <Chip label={`Modelli: ${models}`} size="small" variant="outlined" />
+                      </>
+                    )
+                  })()}
+                </>
+              )}
             </Box>
           </AccordionSummary>
           <AccordionDetails>
@@ -1428,11 +1986,22 @@ export default function AdminPanel() {
             <Box display="flex" alignItems="center" gap={1}>
               <VolumeIcon color="primary" />
               <Typography variant="h6">Provider TTS</Typography>
-              <Chip 
-                label={config ? Object.values(config.tts_providers).filter(p => p.enabled).length : 0} 
-                size="small" 
-                color="primary" 
-              />
+              {config && (
+                <>
+                  <Chip label={`Attivi: ${Object.values(config.tts_providers).filter((p:any)=>p.enabled).length}`} size="small" color="primary" />
+                  {(() => {
+                    const providers = Object.values(config.tts_providers) as any[]
+                    const keys = providers.filter(p=> 'api_key_status' in p && p.api_key_status === 'configured').length
+                    const voices = providers.reduce((sum,p)=> sum + (Array.isArray(p.voices)? p.voices.length:0), 0)
+                    return (
+                      <>
+                        <Chip label={`API keys: ${keys}`} size="small" variant="outlined" />
+                        <Chip label={`Voci: ${voices}`} size="small" variant="outlined" />
+                      </>
+                    )
+                  })()}
+                </>
+              )}
             </Box>
           </AccordionSummary>
           <AccordionDetails>
@@ -1968,8 +2537,8 @@ export default function AdminPanel() {
 
         {/* Pannello Gestione Prompts */}
         <Accordion 
-          expanded={expandedPanels.prompts} 
-          onChange={handlePanelExpansion('prompts')}
+          expanded={expandedPanels.personalities} 
+          onChange={handlePanelExpansion('personalities')}
           sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
         >
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -1982,33 +2551,38 @@ export default function AdminPanel() {
             <Stack spacing={3}>
               {/* Prompt Sistema */}
               <Box>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                  <Typography variant="subtitle1">
-                    Prompt Sistema
-                  </Typography>
-                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                    <Typography variant="caption" color="textSecondary">
-                      Righe:
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSystemPromptRows(Math.max(3, systemPromptRows - 2))}
-                      disabled={systemPromptRows <= 3}
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1, gap: 2, flexWrap: 'wrap' }}>
+                  <Typography variant="subtitle1">Prompt Sistema</Typography>
+                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select
+                      value={selectedSystemPromptId}
+                      onChange={(e)=>{
+                        const id = e.target.value
+                        setSelectedSystemPromptId(id)
+                        const p = systemPrompts.find(sp=>sp.id===id)
+                        if (p) { setSelectedSystemPromptName(p.name); setSystemPrompt(p.text || ''); updatePromptStats(p.text || '') }
+                      }}
                     >
-                      <RemoveIcon />
-                    </IconButton>
-                    <Typography variant="caption" sx={{ minWidth: '20px', textAlign: 'center' }}>
-                      {systemPromptRows}
-                    </Typography>
-                    <IconButton 
-                      size="small" 
-                      onClick={() => setSystemPromptRows(Math.min(30, systemPromptRows + 2))}
-                      disabled={systemPromptRows >= 30}
-                    >
-                      <AddIcon />
-                    </IconButton>
+                      {systemPrompts.map(p=> (
+                        <option key={p.id} value={p.id}>{p.name}{p.id===activeSystemPromptId?' (attivo)':''}</option>
+                      ))}
+                    </select>
+                    <Button variant="outlined" size="small" onClick={createNewSystemPrompt}>Nuovo</Button>
+                    <Button variant="outlined" size="small" color="error" onClick={deleteSystemPromptEntry} disabled={systemPrompts.length<=1}>Elimina</Button>
+                    <Button variant="contained" size="small" onClick={setActiveSystemPrompt} disabled={!selectedSystemPromptId || selectedSystemPromptId===activeSystemPromptId}>Imposta Attivo</Button>
+                    <Typography variant="caption" color="textSecondary">Righe:</Typography>
+                    <IconButton size="small" onClick={() => setSystemPromptRows(Math.max(3, systemPromptRows - 2))} disabled={systemPromptRows <= 3}><RemoveIcon /></IconButton>
+                    <Typography variant="caption" sx={{ minWidth: '20px', textAlign: 'center' }}>{systemPromptRows}</Typography>
+                    <IconButton size="small" onClick={() => setSystemPromptRows(Math.min(30, systemPromptRows + 2))} disabled={systemPromptRows >= 30}><AddIcon /></IconButton>
                   </Box>
                 </Box>
+                <TextField
+                  fullWidth
+                  label="Nome profilo"
+                  value={selectedSystemPromptName}
+                  onChange={(e)=> setSelectedSystemPromptName(e.target.value)}
+                  sx={{ mb: 1 }}
+                />
                 <TextField
                   fullWidth
                   multiline
@@ -2067,6 +2641,101 @@ export default function AdminPanel() {
                     </Typography>
                   </Alert>
                 )}
+              </Box>
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Pannello Personalità (Preset) */}
+        <Accordion 
+          expanded={expandedPanels.personalities} 
+          onChange={handlePanelExpansion('personalities')}
+          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <PsychologyIcon color="primary" />
+              <Typography variant="h6">Personalità (Preset)</Typography>
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={2}>
+              <Box sx={{ display:'flex', gap:1, alignItems:'center', flexWrap:'wrap' }}>
+                <FormControl size="small" sx={{ minWidth: 240 }}>
+                  <InputLabel>Personalità</InputLabel>
+                  <Select
+                    label="Personalità"
+                    value={selectedPersonalityId}
+                    onChange={(e)=>{
+                      const id = e.target.value as string; setSelectedPersonalityId(id);
+                      const p = personalities.find(pp=>pp.id===id); if(p){
+                        setPersonalityName(p.name); setPersonalityProvider(p.provider); setPersonalityModel(p.model); setPersonalityPromptId(p.system_prompt_id);
+                      }
+                    }}
+                  >
+                    {personalities.map(p => (
+                      <MenuItem key={p.id} value={p.id}>
+                        <Typography variant="body2">{p.name}{p.id===defaultPersonalityId?' (default)':''}</Typography>
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <Button size="small" variant="outlined" onClick={createPersonality}>Nuova</Button>
+                <Button size="small" color="error" variant="outlined" onClick={deletePersonality} disabled={!selectedPersonalityId}>Elimina</Button>
+                <Button size="small" variant="contained" onClick={setDefaultPersonality} disabled={!selectedPersonalityId || selectedPersonalityId===defaultPersonalityId}>Imposta Default</Button>
+              </Box>
+              <TextField label="Nome" size="small" fullWidth value={personalityName} onChange={(e)=>setPersonalityName(e.target.value)} />
+              <Box sx={{ display:'flex', gap:2, flexWrap:'wrap' }}>
+                <FormControl size="small" sx={{ minWidth:160 }}>
+                  <InputLabel>Provider</InputLabel>
+                  <Select label="Provider" value={personalityProvider} onChange={(e)=>{
+                    const val = e.target.value as string
+                    setPersonalityProvider(val)
+                    // If models available for provider, pick the first by default
+                    const models = getProviderModels(val)
+                    if (models.length>0) setPersonalityModel(models[0])
+                    else {
+                      // try loading models from backend for this provider
+                      loadModels(val)
+                    }
+                  }}>
+                    {config && Object.keys(config.ai_providers).map(pk=> (
+                      <MenuItem key={pk} value={pk}>{pk}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                {/* Modello: dropdown se disponibile, altrimenti input libero */}
+                {(() => {
+                  const models = getProviderModels(personalityProvider)
+                  if (models.length > 0) {
+                    return (
+                      <FormControl size="small" sx={{ minWidth: 200 }}>
+                        <InputLabel>Modello</InputLabel>
+                        <Select
+                          label="Modello"
+                          value={models.includes(personalityModel) ? personalityModel : models[0]}
+                          onChange={(e)=> setPersonalityModel(e.target.value as string)}
+                        >
+                          {models.map(m => (<MenuItem key={m} value={m}>{m}</MenuItem>))}
+                        </Select>
+                      </FormControl>
+                    )
+                  }
+                  return (
+                    <TextField label="Modello" size="small" value={personalityModel} onChange={(e)=>setPersonalityModel(e.target.value)} />
+                  )
+                })()}
+                <FormControl size="small" sx={{ minWidth:200 }}>
+                  <InputLabel>System Prompt</InputLabel>
+                  <Select label="System Prompt" value={personalityPromptId} onChange={(e)=>setPersonalityPromptId(e.target.value as string)}>
+                    {systemPrompts.map(sp=> (
+                      <MenuItem key={sp.id} value={sp.id}>{sp.name}</MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Box>
+              <Box>
+                <Button variant="contained" onClick={savePersonality}>Salva Personalità</Button>
               </Box>
             </Stack>
           </AccordionDetails>
@@ -2167,14 +2836,24 @@ export default function AdminPanel() {
                       <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
                         File Mapping ({Object.keys(pipelineConfig.files || {}).length})
                       </Typography>
-                      <Button
+                      <Box sx={{ display:'flex', gap:1 }}>
+                        <Button
                         variant="contained"
                         size="small"
                         startIcon={<AddIcon />}
                         onClick={() => setPipelineDialogs({...pipelineDialogs, addFile: true})}
                       >
                         Aggiungi File
-                      </Button>
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<UploadIcon />}
+                          onClick={uploadPipelineFile}
+                        >
+                          Carica File
+                        </Button>
+                      </Box>
                     </Box>
                     
                     <TableContainer sx={{ maxHeight: 300 }}>
@@ -2206,6 +2885,13 @@ export default function AdminPanel() {
                                   }}
                                 >
                                   <EditIcon />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  title="Modifica contenuto"
+                                  onClick={() => openFileEditor(filename)}
+                                >
+                                  <DescriptionIcon />
                                 </IconButton>
                                 <IconButton
                                   size="small"
@@ -2387,257 +3073,30 @@ export default function AdminPanel() {
       <PipelineRouteEditDialog />
       <PipelineFileAddDialog />
       <PipelineFileEditDialog />
+      {/* File Editor Dialog */}
+      <Dialog open={fileEditorOpen} onClose={()=> setFileEditorOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Modifica file: {fileEditorFilename}</DialogTitle>
+        <DialogContent>
+          {fileEditorLoading ? (
+            <Box sx={{ py:2, display:'flex', justifyContent:'center' }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <TextField
+              fullWidth
+              multiline
+              minRows={20}
+              value={fileEditorContent}
+              onChange={(e)=> setFileEditorContent(e.target.value)}
+              sx={{ mt: 1 }}
+            />
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setFileEditorOpen(false)}>Chiudi</Button>
+          <Button variant="contained" onClick={saveFileEditor} disabled={fileEditorSaving || fileEditorLoading}>{fileEditorSaving ? 'Salvataggio...' : 'Salva'}</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   )
-
-  // Pipeline Dialog Components
-  function PipelineRouteAddDialog() {
-    const [pattern, setPattern] = useState('')
-    const [topic, setTopic] = useState('')
-
-    const handleSubmit = () => {
-      if (pattern.trim() && topic.trim()) {
-        addPipelineRoute(pattern.trim(), topic.trim())
-        setPattern('')
-        setTopic('')
-        setPipelineDialogs({...pipelineDialogs, addRoute: false})
-      }
-    }
-
-    const handleClose = () => {
-      setPipelineDialogs({...pipelineDialogs, addRoute: false})
-      setPattern('')
-      setTopic('')
-    }
-
-    return (
-      <Dialog open={pipelineDialogs.addRoute} onClose={handleClose} maxWidth="sm" fullWidth>
-        <DialogTitle>Aggiungi Nuova Route</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField
-              label="Pattern Regex"
-              value={pattern}
-              onChange={(e) => setPattern(e.target.value)}
-              fullWidth
-              placeholder="\\b(parola|frase)\\b"
-              helperText="Inserisci un pattern regex valido per il matching"
-            />
-            <TextField
-              label="Topic"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              fullWidth
-              placeholder="nome_topic"
-              helperText="Nome del topic per questa route"
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleClose}>Annulla</Button>
-          <Button
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={!pattern.trim() || !topic.trim()}
-          >
-            Aggiungi
-          </Button>
-        </DialogActions>
-      </Dialog>
-    )
-  }
-
-  function PipelineRouteEditDialog() {
-    const [pattern, setPattern] = useState('')
-    const [topic, setTopic] = useState('')
-
-    useEffect(() => {
-      if (selectedPipelineRoute) {
-        setPattern(selectedPipelineRoute.pattern)
-        setTopic(selectedPipelineRoute.topic)
-      }
-    }, [selectedPipelineRoute])
-
-    const handleSubmit = () => {
-      if (selectedPipelineRoute && pattern.trim() && topic.trim()) {
-        updatePipelineRoute(selectedPipelineRoute.pattern, selectedPipelineRoute.topic, pattern.trim(), topic.trim())
-        setPattern('')
-        setTopic('')
-        setPipelineDialogs({...pipelineDialogs, editRoute: false})
-        setSelectedPipelineRoute(null)
-      }
-    }
-
-    const handleClose = () => {
-      setPipelineDialogs({...pipelineDialogs, editRoute: false})
-      setSelectedPipelineRoute(null)
-      setPattern('')
-      setTopic('')
-    }
-
-    return (
-      <Dialog open={pipelineDialogs.editRoute} onClose={handleClose} maxWidth="sm" fullWidth>
-        <DialogTitle>Modifica Route</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField
-              label="Pattern Regex"
-              value={pattern}
-              onChange={(e) => setPattern(e.target.value)}
-              fullWidth
-              placeholder="\\b(parola|frase)\\b"
-              helperText="Inserisci un pattern regex valido per il matching"
-            />
-            <TextField
-              label="Topic"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              fullWidth
-              placeholder="nome_topic"
-              helperText="Nome del topic per questa route"
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleClose}>Annulla</Button>
-          <Button
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={!pattern.trim() || !topic.trim()}
-          >
-            Salva
-          </Button>
-        </DialogActions>
-      </Dialog>
-    )
-  }
-
-  function PipelineFileAddDialog() {
-    const [topic, setTopic] = useState('')
-    const [filename, setFilename] = useState('')
-
-    const handleSubmit = () => {
-      if (topic.trim() && filename.trim()) {
-        addPipelineFile(topic.trim(), filename.trim())
-        setTopic('')
-        setFilename('')
-        setPipelineDialogs({...pipelineDialogs, addFile: false})
-      }
-    }
-
-    const handleClose = () => {
-      setPipelineDialogs({...pipelineDialogs, addFile: false})
-      setTopic('')
-      setFilename('')
-    }
-
-    return (
-      <Dialog open={pipelineDialogs.addFile} onClose={handleClose} maxWidth="sm" fullWidth>
-        <DialogTitle>Aggiungi Mapping File</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField
-              label="Topic"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              fullWidth
-              placeholder="nome_topic"
-              helperText="Nome del topic da associare al file"
-            />
-            <FormControl fullWidth>
-              <InputLabel>File</InputLabel>
-              <Select
-                value={filename}
-                onChange={(e) => setFilename(e.target.value)}
-                label="File"
-              >
-                {availableFiles.map((file) => (
-                  <MenuItem key={file} value={file}>{file}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleClose}>Annulla</Button>
-          <Button
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={!topic.trim() || !filename.trim()}
-          >
-            Aggiungi
-          </Button>
-        </DialogActions>
-      </Dialog>
-    )
-  }
-
-  function PipelineFileEditDialog() {
-    const [topic, setTopic] = useState('')
-    const [filename, setFilename] = useState('')
-
-    useEffect(() => {
-      if (selectedPipelineFile) {
-        setTopic(selectedPipelineFile.topic)
-        setFilename(selectedPipelineFile.filename)
-      }
-    }, [selectedPipelineFile])
-
-    const handleSubmit = () => {
-      if (selectedPipelineFile && topic.trim() && filename.trim()) {
-        updatePipelineFile(selectedPipelineFile.topic, topic.trim(), filename.trim())
-        setTopic('')
-        setFilename('')
-        setPipelineDialogs({...pipelineDialogs, editFile: false})
-        setSelectedPipelineFile(null)
-      }
-    }
-
-    const handleClose = () => {
-      setPipelineDialogs({...pipelineDialogs, editFile: false})
-      setSelectedPipelineFile(null)
-      setTopic('')
-      setFilename('')
-    }
-
-    return (
-      <Dialog open={pipelineDialogs.editFile} onClose={handleClose} maxWidth="sm" fullWidth>
-        <DialogTitle>Modifica Mapping File</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField
-              label="Topic"
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              fullWidth
-              placeholder="nome_topic"
-              helperText="Nome del topic da associare al file"
-            />
-            <FormControl fullWidth>
-              <InputLabel>File</InputLabel>
-              <Select
-                value={filename}
-                onChange={(e) => setFilename(e.target.value)}
-                label="File"
-              >
-                {availableFiles.map((file) => (
-                  <MenuItem key={file} value={file}>{file}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleClose}>Annulla</Button>
-          <Button
-            variant="contained"
-            onClick={handleSubmit}
-            disabled={!topic.trim() || !filename.trim()}
-          >
-            Salva
-          </Button>
-        </DialogActions>
-      </Dialog>
-    )
-  }
 }

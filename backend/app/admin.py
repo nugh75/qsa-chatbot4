@@ -1,14 +1,27 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import json
 import os
-from .prompts import load_system_prompt, save_system_prompt, load_summary_prompt, save_summary_prompt
+from .prompts import (
+    load_system_prompt,
+    save_system_prompt,
+    load_summary_prompt,
+    save_summary_prompt,
+    load_system_prompts,
+    upsert_system_prompt,
+    set_active_system_prompt,
+    delete_system_prompt,
+)
+from fastapi import UploadFile
+from fastapi import File as FastFile
+from fastapi.staticfiles import StaticFiles
 from .topic_router import refresh_routes_cache
 from .rag import refresh_files_cache
 from .usage import read_usage, usage_stats, reset_usage, query_usage
 from .memory import get_memory
 from .transcribe import whisper_service
+from .auth import AuthManager, get_current_admin_user
 from pathlib import Path
 import re
 import sqlite3
@@ -17,12 +30,18 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from .rag_engine import RAGEngine
+from .personalities import (
+    load_personalities,
+    upsert_personality,
+    delete_personality,
+    set_default_personality,
+)
 
 # Configurazione database - usa il percorso relativo alla directory backend
 BASE_DIR = Path(__file__).parent.parent
-DATABASE_PATH = BASE_DIR / "qsa_chatbot.db"
+DATABASE_PATH = BASE_DIR / "storage" / "databases" / "qsa_chatbot.db"
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_admin_user)])
 
 class AdminConfig(BaseModel):
     ai_providers: Dict[str, Any]
@@ -110,7 +129,7 @@ DEFAULT_CONFIG = {
 
 def get_config_file_path():
     """Ottieni il percorso del file di configurazione"""
-    return os.path.join(os.path.dirname(__file__), "..", "admin_config.json")
+    return os.path.join(os.path.dirname(__file__), "..", "config", "admin_config.json")
 
 def load_config():
     """Carica la configurazione dal file o usa quella predefinita"""
@@ -215,6 +234,47 @@ async def reset_system_prompt():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset prompt: {str(e)}")
 
+# ---- Multiple system prompts management ----
+from typing import Optional
+
+class SystemPromptEntry(BaseModel):
+    id: Optional[str] = None
+    name: str
+    text: str
+    set_active: bool = False
+
+@router.get("/admin/system-prompts")
+async def list_system_prompts():
+    try:
+        data = load_system_prompts()
+        return {"active_id": data.get("active_id"), "prompts": data.get("prompts", [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento prompts: {str(e)}")
+
+@router.post("/admin/system-prompts")
+async def upsert_system_prompt_api(entry: SystemPromptEntry):
+    try:
+        res = upsert_system_prompt(entry.name, entry.text, entry.id, entry.set_active)
+        return {"success": True, "id": res.get("id")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio prompt: {str(e)}")
+
+@router.post("/admin/system-prompts/activate")
+async def activate_system_prompt(prompt_id: str):
+    try:
+        set_active_system_prompt(prompt_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore attivazione prompt: {str(e)}")
+
+@router.delete("/admin/system-prompts/{prompt_id}")
+async def delete_system_prompt_api(prompt_id: str):
+    try:
+        delete_system_prompt(prompt_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore eliminazione prompt: {str(e)}")
+
 # ---- Summary prompt endpoints ----
 @router.get("/admin/summary-prompt")
 async def get_summary_prompt():
@@ -278,8 +338,90 @@ async def update_summary_settings(payload: SummarySettingsIn):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio impostazioni summary: {str(e)}")
 
+# ---- Personalities (presets) management ----
+class PersonalityIn(BaseModel):
+    id: Optional[str] = None
+    name: str
+    system_prompt_id: str
+    provider: str
+    model: str
+    set_default: bool = False
+    avatar: Optional[str] = None  # filename under storage/avatars
+
+@router.get("/admin/personalities")
+async def list_personalities_admin():
+    try:
+        return load_personalities()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento personalità: {str(e)}")
+
+@router.post("/admin/personalities")
+async def upsert_personality_admin(p: PersonalityIn):
+    try:
+        res = upsert_personality(p.name, p.system_prompt_id, p.provider, p.model, p.id, p.set_default, p.avatar)
+        return {"success": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore salvataggio personalità: {str(e)}")
+
+@router.delete("/admin/personalities/{personality_id}")
+async def delete_personality_admin(personality_id: str):
+    try:
+        delete_personality(personality_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore eliminazione personalità: {str(e)}")
+
+@router.post("/admin/personalities/default")
+async def set_default_personality_admin(personality_id: str):
+    try:
+        set_default_personality(personality_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore impostazione default: {str(e)}")
+
+# ---- Avatar upload/list ----
+@router.post("/admin/avatars/upload")
+async def upload_avatar(file: UploadFile = FastFile(...)):
+    try:
+        allowed = {".png", ".jpg", ".jpeg", ".webp"}
+        from pathlib import Path
+        ext = Path(file.filename).suffix.lower()
+        if ext not in allowed:
+            raise HTTPException(status_code=400, detail="Formato non supportato. Usa PNG/JPG/WEBP.")
+        # sanitize filename
+        base = Path(file.filename).stem
+        safe = re.sub(r"[^a-zA-Z0-9_-]", "-", base).strip("-") or "avatar"
+        # unique suffix
+        import time
+        fname = f"{safe}-{int(time.time())}{ext}"
+        target_dir = Path(__file__).parent.parent / "storage" / "avatars"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / fname
+        with open(target_path, "wb") as out:
+            out.write(await file.read())
+        return {"success": True, "filename": fname, "url": f"/static/avatars/{fname}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore upload avatar: {str(e)}")
+
+@router.get("/admin/avatars")
+async def list_avatars():
+    try:
+        from pathlib import Path
+        avatars_dir = Path(__file__).parent.parent / "storage" / "avatars"
+        if not avatars_dir.exists():
+            return {"avatars": []}
+        items = []
+        for p in avatars_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
+                items.append({"filename": p.name, "url": f"/static/avatars/{p.name}"})
+        return {"avatars": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore elenco avatar: {str(e)}")
+
 # ---------------- Pipeline (routing + files) -----------------
-PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -337,7 +479,7 @@ async def reset_pipeline_config():
     """Ripristina pipeline_config.json ai valori iniziali se presenti nel repository."""
     try:
         # Carica il file originale dal repository (se esiste) oppure fallback hardcoded
-        default_path = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+        default_path = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
         if default_path.exists():
             original = json.loads(default_path.read_text(encoding="utf-8"))
         else:
@@ -547,15 +689,79 @@ async def get_available_files():
         if not data_dir.exists():
             return {"files": []}
         
-        # Lista tutti i file .txt, .md nella directory data
+        # Lista file supportati nella directory data
         available_files = []
         for file_path in data_dir.iterdir():
-            if file_path.is_file() and file_path.suffix.lower() in ['.txt', '.md']:
+            if file_path.is_file() and file_path.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
                 available_files.append(file_path.name)
         
         return {"files": sorted(available_files)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel recupero file disponibili: {str(e)}")
+
+# ---- Pipeline file content edit/upload ----
+def _pipeline_data_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "data"
+
+def _safe_pipeline_file(filename: str) -> Path:
+    if not filename or any(sep in filename for sep in ["..", "/", "\\"]):
+        raise HTTPException(status_code=400, detail="Nome file non valido")
+    base = _pipeline_data_dir().resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    p = (base / filename).resolve()
+    if base not in p.parents and base != p:
+        raise HTTPException(status_code=400, detail="Percorso non consentito")
+    return p
+
+@router.get("/admin/pipeline/file/content")
+async def get_pipeline_file_content(filename: str):
+    try:
+        path = _safe_pipeline_file(filename)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File non trovato")
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Il file non è testuale (UTF-8)")
+        return {"filename": filename, "content": content}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura file: {str(e)}")
+
+class PipelineFileContentIn(BaseModel):
+    filename: str
+    content: str
+
+@router.post("/admin/pipeline/file/content")
+async def save_pipeline_file_content(payload: PipelineFileContentIn):
+    try:
+        path = _safe_pipeline_file(payload.filename)
+        path.write_text(payload.content, encoding="utf-8")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore scrittura file: {str(e)}")
+
+@router.post("/admin/pipeline/file/upload")
+async def upload_pipeline_file(file: UploadFile = FastFile(...)):
+    try:
+        original = Path(file.filename).name
+        if not original:
+            raise HTTPException(status_code=400, detail="Filename mancante")
+        safe_name = re.sub(r"[^a-zA-Z0-9_.\-]", "-", original)
+        target = _safe_pipeline_file(safe_name)
+        if target.exists():
+            import time
+            target = target.with_name(f"{target.stem}-{int(time.time())}{target.suffix}")
+        with open(target, "wb") as out:
+            out.write(await file.read())
+        return {"success": True, "filename": target.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore upload file: {str(e)}")
 
 # --------------- Usage logging endpoints ---------------
 @router.get("/admin/usage")
@@ -1166,40 +1372,46 @@ async def admin_delete_user(user_id: int):
 
 @router.post("/admin/users/{user_id}/reset-password")
 async def admin_reset_user_password(user_id: int):
-    """Reset user password and return new temporary password"""
+    """Reset user password and return new temporary password.
+    Also clears failed attempts and lock, and updates user_key_hash.
+    """
     try:
         conn = sqlite3.connect(str(DATABASE_PATH))
         cursor = conn.cursor()
-        
-        # First check if user exists
         cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        user = cursor.fetchone()
-        
-        if not user:
+        row = cursor.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Utente non trovato")
-        
+        email = row[0]
+
         # Generate new temporary password
         characters = string.ascii_letters + string.digits + "!@#$%&*"
         temp_password = ''.join(secrets.choice(characters) for _ in range(12))
-        
-        # Hash the new password
-        password_hash = bcrypt.hashpw(temp_password.encode('utf-8'), bcrypt.gensalt())
-        
-        # Update user password
+
+        # Hashes
+        new_hash = AuthManager.hash_password(temp_password)
+        new_user_key_hash = AuthManager.generate_user_key_hash(temp_password, email)
+
+        # Update user
         cursor.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (password_hash.decode('utf-8'), user_id)
+            """
+            UPDATE users 
+            SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL, must_change_password = 1
+            WHERE id = ?
+            """,
+            (new_hash, new_user_key_hash, user_id)
         )
-        
         conn.commit()
         conn.close()
-        
+
         return {
-            "success": True, 
-            "message": f"Password reset per {user[0]}",
+            "success": True,
+            "message": f"Password reset per {email}",
             "temporary_password": temp_password,
-            "email": user[0]
+            "email": email
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1217,4 +1429,3 @@ async def admin_test_users():
         "current_working_directory": os.getcwd(),
         "absolute_database_path": str(DATABASE_PATH.absolute())
     }
-

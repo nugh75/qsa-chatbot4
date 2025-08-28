@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "pipeline_config.json"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 @lru_cache(maxsize=1)
 def load_routes() -> List[Tuple[str, str]]:

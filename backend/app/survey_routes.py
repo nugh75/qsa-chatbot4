@@ -8,6 +8,13 @@ router = APIRouter()
 
 class SurveySubmission(BaseModel):
     session_id: Optional[str] = None
+    # Demografia
+    demo_eta: Optional[int] = None
+    demo_sesso: Optional[str] = None
+    demo_istruzione: Optional[str] = None
+    demo_tipo_istituto: Optional[str] = None
+    demo_provenienza: Optional[str] = None
+    demo_area: Optional[str] = None
     q_utilita: Optional[int] = None
     q_pertinenza: Optional[int] = None
     q_chiarezza: Optional[int] = None
@@ -24,13 +31,27 @@ class SurveySubmission(BaseModel):
 @router.post('/survey/submit')
 async def submit_survey(payload: SurveySubmission):
     data = payload.dict()
-    if not any(data.get(f) for f in SurveyModel.FIELDS):
+    # Richiedi tutte le domande Likert (1-5)
+    if not all((data.get(f) is not None and 1 <= data.get(f) <= 5) for f in SurveyModel.FIELDS):
         raise HTTPException(status_code=400, detail="Nessuna risposta Likert fornita")
     # Validazione range 1-5
     for f in SurveyModel.FIELDS:
         v = data.get(f)
         if v is not None and (v < 1 or v > 5):
             raise HTTPException(status_code=400, detail=f"Valore fuori range per {f}")
+    # Validazione demografia obbligatoria
+    if data.get('demo_eta') is None:
+        raise HTTPException(status_code=400, detail="Età obbligatoria")
+    if not data.get('demo_sesso'):
+        raise HTTPException(status_code=400, detail="Sesso obbligatorio")
+    if not data.get('demo_istruzione'):
+        raise HTTPException(status_code=400, detail="Istruzione obbligatoria")
+    if not data.get('demo_tipo_istituto'):
+        raise HTTPException(status_code=400, detail="Tipo istituto obbligatorio")
+    if not data.get('demo_provenienza'):
+        raise HTTPException(status_code=400, detail="Provenienza obbligatoria")
+    if not data.get('demo_area'):
+        raise HTTPException(status_code=400, detail="Area di studio obbligatoria (STEM/Umanistiche)")
     if not data.get('session_id'):
         data['session_id'] = secrets.token_hex(8)
     ok = SurveyModel.add_response(data)

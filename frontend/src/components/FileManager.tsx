@@ -15,6 +15,7 @@ import {
   CloudUpload as UploadIcon,
 } from '@mui/icons-material';
 import { ProcessedFile } from './FileUpload';
+import { authFetch } from '../utils/authFetch';
 import FilePreview from './FilePreview';
 
 interface FileManagerProps {
@@ -55,7 +56,7 @@ const FileManager: React.FC<FileManagerProps> = ({
         formData.append('files', file);
       });
 
-      const response = await fetch('/api/upload', {
+      const response = await authFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });

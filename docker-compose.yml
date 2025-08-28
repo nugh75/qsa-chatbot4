@@ -5,12 +5,27 @@ services:
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_super_secret_change_me} # Cambia in produzione
     ports:
       - "8005:8005"
     volumes:
+      # Dati di input (read-only)
       - ./data:/app/data:ro
+      
+      # Storage persistente
+      - ./backend/storage:/app/storage
+      
+      # Modelli AI (per performance, evita di scaricarli ad ogni avvio)
+      - ./backend/models:/app/models
+      
+      # Configurazioni (opzionale: per modifiche senza rebuild)
+      - ./backend/config:/app/config
+      
+      # File di ambiente (opzionale)
+      - ./backend/.env:/app/.env:ro
+
   frontend:
     build: ./frontend
     ports:

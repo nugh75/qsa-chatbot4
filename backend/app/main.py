@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any
@@ -17,6 +18,8 @@ from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
 from .survey_routes import router as survey_router
+from .personalities import load_personalities
+from .prompts import load_system_prompts
 
 # Carica le variabili di ambiente dal file .env
 load_dotenv()
@@ -30,6 +33,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static files from storage (e.g., avatars)
+import os as _os
+_storage_dir = _os.path.join(_os.path.dirname(__file__), '..', 'storage')
+try:
+    app.mount("/static", StaticFiles(directory=_storage_dir), name="static")
+except Exception as e:
+    print(f"Static mount error: {e}")
 
 # Modello per il feedback
 class FeedbackData(BaseModel):
@@ -54,7 +65,7 @@ app.include_router(survey_router, prefix="/api")
 async def get_public_config():
     """Get public configuration for enabled providers"""
     try:
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'admin_config.json')
+        config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'admin_config.json')
         if os.path.exists(config_path):
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
@@ -145,6 +156,29 @@ async def save_feedback(feedback_data: FeedbackData):
             "success": False, 
             "message": f"Errore nel salvataggio: {str(e)}"
         }
+
+@app.get("/api/personalities")
+async def get_public_personalities():
+    try:
+        data = load_personalities()
+        # Expose only necessary fields
+        return {
+            "default_id": data.get("default_id"),
+            "personalities": [
+                {
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "provider": p.get("provider"),
+                    "model": p.get("model"),
+                    "system_prompt_id": p.get("system_prompt_id"),
+                    "avatar_url": (f"/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
+                }
+                for p in data.get("personalities", [])
+            ]
+        }
+    except Exception as e:
+        print(f"Error loading personalities: {e}")
+        return {"default_id": None, "personalities": []}
 
 @app.get("/api/feedback/stats")
 async def get_feedback_stats():

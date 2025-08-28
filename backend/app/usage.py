@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
-USAGE_DIR = Path(__file__).resolve().parent.parent / "usage"
+USAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "usage"
 USAGE_FILE = USAGE_DIR / "usage_log.jsonl"
 
 def log_usage(entry: Dict[str, Any]) -> None:

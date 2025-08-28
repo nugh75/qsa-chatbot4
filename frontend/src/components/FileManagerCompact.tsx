@@ -19,6 +19,7 @@ import {
   Visibility as ViewIcon
 } from '@mui/icons-material';
 import { ProcessedFile } from './FileUpload';
+import { authFetch } from '../utils/authFetch';
 
 interface FileManagerProps {
   attachedFiles: ProcessedFile[];
@@ -58,7 +59,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
         formData.append('files', file);
       });
 
-      const response = await fetch('http://localhost:8005/api/upload', {
+      const response = await authFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });

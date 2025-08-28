@@ -43,6 +43,7 @@ import {
   Storage as StorageIcon,
   CloudUpload as CloudUploadIcon
 } from '@mui/icons-material';
+import { authFetch } from '../utils/authFetch'
 
 const BACKEND = 'http://localhost:8005';
 
@@ -107,8 +108,8 @@ export default function AdminRAGManagement() {
     try {
       setLoading(true);
       const [statsRes, groupsRes] = await Promise.all([
-        fetch(`${BACKEND}/api/admin/rag/stats`),
-        fetch(`${BACKEND}/api/admin/rag/groups`)
+        authFetch(`${BACKEND}/api/admin/rag/stats`),
+        authFetch(`${BACKEND}/api/admin/rag/groups`)
       ]);
       
       const statsData = await statsRes.json();
@@ -127,7 +128,7 @@ export default function AdminRAGManagement() {
 
   const loadDocuments = async (groupId: number) => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/rag/groups/${groupId}/documents`);
+      const res = await authFetch(`${BACKEND}/api/admin/rag/groups/${groupId}/documents`);
       const data = await res.json();
       
       if (data.success) {
@@ -140,7 +141,7 @@ export default function AdminRAGManagement() {
 
   const handleCreateGroup = async () => {
     try {
-      const res = await fetch(`${BACKEND}/api/admin/rag/groups`, {
+      const res = await authFetch(`${BACKEND}/api/admin/rag/groups`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -174,7 +175,7 @@ export default function AdminRAGManagement() {
     if (!editingGroup) return;
     
     try {
-      const res = await fetch(`${BACKEND}/api/admin/rag/groups/${editingGroup.id}`, {
+      const res = await authFetch(`${BACKEND}/api/admin/rag/groups/${editingGroup.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -204,7 +205,7 @@ export default function AdminRAGManagement() {
     }
     
     try {
-      const res = await fetch(`${BACKEND}/api/admin/rag/groups/${groupId}`, {
+      const res = await authFetch(`${BACKEND}/api/admin/rag/groups/${groupId}`, {
         method: 'DELETE'
       });
       
@@ -232,7 +233,7 @@ export default function AdminRAGManagement() {
       formData.append('file', selectedFile);
       formData.append('group_id', selectedGroup.id.toString());
       
-      const res = await fetch(`${BACKEND}/api/admin/rag/upload`, {
+      const res = await authFetch(`${BACKEND}/api/admin/rag/upload`, {
         method: 'POST',
         body: formData
       });
@@ -259,7 +260,7 @@ export default function AdminRAGManagement() {
     }
     
     try {
-      const res = await fetch(`${BACKEND}/api/admin/rag/documents/${documentId}`, {
+      const res = await authFetch(`${BACKEND}/api/admin/rag/documents/${documentId}`, {
         method: 'DELETE'
       });
       

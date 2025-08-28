@@ -17,6 +17,22 @@ export default defineConfig({
       }
     }
   },
-  build: { target: 'es2020' },
+  build: {
+    target: 'es2020',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react')) return 'vendor-react'
+            if (id.includes('@mui')) return 'vendor-mui'
+            if (id.includes('lodash')) return 'vendor-lodash'
+            if (id.includes('date-fns')) return 'vendor-datefns'
+            return 'vendor'
+          }
+        }
+      }
+    },
+    chunkSizeWarningLimit: 900
+  },
   preview: { port: 5175 }
 })

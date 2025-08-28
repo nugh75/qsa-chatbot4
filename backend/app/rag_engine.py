@@ -41,9 +41,9 @@ class RAGEngine:
         
         # Percorsi file
         self.base_dir = Path(__file__).parent.parent
-        self.data_dir = self.base_dir / "rag_data"
+        self.data_dir = self.base_dir / "storage" / "rag_data"
         self.embeddings_dir = self.data_dir / "embeddings"
-        self.db_path = self.data_dir / "rag.db"
+        self.db_path = self.base_dir / "storage" / "databases" / "rag.db"
         
         # Crea directory se non esistono
         self.data_dir.mkdir(exist_ok=True)

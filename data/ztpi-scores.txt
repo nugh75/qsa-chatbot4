@@ -1,0 +1,75 @@
+function calculateZTPIScores(responses) {
+  // Reverse code items 9, 24, 25, 41, & 56
+  const reverseCodeItems = [9, 24, 25, 41, 56];
+  const reversedResponses = {...responses};
+  
+  reverseCodeItems.forEach(item => {
+    if (reversedResponses[item]) {
+      reversedResponses[item] = 6 - reversedResponses[item]; // 1->5, 2->4, etc.
+    }
+  });
+
+  // Calculate factor scores
+  const pastNegative = [4, 5, 16, 22, 27, 33, 34, 36, 50, 54];
+  const presentHedonistic = [1, 8, 12, 17, 19, 23, 26, 28, 31, 32, 42, 44, 46, 48, 55];
+  const future = [6, 9, 10, 13, 18, 21, 24, 30, 40, 43, 45, 51, 56];
+  const pastPositive = [2, 7, 11, 15, 20, 25, 29, 41, 49];
+  const presentFatalistic = [3, 14, 35, 37, 38, 39, 47, 52, 53];
+
+  // Helper function to calculate average score for a factor
+  const calculateFactorScore = (items) => {
+    const sum = items.reduce((acc, item) => acc + (reversedResponses[item] || 0), 0);
+    return sum / items.length;
+  };
+
+  // Double-check calculations by doing them twice
+  const scores = {
+    pastNegative: [
+      calculateFactorScore(pastNegative),
+      calculateFactorScore(pastNegative)
+    ],
+    presentHedonistic: [
+      calculateFactorScore(presentHedonistic),
+      calculateFactorScore(presentHedonistic)
+    ],
+    future: [
+      calculateFactorScore(future),
+      calculateFactorScore(future)
+    ],
+    pastPositive: [
+      calculateFactorScore(pastPositive),
+      calculateFactorScore(pastPositive)
+    ],
+    presentFatalistic: [
+      calculateFactorScore(presentFatalistic),
+      calculateFactorScore(presentFatalistic)
+    ]
+  };
+
+  // Verify both calculations match
+  const finalScores = {};
+  for (const factor in scores) {
+    if (Math.abs(scores[factor][0] - scores[factor][1]) > 0.0001) {
+      console.log(`Warning: Inconsistency in ${factor} calculations`);
+    }
+    finalScores[factor] = scores[factor][0];
+  }
+
+  return finalScores;
+}
+
+// Helper function to validate responses
+function validateResponses(responses) {
+  const missingItems = [];
+  const invalidValues = [];
+  
+  for (let i = 1; i <= 56; i++) {
+    if (!responses[i]) {
+      missingItems.push(i);
+    } else if (responses[i] < 1 || responses[i] > 5) {
+      invalidValues.push(i);
+    }
+  }
+  
+  return { missingItems, invalidValues };
+}

@@ -61,6 +61,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user_id: int
+    must_change_password: bool = False
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
@@ -197,6 +198,7 @@ def is_admin_user(user: dict) -> bool:
     admin_emails = [
         "admin@qsa-chatbot.com",
         "desi76@example.com",  # Aggiungi qui email degli admin
+        "daniele.dragoni@gmail.com",
     ]
     
     return (

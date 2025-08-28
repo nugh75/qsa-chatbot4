@@ -1,0 +1,19 @@
+{
+  "name": "qsa-chatbot",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "start": "./start.sh",
+    "stop": "./stop.sh",
+    "dev": "make dev",
+    "backend": "make backend",
+    "frontend": "make frontend",
+    "deps": "make deps",
+    "lint": "make lint",
+    "format": "make format",
+    "docker:up": "make docker-up",
+    "docker:down": "make docker-down",
+    "docker:rebuild": "make docker-rebuild"
+  }
+}
+

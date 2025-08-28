@@ -3,13 +3,14 @@ Authentication endpoints for user registration, login, and token management
 """
 from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel
 from typing import Dict, Any
 import uuid
 from datetime import datetime, timedelta
 
 from .auth import (
     AuthManager, EscrowManager, UserRegistration, UserLogin, TokenResponse,
-    get_current_user, get_current_active_user, validate_password_strength, security, is_admin_user
+    get_current_user, get_current_active_user, get_current_admin_user, validate_password_strength, security, is_admin_user
 )
 from .database import UserModel, AdminModel
 from .escrow import EscrowManager as EscrowManagerAdvanced
@@ -124,7 +125,8 @@ async def login_user(user_data: UserLogin):
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=30 * 60,  # 30 minuti
-        user_id=user["id"]
+        user_id=user["id"],
+        must_change_password=bool(user.get("must_change_password", 0))
     )
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -166,8 +168,55 @@ async def get_current_user_info(current_user: dict = Depends(get_current_active_
         "email": current_user["email"],
         "created_at": current_user["created_at"],
         "last_login": current_user["last_login"],
-        "is_admin": is_admin_user(current_user)
+        "is_admin": is_admin_user(current_user),
+        "must_change_password": bool(current_user.get("must_change_password", 0))
     }
+
+from fastapi import Body
+
+@router.post("/force-change-password")
+async def force_change_password(
+    payload: Dict[str, str] = Body(..., example={"new_password": "NewPass123!"}),
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Forza cambio password senza richiedere quella corrente (solo se must_change_password è attivo)."""
+    new_password = payload.get("new_password", "")
+    
+    # Consenti solo se flag attivo
+    if not bool(current_user.get("must_change_password", 0)):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password change not required")
+    
+    # Valida nuova password
+    password_validation = validate_password_strength(new_password)
+    if not password_validation["is_valid"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"message": "New password not strong enough", "errors": password_validation["errors"]}
+        )
+    
+    try:
+        # Hash nuova password e aggiorna chiave utente
+        new_password_hash = AuthManager.hash_password(new_password)
+        new_user_key_hash = AuthManager.generate_user_key_hash(new_password, current_user["email"])
+        
+        # Aggiorna nel database
+        from .database import db_manager
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE users 
+                SET password_hash = ?, user_key_hash = ?, must_change_password = 0, failed_login_attempts = 0, locked_until = NULL
+                WHERE id = ?
+            """, (new_password_hash, new_user_key_hash, current_user["id"]))
+            conn.commit()
+        
+        return {"message": "Password changed successfully"}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to force change password: {str(e)}"
+        )
 
 @router.get("/debug/token")
 async def debug_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -231,6 +280,11 @@ async def change_password(
             """, (new_password_hash, new_user_key_hash, current_user["id"]))
             conn.commit()
         
+        # Clear must_change_password flag
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET must_change_password = 0 WHERE id = ?", (current_user["id"],))
+            conn.commit()
         return {"message": "Password changed successfully"}
         
     except Exception as e:
@@ -266,7 +320,7 @@ async def admin_reset_password(
 @router.get("/admin/users")
 async def list_users(
     limit: int = 50,
-    admin_email: str = "admin@qsa-chatbot.com"  # In produzione verifica admin token
+    current_admin: dict = Depends(get_current_admin_user)
 ):
     """Lista utenti (solo admin)"""
     
@@ -282,8 +336,11 @@ async def list_users(
             """, (limit,))
             users = [dict(row) for row in cursor.fetchall()]
         
+        # Includi flag admin
+        for u in users:
+            u["is_admin"] = bool(u.get("is_admin", 0))
         # Log azione admin
-        AdminModel.log_admin_action(admin_email, "LIST_USERS", None, None, f"Listed {len(users)} users")
+        AdminModel.log_admin_action(current_admin.get("email","admin"), "LIST_USERS", None, None, f"Listed {len(users)} users")
         
         return {"users": users, "total": len(users)}
         
@@ -292,6 +349,23 @@ async def list_users(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list users: {str(e)}"
         )
+
+class RoleUpdate(BaseModel):
+    is_admin: bool
+
+@router.post("/admin/users/{user_id}/role")
+async def update_user_role(user_id: int, payload: RoleUpdate, current_admin: dict = Depends(get_current_admin_user)):
+    """Aggiorna ruolo amministratore per un utente (solo admin)."""
+    try:
+        from .database import db_manager
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET is_admin = ? WHERE id = ?", (1 if payload.is_admin else 0, user_id))
+            conn.commit()
+        AdminModel.log_admin_action(current_admin.get("email","admin"), "UPDATE_ROLE", user_id, None, f"Set is_admin={payload.is_admin}")
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update role: {str(e)}")
 
 @router.get("/admin/escrow/verify")
 async def verify_escrow_integrity(

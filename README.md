@@ -35,7 +35,14 @@ An advanced AI chatbot with comprehensive RAG (Retrieval-Augmented Generation) s
 
 - **Python 3.9+**
 - **Node.js 16+** 
-- **npm or yarn**
+ - **npm or yarn**
+
+## 📦 Large Models and Data (Do Not Commit)
+
+- Store local models and generated indexes only in `backend/models/` and `backend/storage/`.
+- Git ignores common large artifacts: `*.pt`, `*.onnx`, `*.faiss`, `*.safetensors`, `*.bin`, `*.npy`, `*.npz` and the directories above.
+- If something was accidentally tracked before, untrack without deleting locally:
+  `git rm --cached -r backend/models backend/storage && git commit -m "chore: stop tracking local models"`.
 
 ## 🛠️ Installation & Setup
 
@@ -110,6 +117,11 @@ npm run dev -- --port 5175
 ### Option 3: Docker Compose
 ```bash
 docker compose up --build
+```
+
+### Prefetch Models (Local)
+```bash
+make models  # downloads Whisper small, Piper it_IT-riccardo-x_low, and embeddings cache
 ```
 
 ## 🌐 Access Points
@@ -251,7 +263,14 @@ Un chatbot AI avanzato con sistema RAG (Retrieval-Augmented Generation) completo
 
 - **Python 3.9+**
 - **Node.js 16+**
-- **npm o yarn**
+ - **npm o yarn**
+
+## 📦 Modelli e Dati Grandi (Non Committare)
+
+- Salva modelli locali e indici generati solo in `backend/models/` e `backend/storage/`.
+- Git ignora file pesanti comuni: `*.pt`, `*.onnx`, `*.faiss`, `*.safetensors`, `*.bin`, `*.npy`, `*.npz` e le directory indicate.
+- Se alcuni file sono già tracciati per errore, rimuovili dal tracking senza cancellarli localmente:
+  `git rm --cached -r backend/models backend/storage && git commit -m "chore: stop tracking local models"`.
 
 ## 🛠️ Installazione e Configurazione
 
@@ -326,6 +345,11 @@ npm run dev -- --port 5175
 ### Opzione 3: Docker Compose
 ```bash
 docker compose up --build
+```
+
+### Precarica Modelli (Locale)
+```bash
+make models  # scarica Whisper small, Piper it_IT-riccardo-x_low e cache embeddings
 ```
 
 ## 🌐 Punti di Accesso
@@ -648,4 +672,3 @@ pip install -r backend/requirements.txt
 - **RAG Intelligente**: Routing automatico verso 4 file di conoscenza
 - **Download Chat**: Esportazione conversazioni in JSON
 - **Clear automatico**: La chat si resetta alla chiusura della tab
-

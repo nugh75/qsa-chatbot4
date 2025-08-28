@@ -15,6 +15,7 @@ import {
   Description as PdfIcon,
   Close as CloseIcon,
 } from '@mui/icons-material';
+import { authFetch } from '../utils/authFetch';
 
 export interface ProcessedFile {
   id: string;
@@ -74,7 +75,7 @@ const FileUpload: React.FC<FileUploadProps> = ({
         formData.append('files', file);
       });
 
-      const response = await fetch('/api/upload', {
+      const response = await authFetch('/api/upload', {
         method: 'POST',
         body: formData,
       });

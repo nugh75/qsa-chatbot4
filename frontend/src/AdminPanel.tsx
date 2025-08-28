@@ -3522,6 +3522,8 @@ export default function AdminPanel() {
                     <MenuItem value="anthropic">Claude (Anthropic)</MenuItem>
                     <MenuItem value="openai">OpenAI</MenuItem>
                     <MenuItem value="openrouter">OpenRouter</MenuItem>
+                    <MenuItem value="gemini">Google Gemini</MenuItem>
+                    <MenuItem value="ollama">Ollama</MenuItem>
                   </Select>
                 </FormControl>
                 

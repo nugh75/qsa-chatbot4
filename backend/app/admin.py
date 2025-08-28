@@ -36,6 +36,11 @@ from .personalities import (
     delete_personality,
     set_default_personality,
 )
+from .logging_utils import LOG_DIR, get_system_logger
+import logging as _logging
+from fastapi.responses import FileResponse
+import glob
+import json as _json
 
 # Configurazione database - usa il percorso relativo alla directory backend
 BASE_DIR = Path(__file__).parent.parent
@@ -116,6 +121,9 @@ DEFAULT_CONFIG = {
     },
     "default_provider": "local",
     "default_tts": "edge",
+    "ui_settings": {
+        "arena_public": False
+    },
     "summary_settings": {
         "provider": "anthropic",  # Provider dedicato per i summary (NON local)
         "enabled": True
@@ -161,6 +169,33 @@ def get_summary_provider():
         provider = "anthropic"
     
     return provider if enabled else "anthropic"  # Fallback sicuro
+
+# ---- UI settings (arena visibility) ----
+class UiSettingsIn(BaseModel):
+    arena_public: bool
+
+@router.get("/admin/ui-settings")
+async def get_ui_settings():
+    try:
+        config = load_config()
+        ui = config.get("ui_settings", {"arena_public": False})
+        # ensure keys
+        if "arena_public" not in ui:
+            ui["arena_public"] = False
+        return {"settings": ui}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento impostazioni UI: {str(e)}")
+
+@router.post("/admin/ui-settings")
+async def update_ui_settings(payload: UiSettingsIn):
+    try:
+        config = load_config()
+        config.setdefault("ui_settings", {})
+        config["ui_settings"]["arena_public"] = bool(payload.arena_public)
+        save_config(config)
+        return {"success": True, "message": "Impostazioni UI aggiornate"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio impostazioni UI: {str(e)}")
 
 @router.get("/admin/config")
 async def get_config():
@@ -378,6 +413,359 @@ async def set_default_personality_admin(personality_id: str):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore impostazione default: {str(e)}")
+
+# ---- Logs (system & interactions) ----
+@router.get("/admin/logs/system")
+async def get_system_log(tail: int = 500):
+    try:
+        log_path = LOG_DIR / "system.log"
+        if not log_path.exists():
+            return {"lines": [], "path": str(log_path)}
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = f.readlines()
+        if tail > 0:
+            lines = lines[-min(tail, len(lines)) :]
+        return {"lines": [l.rstrip('\n') for l in lines], "path": str(log_path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura system log: {str(e)}")
+
+@router.get("/admin/logs/system/download")
+async def download_system_log():
+    try:
+        log_path = LOG_DIR / "system.log"
+        if not log_path.exists():
+            raise HTTPException(status_code=404, detail="system.log non trovato")
+        return FileResponse(str(log_path), media_type="text/plain", filename="system.log")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore download system log: {str(e)}")
+
+@router.get("/admin/logs/interactions/dates")
+async def get_interaction_log_dates():
+    try:
+        files = glob.glob(str(LOG_DIR / "interactions_*.jsonl"))
+        dates = []
+        for fp in files:
+            name = os.path.basename(fp)
+            # interactions_YYYY-MM-DD.jsonl
+            try:
+                d = name.split("_")[1].split(".")[0]
+                dates.append(d)
+            except Exception:
+                continue
+        dates = sorted(list(set(dates)), reverse=True)
+        return {"dates": dates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura date: {str(e)}")
+
+@router.get("/admin/logs/interactions/filters")
+async def get_interactions_filters(date: Optional[str] = None):
+    """Restituisce i valori distinti disponibili per i filtri dei log interazioni.
+    Campi: provider, event, model, topic, user_id, conversation_id, personalities (id->name)
+    """
+    try:
+        # Determine file path
+        if date:
+            path = LOG_DIR / f"interactions_{date}.jsonl"
+        else:
+            files = glob.glob(str(LOG_DIR / "interactions_*.jsonl"))
+            if not files:
+                return {"providers": [], "events": [], "models": [], "topics": [], "user_ids": [], "conversation_ids": [], "personalities": []}
+            latest = sorted(files, reverse=True)[0]
+            path = Path(latest)
+
+        if not path.exists():
+            return {"providers": [], "events": [], "models": [], "topics": [], "user_ids": [], "conversation_ids": [], "personalities": []}
+
+        providers = set()
+        events = set()
+        models = set()
+        topics = set()
+        user_ids = set()
+        conversation_ids = set()
+        pers_map: dict[str, str] = {}
+
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = _json.loads(line)
+                except Exception:
+                    continue
+                p = obj.get('provider')
+                if p: providers.add(p)
+                ph = obj.get('provider_header')
+                if ph: providers.add(ph)
+                ev = obj.get('event')
+                if ev: events.add(ev)
+                m = obj.get('model')
+                if m: models.add(m)
+                t = obj.get('topic')
+                if t: topics.add(t)
+                ui = obj.get('user_id')
+                if ui is not None: user_ids.add(ui)
+                cid = obj.get('conversation_id')
+                if cid: conversation_ids.add(cid)
+                pid = obj.get('personality_id')
+                if pid:
+                    pers_map.setdefault(pid, obj.get('personality_name') or '')
+
+        return {
+            "providers": sorted(list(providers)),
+            "events": sorted(list(events)),
+            "models": sorted(list(models)),
+            "topics": sorted(list(topics)),
+            "user_ids": sorted(list(user_ids)),
+            "conversation_ids": sorted(list(conversation_ids)),
+            "personalities": [{"id": k, "name": v or k} for k, v in pers_map.items()]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura filtri: {str(e)}")
+
+@router.get("/admin/logs/interactions")
+async def get_interactions_log(
+    date: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    provider: Optional[str] = None,
+    event: Optional[str] = None,
+    personality_id: Optional[str] = None,
+    model: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    user_id: Optional[int] = None,
+    topic: Optional[str] = None,
+    request_id: Optional[str] = None,
+    group_by_request_id: bool = False,
+    rag: Optional[bool] = None,
+    min_duration_ms: Optional[int] = None,
+    max_duration_ms: Optional[int] = None,
+    min_tokens: Optional[int] = None,
+    max_tokens: Optional[int] = None,
+):
+    try:
+        # Determine file path
+        if date:
+            path = LOG_DIR / f"interactions_{date}.jsonl"
+        else:
+            files = glob.glob(str(LOG_DIR / "interactions_*.jsonl"))
+            if not files:
+                return {"items": [], "total": 0, "date": None}
+            latest = sorted(files, reverse=True)[0]
+            path = Path(latest)
+            date = os.path.basename(latest).split("_")[1].split(".")[0]
+
+        if not path.exists():
+            return {"items": [], "total": 0, "date": date}
+
+        # Load and filter
+        items = []
+        total_lines = 0
+        parsed_lines = 0
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total_lines += 1
+                try:
+                    obj = _json.loads(line)
+                    parsed_lines += 1
+                except Exception:
+                    continue
+                if request_id and (obj.get('request_id') or '') != request_id:
+                    continue
+                if provider and (obj.get('provider') or obj.get('provider_header') or '') != provider:
+                    continue
+                if event and (obj.get('event') or '') != event:
+                    continue
+                if personality_id and (obj.get('personality_id') or '') != personality_id:
+                    continue
+                if model and (obj.get('model') or '') != model:
+                    continue
+                if conversation_id and (obj.get('conversation_id') or '') != conversation_id:
+                    continue
+                if user_id is not None and (obj.get('user_id') != user_id):
+                    continue
+                if topic and (obj.get('topic') or '') != topic:
+                    continue
+                if rag is not None:
+                    if (obj.get('rag_used') is None) or (bool(obj.get('rag_used')) != bool(rag)):
+                        continue
+                if (min_duration_ms is not None) or (max_duration_ms is not None):
+                    d = obj.get('duration_ms')
+                    if d is not None:
+                        if (min_duration_ms is not None and d < min_duration_ms) or (max_duration_ms is not None and d > max_duration_ms):
+                            continue
+                if (min_tokens is not None) or (max_tokens is not None):
+                    t = None
+                    tok = obj.get('tokens')
+                    if isinstance(tok, dict):
+                        t = tok.get('total_tokens') or tok.get('total')
+                    if t is not None:
+                        if (min_tokens is not None and t < min_tokens) or (max_tokens is not None and t > max_tokens):
+                            continue
+                items.append(obj)
+        try:
+            get_system_logger().info(f"Interactions log: date={date} path={path} lines={total_lines} parsed={parsed_lines} kept={len(items)} grouped={group_by_request_id}")
+        except Exception:
+            pass
+        # Group by request_id if requested
+        if group_by_request_id:
+            from datetime import datetime
+            groups: Dict[str, dict] = {}
+            def _parse_ts(ts: str):
+                try:
+                    return datetime.fromisoformat(ts.replace('Z','+00:00'))
+                except Exception:
+                    return None
+            for ev in items:
+                rid = ev.get('request_id') or f"noid_{id(ev)}"
+                g = groups.setdefault(rid, {
+                    'request_id': rid,
+                    'events': [],
+                    'start_ts': None,
+                    'end_ts': None,
+                    'duration_ms': None,
+                    'provider': None,
+                    'provider_header': None,
+                    'model': None,
+                    'personality_id': None,
+                    'personality_name': None,
+                    'topic': None,
+                    'session_id': None,
+                    'conversation_id': None,
+                    'user_id': None,
+                    'tokens_total': None,
+                    'rag_used': False,
+                    'raw_count': 0,
+                })
+                g['events'].append(ev.get('event'))
+                g['raw_count'] += 1
+                ts = ev.get('ts')
+                if ts:
+                    if g['start_ts'] is None or ts < g['start_ts']:
+                        g['start_ts'] = ts
+                    if g['end_ts'] is None or ts > g['end_ts']:
+                        g['end_ts'] = ts
+                # Prefer completion/resolved fields, else fallback
+                if ev.get('provider') and not g['provider']:
+                    g['provider'] = ev.get('provider')
+                if ev.get('provider_header') and not g['provider_header']:
+                    g['provider_header'] = ev.get('provider_header')
+                if ev.get('model') and not g['model']:
+                    g['model'] = ev.get('model')
+                if ev.get('personality_id') and not g['personality_id']:
+                    g['personality_id'] = ev.get('personality_id')
+                if ev.get('personality_name') and not g['personality_name']:
+                    g['personality_name'] = ev.get('personality_name')
+                if ev.get('topic') and not g['topic']:
+                    g['topic'] = ev.get('topic')
+                if ev.get('session_id') and not g['session_id']:
+                    g['session_id'] = ev.get('session_id')
+                if ev.get('conversation_id') and not g['conversation_id']:
+                    g['conversation_id'] = ev.get('conversation_id')
+                if (ev.get('user_id') is not None) and (g['user_id'] is None):
+                    g['user_id'] = ev.get('user_id')
+                # tokens
+                tok = ev.get('tokens')
+                if isinstance(tok, dict):
+                    g['tokens_total'] = tok.get('total_tokens') or tok.get('total') or g['tokens_total']
+                # rag
+                if ev.get('rag_used'):
+                    g['rag_used'] = True
+                # duration
+                if ev.get('duration_ms') and not g['duration_ms']:
+                    g['duration_ms'] = ev.get('duration_ms')
+            # Compute missing durations by ts delta
+            for rid, g in groups.items():
+                if not g['duration_ms'] and g['start_ts'] and g['end_ts']:
+                    st = _parse_ts(g['start_ts'])
+                    et = _parse_ts(g['end_ts'])
+                    if st and et:
+                        g['duration_ms'] = int((et - st).total_seconds() * 1000)
+                # Normalize provider
+                if not g['provider'] and g['provider_header']:
+                    g['provider'] = g['provider_header']
+                if not g['personality_name'] and g['personality_id']:
+                    g['personality_name'] = g['personality_id']
+            # Apply grouped-level filters
+            if rag is not None:
+                groups = {k: v for k, v in groups.items() if bool(v.get('rag_used')) == bool(rag)}
+            if (min_duration_ms is not None) or (max_duration_ms is not None):
+                def _dur_ok(v):
+                    d = v.get('duration_ms')
+                    if d is None:
+                        return True
+                    if min_duration_ms is not None and d < min_duration_ms:
+                        return False
+                    if max_duration_ms is not None and d > max_duration_ms:
+                        return False
+                    return True
+                groups = {k: v for k, v in groups.items() if _dur_ok(v)}
+            if (min_tokens is not None) or (max_tokens is not None):
+                def _tok_ok(v):
+                    t = v.get('tokens_total')
+                    if t is None:
+                        return True
+                    if min_tokens is not None and t < min_tokens:
+                        return False
+                    if max_tokens is not None and t > max_tokens:
+                        return False
+                    return True
+                groups = {k: v for k, v in groups.items() if _tok_ok(v)}
+
+            grouped = list(groups.values())
+            try:
+                get_system_logger().info(f"Interactions log grouped: groups={len(grouped)}")
+            except Exception:
+                pass
+            # Sort by end_ts desc
+            grouped.sort(key=lambda x: x.get('end_ts') or '', reverse=True)
+            total = len(grouped)
+            slice_items = grouped[offset: offset+limit]
+            return {"items": slice_items, "total": total, "date": date, "grouped": True}
+
+        # Sort desc by ts (ungrouped)
+        def _ts(x):
+            return x.get('ts') or ''
+        items.sort(key=_ts, reverse=True)
+        total = len(items)
+        slice_items = items[offset: offset+limit]
+        return {"items": slice_items, "total": total, "date": date, "grouped": False}
+    except Exception as e:
+        try:
+            logger = get_system_logger()
+            import traceback as _tb
+            logger.error(f"Interactions log error: {e}\n{_tb.format_exc()}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Errore lettura interactions log: {str(e)}")
+
+@router.get("/admin/logs/interactions/download")
+async def download_interactions_log(date: Optional[str] = None):
+    try:
+        if date:
+            path = LOG_DIR / f"interactions_{date}.jsonl"
+        else:
+            files = glob.glob(str(LOG_DIR / "interactions_*.jsonl"))
+            if not files:
+                raise HTTPException(status_code=404, detail="Nessun log interazioni disponibile")
+            latest = sorted(files, reverse=True)[0]
+            path = Path(latest)
+            date = os.path.basename(latest).split("_")[1].split(".")[0]
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File non trovato")
+        filename = f"interactions_{date}.jsonl"
+        # application/x-ndjson per JSON Lines
+        return FileResponse(str(path), media_type="application/x-ndjson", filename=filename)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore download interactions log: {str(e)}")
+
 
 # ---- Avatar upload/list ----
 @router.post("/admin/avatars/upload")

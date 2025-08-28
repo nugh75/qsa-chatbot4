@@ -5,7 +5,7 @@ import {
   Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
   Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
-  Dialog, DialogTitle, DialogContent, DialogActions, Tooltip
+  Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, Slider
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
 import {
@@ -462,6 +462,8 @@ export default function AdminPanel() {
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
     ai_providers: true,
     tts_providers: false,
+    ui_settings: false,
+    logs: false,
     stats: false,
     feedback: false,
     prompts: false,
@@ -505,6 +507,33 @@ export default function AdminPanel() {
   const [memoryStats, setMemoryStats] = useState<any | null>(null)
   const [maxMessages, setMaxMessages] = useState<number>(10)
   const [loadingMemory, setLoadingMemory] = useState(false)
+  // UI settings
+  const [uiSettings, setUiSettings] = useState<{ arena_public: boolean }>({ arena_public: false })
+  const [savingUi, setSavingUi] = useState(false)
+  // Logs state
+  const [systemLog, setSystemLog] = useState<string[]>([])
+  const [systemTail, setSystemTail] = useState<number>(300)
+  const [logDates, setLogDates] = useState<string[]>([])
+  const [selectedLogDate, setSelectedLogDate] = useState<string>('')
+  const [logProvider, setLogProvider] = useState<string>('')
+  const [logEvent, setLogEvent] = useState<string>('')
+  const [logPersonalityId, setLogPersonalityId] = useState<string>('')
+  const [logModel, setLogModel] = useState<string>('')
+  const [logConversationId, setLogConversationId] = useState<string>('')
+  const [logUserId, setLogUserId] = useState<string>('')
+  const [logTopic, setLogTopic] = useState<string>('')
+  const [logOptions, setLogOptions] = useState<{ providers: string[]; events: string[]; models: string[]; topics: string[]; user_ids: (string|number)[]; conversation_ids: string[]; personalities: {id:string; name:string}[] }>({ providers: [], events: [], models: [], topics: [], user_ids: [], conversation_ids: [], personalities: [] })
+  const [ragFilter, setRagFilter] = useState<string>('')
+  const [durationRange, setDurationRange] = useState<number[]>([0, 600000])
+  const [tokensRange, setTokensRange] = useState<number[]>([0, 200000])
+  const [interactions, setInteractions] = useState<any[]>([])
+  const [interactionsTotal, setInteractionsTotal] = useState<number>(0)
+  const [interactionsLoading, setInteractionsLoading] = useState<boolean>(false)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailItem, setDetailItem] = useState<any | null>(null)
+  const [groupByRequest, setGroupByRequest] = useState<boolean>(true)
+  const [timelineOpen, setTimelineOpen] = useState(false)
+  const [timelineItems, setTimelineItems] = useState<any[]>([])
 
   // Auto refresh effect
   useEffect(() => {
@@ -522,6 +551,165 @@ export default function AdminPanel() {
     if (filterDateTo) params.end = filterDateTo + 'T23:59:59'
     const qs = Object.entries(params).map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
     return qs
+  }
+
+  const loadUiSettings = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/ui-settings`)
+      if (res.ok) {
+        const data = await res.json()
+        setUiSettings(data.settings || { arena_public: false })
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const loadSystemLog = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/system?tail=${systemTail}`)
+      const data = await res.json()
+      setSystemLog((data.lines || []) as string[])
+    } catch (e) {
+      setMessage('Errore caricamento system log')
+    }
+  }
+
+  const loadLogDates = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/dates`)
+      const data = await res.json()
+      const dates = (data.dates || []) as string[]
+      setLogDates(dates)
+      if (!selectedLogDate && dates.length > 0) setSelectedLogDate(dates[0])
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const loadInteractions = async () => {
+    try {
+      setInteractionsLoading(true)
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      params.set('limit', '200')
+      params.set('offset', '0')
+      if (logProvider) params.set('provider', logProvider)
+      if (logEvent) params.set('event', logEvent)
+      if (logPersonalityId) params.set('personality_id', logPersonalityId)
+      if (logModel) params.set('model', logModel)
+      if (logConversationId) params.set('conversation_id', logConversationId)
+      if (logUserId) params.set('user_id', logUserId)
+      if (logTopic) params.set('topic', logTopic)
+      if (ragFilter) params.set('rag', ragFilter === 'true' ? 'true' : 'false')
+      if (durationRange) { params.set('min_duration_ms', String(durationRange[0])); params.set('max_duration_ms', String(durationRange[1])) }
+      if (tokensRange) { params.set('min_tokens', String(tokensRange[0])); params.set('max_tokens', String(tokensRange[1])) }
+      if (groupByRequest) params.set('group_by_request_id', 'true')
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions?${params.toString()}`)
+      const data = await res.json()
+      setInteractions(data.items || [])
+      setInteractionsTotal(data.total || 0)
+      if (!selectedLogDate && data.date) setSelectedLogDate(data.date)
+    } catch (e) {
+      setMessage('Errore caricamento interactions log')
+    } finally {
+      setInteractionsLoading(false)
+    }
+  }
+
+  const loadLogFilters = async () => {
+    try {
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/filters?${params.toString()}`)
+      const data = await res.json()
+      setLogOptions({
+        providers: data.providers || [],
+        events: data.events || [],
+        models: data.models || [],
+        topics: data.topics || [],
+        user_ids: data.user_ids || [],
+        conversation_ids: data.conversation_ids || [],
+        personalities: data.personalities || []
+      })
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const openDetails = (item: any) => { setDetailItem(item); setDetailOpen(true) }
+  const closeDetails = () => { setDetailOpen(false); setDetailItem(null) }
+  const copyDetails = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(detailItem, null, 2))
+      setMessage('Dettagli copiati')
+    } catch {
+      setMessage('Copia fallita')
+    }
+  }
+
+  const downloadInteractions = async () => {
+    try {
+      const params = selectedLogDate ? `?date=${encodeURIComponent(selectedLogDate)}` : ''
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/download${params}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `interactions_${selectedLogDate || 'latest'}.jsonl`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setMessage('Errore download interactions log')
+    }
+  }
+
+  const downloadSystem = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/system/download`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `system.log`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      setMessage('Errore download system log')
+    }
+  }
+
+  const openTimeline = async (requestId: string) => {
+    try {
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      params.set('limit', '1000')
+      params.set('request_id', requestId)
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions?${params.toString()}`)
+      const data = await res.json()
+      setTimelineItems(data.items || [])
+      setTimelineOpen(true)
+    } catch {
+      setMessage('Errore caricamento timeline')
+    }
+  }
+
+  const saveUiSettings = async () => {
+    try {
+      setSavingUi(true)
+      const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(uiSettings)
+      })
+      const data = await res.json()
+      if (!data.success) setMessage('Errore salvataggio impostazioni UI')
+      else setMessage('Impostazioni UI salvate')
+    } catch (e) {
+      setMessage('Errore salvataggio impostazioni UI')
+    } finally {
+      setSavingUi(false)
+    }
   }
 
   const loadUsage = async () => {
@@ -1071,9 +1259,25 @@ export default function AdminPanel() {
     loadUsage()
     loadMemoryStats()
     loadWhisperModels()
+    loadUiSettings()
+    loadSystemLog()
+    loadLogDates()
+    loadInteractions()
+    loadLogFilters()
     // Carica i file disponibili per la pipeline
     loadAvailableFiles().then(files => setAvailableFiles(files))
   }, [])
+
+  useEffect(() => { if (selectedLogDate) { setLogEvent(''); loadLogFilters(); loadInteractions(); } }, [selectedLogDate])
+
+  // Aggiorna filtri e date quando si apre il pannello Log & Interazioni
+  useEffect(() => {
+    if (expandedPanels.logs) {
+      loadLogDates()
+      loadLogFilters()
+      loadInteractions()
+    }
+  }, [expandedPanels.logs])
 
   // Ricarica modelli Whisper quando la config cambia
   useEffect(() => {
@@ -2913,6 +3117,254 @@ export default function AdminPanel() {
           </AccordionDetails>
         </Accordion>
 
+        {/* Impostazioni UI */}
+        <Accordion 
+          expanded={expandedPanels.ui_settings} 
+          onChange={handlePanelExpansion('ui_settings')}
+          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <SettingsIcon color="primary" />
+              <Typography variant="h6">Impostazioni Interfaccia</Typography>
+              <Chip 
+                label={uiSettings.arena_public ? 'Arena pubblica' : 'Solo admin'} 
+                size="small" 
+                color={uiSettings.arena_public ? 'success' : 'default'} 
+              />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={2}>
+              <FormControlLabel
+                control={<Switch checked={uiSettings.arena_public} onChange={(e)=> setUiSettings({...uiSettings, arena_public: e.target.checked})} />}
+                label="Rendi la pagina Arena visibile a tutti gli utenti"
+              />
+              <Box>
+                <Button variant="contained" onClick={saveUiSettings} disabled={savingUi}>
+                  {savingUi ? 'Salvataggio...' : 'Salva Impostazioni UI'}
+                </Button>
+              </Box>
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Log & Interazioni */}
+        <Accordion 
+          expanded={expandedPanels.logs} 
+          onChange={handlePanelExpansion('logs')}
+          sx={{ borderRadius: 4, '&:before': { display: 'none' } }}
+        >
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box display="flex" alignItems="center" gap={1}>
+              <StatsIcon color="primary" />
+              <Typography variant="h6">Log & Interazioni</Typography>
+              <Chip label={`${interactionsTotal} eventi`} size="small" />
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Stack spacing={3}>
+              {/* System Log */}
+              <Box>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 1 }}>Log di Sistema</Typography>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <TextField label="Ultime righe" size="small" type="number" value={systemTail} onChange={e=> setSystemTail(parseInt(e.target.value||'300',10))} sx={{ width: 140 }} />
+                  <Button variant="outlined" size="small" onClick={loadSystemLog}>Aggiorna</Button>
+                  <Button variant="contained" size="small" onClick={downloadSystem} startIcon={<DownloadIcon/>}>Scarica</Button>
+                </Stack>
+                <Box component="pre" sx={{ bgcolor: '#0d1117', color: '#c9d1d9', p: 1.5, borderRadius: 1, maxHeight: 240, overflow: 'auto', fontSize: 12 }}>
+                  {systemLog.join('\n') || 'Nessun log disponibile'}
+                </Box>
+              </Box>
+
+              {/* Interactions Log */}
+              <Box>
+                <Typography variant="subtitle1" sx={{ fontWeight: 'bold', mb: 1 }}>Log Interazioni Modelli</Typography>
+                <Grid container spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <Grid item xs={12} sm={3}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Data</InputLabel>
+                      <Select value={selectedLogDate} label="Data" onChange={e=> setSelectedLogDate(e.target.value)}>
+                        {logDates.map(d => <MenuItem key={d} value={d}>{d}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={groupByRequest} onChange={e=> { setGroupByRequest(e.target.checked); setTimeout(loadInteractions, 0) }} />} label="Raggruppa per Request ID" />
+                  </Grid>
+                  <Grid item xs={6} sm={2}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Provider</InputLabel>
+                      <Select label="Provider" value={logProvider} onChange={e=> setLogProvider(e.target.value)}>
+                        <MenuItem value=""><em>Tutti</em></MenuItem>
+                        {logOptions.providers.map(p => <MenuItem key={p} value={p}>{p}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={2}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Evento</InputLabel>
+                      <Select label="Evento" value={logEvent} onChange={e=> setLogEvent(e.target.value)}>
+                        <MenuItem value=""><em>Tutti</em></MenuItem>
+                        {logOptions.events.map(ev => <MenuItem key={ev} value={ev}>{ev}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={2}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Personalità</InputLabel>
+                      <Select label="Personalità" value={logPersonalityId} onChange={e=> setLogPersonalityId(e.target.value)}>
+                        <MenuItem value=""><em>Tutte</em></MenuItem>
+                        {logOptions.personalities.map(p => <MenuItem key={p.id} value={p.id}>{p.name || p.id}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Modello</InputLabel>
+                      <Select label="Modello" value={logModel} onChange={e=> setLogModel(e.target.value)}>
+                        <MenuItem value=""><em>Tutti</em></MenuItem>
+                        {logOptions.models.map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Conversazione</InputLabel>
+                      <Select label="Conversazione" value={logConversationId} onChange={e=> setLogConversationId(e.target.value)}>
+                        <MenuItem value=""><em>Tutte</em></MenuItem>
+                        {logOptions.conversation_ids.map(id => <MenuItem key={id} value={id}>{id}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={2}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Utente ID</InputLabel>
+                      <Select label="Utente ID" value={logUserId} onChange={e=> setLogUserId(e.target.value)}>
+                        <MenuItem value=""><em>Tutti</em></MenuItem>
+                        {logOptions.user_ids.map((id) => <MenuItem key={String(id)} value={String(id)}>{String(id)}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={2}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>Topic</InputLabel>
+                      <Select label="Topic" value={logTopic} onChange={e=> setLogTopic(e.target.value)}>
+                        <MenuItem value=""><em>Tutti</em></MenuItem>
+                        {logOptions.topics.map(t => <MenuItem key={t} value={t}>{t}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Stack direction="row" spacing={3} alignItems="center" sx={{ mt: 1 }}>
+                      <Box sx={{ width: 260 }}>
+                        <Typography variant="caption" color="text.secondary">Durata (ms)</Typography>
+                        <Slider value={durationRange} onChange={(_,v)=> setDurationRange(v as number[])} valueLabelDisplay="auto" min={0} max={600000} step={100} />
+                      </Box>
+                      <Box sx={{ width: 260 }}>
+                        <Typography variant="caption" color="text.secondary">Token</Typography>
+                        <Slider value={tokensRange} onChange={(_,v)=> setTokensRange(v as number[])} valueLabelDisplay="auto" min={0} max={200000} step={100} />
+                      </Box>
+                      <Button variant="outlined" size="small" onClick={()=>{ loadLogDates(); loadLogFilters(); loadInteractions(); }}>Aggiorna</Button>
+                      <Button variant="contained" size="small" onClick={downloadInteractions} startIcon={<DownloadIcon/>}>Scarica JSONL</Button>
+                      <Button variant="text" size="small" onClick={()=>{ setLogProvider(''); setLogEvent(''); setLogPersonalityId(''); setLogModel(''); setLogConversationId(''); setLogUserId(''); setLogTopic(''); setRagFilter(''); setDurationRange([0,600000]); setTokensRange([0,200000]); }}>Reset filtri</Button>
+                    </Stack>
+                  </Grid>
+                </Grid>
+                {interactionsLoading && <LinearProgress sx={{ mb: 1 }} />}
+                <Table size="small">
+                  <TableHead>
+                    {groupByRequest ? (
+                      <TableRow>
+                        <TableCell>Start</TableCell>
+                        <TableCell>End</TableCell>
+                        <TableCell>Request ID</TableCell>
+                        <TableCell>Provider</TableCell>
+                        <TableCell>Modello</TableCell>
+                        <TableCell>Personalità</TableCell>
+                        <TableCell>Topic</TableCell>
+                        <TableCell align="right">Dur. (ms)</TableCell>
+                        <TableCell align="right">Token</TableCell>
+                        <TableCell>RAG</TableCell>
+                        <TableCell>Azioni</TableCell>
+                      </TableRow>
+                    ) : (
+                      <TableRow>
+                        <TableCell>TS</TableCell>
+                        <TableCell>Request ID</TableCell>
+                        <TableCell>Evento</TableCell>
+                        <TableCell>Provider</TableCell>
+                        <TableCell>Modello</TableCell>
+                        <TableCell>Personalità</TableCell>
+                        <TableCell>Topic</TableCell>
+                        <TableCell align="right">Dur. (ms)</TableCell>
+                        <TableCell align="right">Token</TableCell>
+                        <TableCell>RAG</TableCell>
+                        <TableCell>Azioni</TableCell>
+                      </TableRow>
+                    )}
+                  </TableHead>
+                  <TableBody>
+                    {interactions.map((it, idx) => {
+                      const tokens = (it.tokens?.total_tokens ?? it.tokens?.total ?? 0) as number
+                      const pers = it.personality_name || it.personality_id || '-'
+                      const providerDisp = (it.provider || it.provider_header || '-') as string
+                      const modelDisp = (it.model || '-') as string
+                      if (groupByRequest) {
+                        const tok = (it.tokens_total ?? tokens) as number
+                        return (
+                          <TableRow key={idx} hover>
+                            <TableCell>{it.start_ts || '-'}</TableCell>
+                            <TableCell>{it.end_ts || '-'}</TableCell>
+                            <TableCell>{it.request_id || '-'}</TableCell>
+                            <TableCell>{providerDisp}</TableCell>
+                            <TableCell>{modelDisp}</TableCell>
+                            <TableCell>{pers}</TableCell>
+                            <TableCell>{it.topic || '-'}</TableCell>
+                            <TableCell align="right">{it.duration_ms ?? '-'}</TableCell>
+                            <TableCell align="right">{tok || '-'}</TableCell>
+                            <TableCell>{it.rag_used ? <Chip label="RAG" size="small" color="success" /> : '-'}</TableCell>
+                            <TableCell>
+                              <Button size="small" variant="text" onClick={()=> openTimeline(it.request_id)}>Timeline</Button>
+                              <Button size="small" variant="text" onClick={()=> openDetails(it)}>Dettagli</Button>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      } else {
+                        return (
+                          <TableRow key={idx} hover>
+                            <TableCell>{it.ts || '-'}</TableCell>
+                            <TableCell>{it.request_id || '-'}</TableCell>
+                            <TableCell>{it.event || '-'}</TableCell>
+                            <TableCell>{providerDisp}</TableCell>
+                            <TableCell>{modelDisp}</TableCell>
+                            <TableCell>{pers}</TableCell>
+                            <TableCell>{it.topic || '-'}</TableCell>
+                            <TableCell align="right">{it.duration_ms ?? '-'}</TableCell>
+                            <TableCell align="right">{tokens}</TableCell>
+                            <TableCell>{it.rag_used ? <Chip label="RAG" size="small" color="success" /> : '-'}</TableCell>
+                            <TableCell>
+                              <Button size="small" variant="text" onClick={()=> openDetails(it)}>Dettagli</Button>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      }
+                    })}
+                  </TableBody>
+                </Table>
+                <Typography variant="caption" color="text.secondary">Totale: {interactionsTotal}</Typography>
+                {interactionsTotal === 0 && (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      Nessun evento trovato per i filtri selezionati. Prova a rimuovere il filtro Evento o cambiare Data.
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+            </Stack>
+          </AccordionDetails>
+        </Accordion>
+
         {/* Pannello Riassunti */}
         <Accordion 
           expanded={expandedPanels.summaries} 
@@ -3067,6 +3519,73 @@ export default function AdminPanel() {
           {loading ? 'Salvataggio...' : 'Salva Configurazione'}
         </Button>
       </Box>
+
+      {/* Dialog Dettagli Log */}
+      <Dialog open={detailOpen} onClose={closeDetails} maxWidth="md" fullWidth>
+        <DialogTitle>Dettagli evento</DialogTitle>
+        <DialogContent dividers>
+          <Box component="pre" sx={{ bgcolor: '#0d1117', color: '#c9d1d9', p: 1.5, borderRadius: 1, maxHeight: 480, overflow: 'auto', fontSize: 12 }}>
+            {detailItem ? JSON.stringify(detailItem, null, 2) : ''}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={copyDetails} startIcon={<DownloadIcon/>} variant="outlined">Copia JSON</Button>
+          <Button onClick={closeDetails} variant="contained">Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog Timeline */}
+      <Dialog open={timelineOpen} onClose={()=> setTimelineOpen(false)} maxWidth="lg" fullWidth>
+        <DialogTitle>Timeline richiesta</DialogTitle>
+        <DialogContent dividers>
+          {(() => {
+            const rows = (timelineItems || []).slice().sort((a:any,b:any)=> (a.ts||'').localeCompare(b.ts||''))
+            const start = rows.length > 0 ? new Date(rows[0].ts) : null
+            const delta = (ts:string) => {
+              if (!start || !ts) return '-'
+              const d = new Date(ts).getTime() - start.getTime()
+              return d >= 0 ? d : '-'
+            }
+            return (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>TS</TableCell>
+                    <TableCell align="right">Δ (ms)</TableCell>
+                    <TableCell>Evento</TableCell>
+                    <TableCell>Provider</TableCell>
+                    <TableCell>Modello</TableCell>
+                    <TableCell>Dur. (ms)</TableCell>
+                    <TableCell>Token</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rows.map((ev:any, i:number) => {
+                    const tokens = ev.tokens?.total_tokens ?? ev.tokens?.total ?? ''
+                    return (
+                      <TableRow key={i}>
+                        <TableCell>{ev.ts || '-'}</TableCell>
+                        <TableCell align="right">{delta(ev.ts)}</TableCell>
+                        <TableCell>{ev.event || '-'}</TableCell>
+                        <TableCell>{ev.provider || ev.provider_header || '-'}</TableCell>
+                        <TableCell>{ev.model || '-'}</TableCell>
+                        <TableCell>{ev.duration_ms ?? '-'}</TableCell>
+                        <TableCell>{tokens}</TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            )
+          })()}
+          <Box component="pre" sx={{ bgcolor: '#0d1117', color: '#c9d1d9', p: 1.5, borderRadius: 1, maxHeight: 240, overflow: 'auto', fontSize: 12, mt: 2 }}>
+            {timelineItems && timelineItems.length > 0 ? JSON.stringify(timelineItems, null, 2) : 'Nessun evento trovato per questa richiesta.'}
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setTimelineOpen(false)} variant="contained">Chiudi</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Pipeline Dialogs */}
       <PipelineRouteAddDialog />

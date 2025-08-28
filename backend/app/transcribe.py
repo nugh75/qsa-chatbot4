@@ -12,6 +12,7 @@ import requests
 from pathlib import Path
 import shutil
 import warnings
+from .logging_utils import log_interaction, log_system
 
 # Supprime il warning FP16 per CPU
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
@@ -183,6 +184,19 @@ async def transcribe_audio(
 ):
     """Trascrivi un file audio usando Whisper locale"""
     try:
+        import time
+        _start = time.perf_counter()
+        try:
+            log_interaction({
+                "event": "transcribe_start",
+                "request_id": locals().get('request_id'),
+                "provider": "whisper_local",
+                "model": provider,
+                "content_type": audio.content_type,
+            })
+            log_system(20, f"REQUEST transcribe start: id={locals().get('request_id')} model={provider} type={audio.content_type}")
+        except Exception:
+            pass
         # Verifica che il file sia un audio
         if not audio.content_type.startswith('audio/'):
             raise HTTPException(status_code=400, detail="File must be an audio file")
@@ -191,11 +205,39 @@ async def transcribe_audio(
         audio_content = await audio.read()
         
         # Trascrivi usando il servizio Whisper (usa provider come model)
+        import uuid as _uuid
+        request_id = f"req_{_uuid.uuid4().hex}"
         text = await whisper_service.transcribe_audio(audio_content, provider)
-        
+        duration_ms = int((time.perf_counter() - _start) * 1000)
+        try:
+            log_interaction({
+                "event": "transcribe",
+                "request_id": request_id,
+                "provider": "whisper_local",
+                "model": provider,
+                "file_bytes": len(audio_content),
+                "content_type": audio.content_type,
+                "duration_ms": duration_ms,
+            })
+        except Exception:
+            pass
+        try:
+            log_system(20, f"REQUEST transcribe done: id={request_id} model={provider} dur={duration_ms}ms")
+        except Exception:
+            pass
         return {"text": text, "model_used": provider}
         
     except Exception as e:
+        try:
+            log_interaction({
+                "event": "transcribe_error",
+                "request_id": locals().get('request_id'),
+                "provider": "whisper_local",
+                "model": provider,
+                "error": str(e),
+            })
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
     """Trascrivi un file audio usando Whisper locale"""
     try:
@@ -208,7 +250,6 @@ async def transcribe_audio(
         
         # Trascrivi usando il servizio Whisper (usa provider come model_name)
         text = await whisper_service.transcribe_audio(audio_content, provider)
-        
         return {"text": text, "model_used": provider}
         
     except Exception as e:

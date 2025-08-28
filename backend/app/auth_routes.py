@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 
 from .auth import (
     AuthManager, EscrowManager, UserRegistration, UserLogin, TokenResponse,
-    get_current_user, get_current_active_user, get_current_admin_user, validate_password_strength, security, is_admin_user
+    get_current_user, get_current_active_user, get_current_admin_user, validate_password_strength, security, is_admin_user,
+    MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
 )
 from .database import UserModel, AdminModel
 from .escrow import EscrowManager as EscrowManagerAdvanced
@@ -106,8 +107,10 @@ async def login_user(user_data: UserLogin):
     
     # Verifica password
     if not AuthManager.verify_password(user_data.password, user["password_hash"]):
-        # Incrementa tentativi falliti
-        UserModel.increment_failed_login(user_data.email)
+        # Incrementa tentativi falliti e applica lock se necessario
+        UserModel.increment_failed_login_and_lock_if_needed(
+            user_data.email, MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials"

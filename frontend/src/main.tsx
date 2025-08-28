@@ -6,6 +6,7 @@ import AdminPanel from './AdminPanel'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { Box, CircularProgress, Typography } from '@mui/material'
 import LoginDialog from './components/LoginDialog'
+import Arena from './Arena'
 
 const AdminRoute: React.FC = () => {
   const { isAuthenticated, isLoading, user, login } = useAuth()
@@ -41,6 +42,8 @@ createRoot(document.getElementById('root')!).render(
         <Route path="/admin" element={<AdminRoute />} />
         {/* Survey results dedicated route */}
         <Route path="/survey-results" element={<SurveyResults />} />
+        {/* Arena: statistiche feedback per provider/modello/personalità */}
+        <Route path="/arena" element={<Arena />} />
       </Routes>
     </BrowserRouter>
   </AuthProvider>

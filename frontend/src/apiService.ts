@@ -323,6 +323,7 @@ class ApiService {
     default_provider: string;
     default_tts: string;
     default_asr: string;
+    ui_settings?: { arena_public: boolean };
   }>> {
     return this.makeRequest('/config/public');
   }
@@ -425,8 +426,15 @@ export function handleApiError(error: string): string {
     'Email already registered': 'Email già registrata',
     'Password not strong enough': 'Password non abbastanza forte',
     'Account temporarily locked': 'Account temporaneamente bloccato',
+    'Account temporarily locked due to multiple failed login attempts': 'Account temporaneamente bloccato per troppi tentativi falliti',
     'Could not validate credentials': 'Token di accesso non valido',
-    'User not found or inactive': 'Utente non trovato o inattivo'
+    'User not found or inactive': 'Utente non trovato o inattivo',
+    'Invalid refresh token': 'Refresh token non valido',
+    'Authentication expired': 'Autenticazione scaduta. Effettua di nuovo il login.',
+    'Authentication expired. Please login again.': 'Autenticazione scaduta. Effettua di nuovo il login.',
+    'Current password is incorrect': 'Password corrente errata',
+    'Password change not required': 'Cambio password non richiesto',
+    'Request failed': 'Richiesta non riuscita'
   };
 
   return errorMappings[error] || error;

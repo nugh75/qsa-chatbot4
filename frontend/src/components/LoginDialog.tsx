@@ -24,7 +24,7 @@ import {
   Lock as LockIcon,
   Email as EmailIcon,
 } from '@mui/icons-material';
-import { apiService } from '../apiService';
+import { apiService, handleApiError } from '../apiService';
 import { ChatCrypto, CredentialManager } from '../crypto';
 
 interface LoginDialogProps {
@@ -141,7 +141,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           setError('Errore nel recupero delle informazioni utente');
         }
       } else {
-        setError(response.error || 'Credenziali non valide');
+        setError(handleApiError(response.error || 'Login fallito'));
       }
     } catch (err: any) {
       console.error('Login error:', err);
@@ -258,7 +258,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           setError('Errore nel recupero delle informazioni utente');
         }
       } else {
-        setError(response.error || 'Errore durante la registrazione');
+        setError(handleApiError(response.error || 'Registrazione fallita'));
       }
     } catch (err: any) {
       console.error('Register error:', err);

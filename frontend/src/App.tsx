@@ -38,6 +38,8 @@ import SurveyForm from './SurveyForm'
 // (SurveyLink rimosso: inline link custom)
 import SurveyResults from './SurveyResults'
 import { authFetch } from './utils/authFetch'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -191,12 +193,102 @@ const AppContent: React.FC = () => {
   const [defaultProvider, setDefaultProvider] = useState('')
   const [defaultTts, setDefaultTts] = useState('')
   const [defaultAsr, setDefaultAsr] = useState('')
+  const [arenaPublic, setArenaPublic] = useState(false)
   const [asrProvider, setAsrProvider] = useState<'openai'|'local'>('openai')
   const [showRAGSelector, setShowRAGSelector] = useState(false)
   const [ragContextActive, setRAGContextActive] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
+
+  // Converte Markdown in testo semplice per TTS (rimuove tag e simboli)
+  const sanitizeMarkdownToPlainText = (input: string): string => {
+    let text = input
+    // Rimuovi blocchi di codice ``` ```
+    text = text.replace(/```[\s\S]*?```/g, ' ')
+    // Rimuovi inline code `code`
+    text = text.replace(/`([^`]+)`/g, '$1')
+    // Immagini: mantieni solo alt text
+    text = text.replace(/!\[([^\]]*)\]\([^\)]*\)/g, '$1')
+    // Link: mantieni solo il testo
+    text = text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '$1')
+    // Header markdown # ## ### -> rimuovi i #
+    text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    // Citazioni >
+    text = text.replace(/^\s{0,3}>\s?/gm, '')
+    // Liste - * + e numerate
+    text = text.replace(/^\s{0,3}[-*+]\s+/gm, '')
+    text = text.replace(/^\s{0,3}\d+\.\s+/gm, '')
+    // Tabelle: rimuovi righe separatrici e sostituisci pipe con spazi puntati
+    text = text.replace(/^\s*\|?\s*:?[-]{2,}:?\s*(\|\s*:?[-]{2,}:?\s*)+\|?\s*$/gm, '')
+    text = text.replace(/^\s*[-]{3,}\s*$/gm, '')
+    text = text.replace(/\|/g, ' • ')
+    // Rimuovi tag HTML
+    text = text.replace(/<[^>]+>/g, '')
+    // Grassetto/corsivo
+    text = text.replace(/\*\*([^*]+)\*\*/g, '$1')
+    text = text.replace(/\*([^*]+)\*/g, '$1')
+    text = text.replace(/__([^_]+)__/g, '$1')
+    text = text.replace(/_([^_]+)_/g, '$1')
+    // Comprimi spazi
+    text = text.replace(/[ \t\f\v]+/g, ' ')
+    // Normalizza nuove righe multiple
+    text = text.replace(/\n{3,}/g, '\n\n')
+    return text.trim()
+  }
+
+  // Normalizza il Markdown per la visualizzazione: sblocca tabelle accidentalmente racchiuse in ```
+  const normalizeMarkdownForDisplay = (md: string): string => {
+    if (!md) return md
+    // 1) Sblocca tabelle dentro code fence
+    let out = md.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
+      // Se il blocco contiene una tabella GFM (riga con '|' seguita da riga di separatori '---'), rimuovi i backtick
+      const lines = inner.split('\n')
+      for (let i = 0; i < lines.length - 1; i++) {
+        if (lines[i].includes('|')) {
+          const sep = lines[i + 1]?.trim() || ''
+          if (/^[:\-| ]+$/.test(sep) && sep.includes('-')) {
+            return inner
+          }
+        }
+      }
+      return match
+    })
+    // 2) Converte semplici tabelle "a trattini" senza pipe in GFM
+    const lines = out.split('\n')
+    const converted: string[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const cur = lines[i]
+      const nxt = lines[i + 1] || ''
+      if (/^\s*-{2,}(?:\s+-{2,})+\s*$/.test(nxt)) {
+        const headers = cur.trim().split(/\s{2,}/).filter(Boolean)
+        const seps = nxt.trim().split(/\s{2,}/).filter(Boolean)
+        if (headers.length >= 2 && seps.length === headers.length) {
+          const headerRow = `| ${headers.join(' | ')} |`
+          const sepRow = `| ${seps.map(() => '---').join(' | ')} |`
+          const bodyRows: string[] = []
+          let j = i + 2
+          while (j < lines.length) {
+            const row = lines[j]
+            if (!row.trim()) break
+            const cols = row.trim().split(/\s{2,}/).filter(Boolean)
+            if (cols.length === headers.length) {
+              bodyRows.push(`| ${cols.join(' | ')} |`)
+              j++
+            } else {
+              break
+            }
+          }
+          converted.push(headerRow, sepRow, ...bodyRows)
+          i = j - 1
+          continue
+        }
+      }
+      converted.push(cur)
+    }
+    out = converted.join('\n')
+    return out
+  }
 
   // Provider mappings
   const providerLabels: Record<string, string> = {
@@ -237,6 +329,7 @@ const AppContent: React.FC = () => {
           setDefaultProvider(response.data.default_provider)
           setDefaultTts(response.data.default_tts)
           setDefaultAsr(response.data.default_asr)
+          setArenaPublic(Boolean(response.data.ui_settings?.arena_public))
           
           // Set default values if current selections are not enabled
           if (!response.data.enabled_providers.includes(provider)) {
@@ -656,6 +749,7 @@ const AppContent: React.FC = () => {
     
     // Invia feedback al backend (opzionale)
     try {
+      const personality = personalities.find(p => p.id === selectedPersonalityId)
       await fetch(`${BACKEND}/api/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -663,7 +757,10 @@ const AppContent: React.FC = () => {
           messageIndex, 
           feedback: type, 
           timestamp: Date.now(),
-          provider: provider 
+          provider: provider,
+          personality_id: personality?.id || null,
+          personality_name: personality?.name || null,
+          model: personality?.model || null
         })
       })
     } catch (error) {
@@ -702,7 +799,17 @@ const AppContent: React.FC = () => {
           </Tooltip>
           <ChatAvatar key={selectedPersonalityId || 'default'} src={assistantAvatarSrc} />
           <Typography variant="h6">Counselorbot</Typography>
-          {user?.is_admin && <Chip label="Admin" color="warning" size="small" sx={{ ml: 1 }} />}
+          {user?.is_admin && (
+            <Chip
+              component="a"
+              href="/admin"
+              label="Admin"
+              color="warning"
+              size="small"
+              clickable
+              sx={{ ml: 1 }}
+            />
+          )}
         </Stack>
         
         {/* Controlli principali */}
@@ -801,6 +908,19 @@ const AppContent: React.FC = () => {
             </IconButton>
           </Tooltip>
 
+          {/* Arena: statistiche feedback (visibile a admin o se abilitata pubblicamente) */}
+          {(user?.is_admin || arenaPublic) && (
+            <Chip
+              component="a"
+              href="/arena"
+              label="Arena"
+              clickable
+              size="small"
+              variant="outlined"
+              sx={{ borderColor: '#ddd' }}
+            />
+          )}
+
           {/* Download Chat + Report */}
           <DownloadChatButton messages={messages} conversationId={currentConversationId} />
 
@@ -869,20 +989,18 @@ const AppContent: React.FC = () => {
                   boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                   position: 'relative',
                 }}>
-                  <Typography variant="body1" sx={{ 
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.6,  // Aumentato line-height
-                    fontSize: '1rem'  // Aumentato font-size
+                  <Box sx={{
+                    '& table': { width: '100%', borderCollapse: 'collapse', my: 1 },
+                    '& th, & td': { border: '1px solid rgba(0,0,0,0.15)', padding: '6px 8px', textAlign: 'left' },
+                    '& thead th': { bgcolor: 'rgba(0,0,0,0.04)' },
+                    '& code': { bgcolor: 'rgba(0,0,0,0.06)', px: 0.5, py: 0.1, borderRadius: 0.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' },
+                    '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
+                    '& p': { m: 0 },
                   }}>
-                    {/* Rimuove i marcatori markdown e mostra testo pulito */}
-                    {m.content
-                      .replace(/\*\*(.*?)\*\*/g, '$1')  // Rimuove **grassetto**
-                      .replace(/\*(.*?)\*/g, '$1')      // Rimuove *corsivo*
-                      .replace(/`(.*?)`/g, '$1')        // Rimuove `codice`
-                      .replace(/#{1,6}\s/g, '')         // Rimuove # headers
-                      .replace(/\[.*?\]\(.*?\)/g, '')   // Rimuove link markdown
-                    }
-                  </Typography>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {normalizeMarkdownForDisplay(m.content)}
+                    </ReactMarkdown>
+                  </Box>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
                 {m.role === 'assistant' && !(isStreaming && streamingAssistantIndex === i) && (
@@ -897,7 +1015,7 @@ const AppContent: React.FC = () => {
                     {/* TTS */}
                     <Box 
                       component="button" 
-                      onClick={() => playTTS(m.content, i)}
+                      onClick={() => playTTS(sanitizeMarkdownToPlainText(m.content), i)}
                       sx={{ 
                         background: 'none', 
                         border: 'none', 

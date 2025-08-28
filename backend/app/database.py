@@ -244,7 +244,7 @@ class UserModel:
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                UPDATE users SET last_login = CURRENT_TIMESTAMP, failed_login_attempts = 0
+                UPDATE users SET last_login = CURRENT_TIMESTAMP, failed_login_attempts = 0, locked_until = NULL
                 WHERE id = ?
             """, (user_id,))
             conn.commit()
@@ -258,6 +258,35 @@ class UserModel:
                 UPDATE users SET failed_login_attempts = failed_login_attempts + 1
                 WHERE email = ?
             """, (email,))
+            conn.commit()
+
+    @staticmethod
+    def increment_failed_login_and_lock_if_needed(email: str, max_attempts: int, lock_minutes: int):
+        """Incrementa i tentativi falliti e imposta locked_until se si supera la soglia."""
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            # Leggi valore corrente
+            cursor.execute("SELECT failed_login_attempts FROM users WHERE email = ?", (email,))
+            row = cursor.fetchone()
+            if not row:
+                return
+            current = row[0] or 0
+            new_val = current + 1
+            if new_val >= max_attempts:
+                # Imposta anche locked_until
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET failed_login_attempts = ?, locked_until = datetime('now', ?)
+                    WHERE email = ?
+                    """,
+                    (new_val, f"+{int(lock_minutes)} minutes", email)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE users SET failed_login_attempts = ? WHERE email = ?",
+                    (new_val, email)
+                )
             conn.commit()
 
 class ConversationModel:

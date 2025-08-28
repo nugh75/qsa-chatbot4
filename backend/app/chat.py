@@ -8,6 +8,7 @@ from .personalities import get_personality
 from .topic_router import detect_topic
 from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
+from .logging_utils import log_interaction, log_system
 from .usage import log_usage
 from .admin import load_config
 from .memory import get_memory
@@ -72,12 +73,43 @@ async def chat(
     x_admin_password: Optional[str] = Header(default=None),
     current_user: dict = Depends(get_current_active_user)
 ):
+    import uuid as _uuid
+    request_id = f"req_{_uuid.uuid4().hex}"
     user_msg = req.message  # Messaggio in chiaro per LLM
     session_id = req.sessionId or "default"
     conversation_id = req.conversation_id
     frontend_history = req.conversation_history or []
     user_msg_encrypted = req.message_encrypted or user_msg  # Fallback al messaggio in chiaro se non crittografato
     attachments = req.attachments or []
+
+    # Log start request (anche se fallisce dopo)
+    try:
+        try:
+            _cfg = load_config()
+            _model_hdr = None
+            _prov_hdr = (x_llm_provider or "local").lower()
+            if isinstance(_cfg, dict):
+                _model_hdr = _cfg.get('ai_providers', {}).get(_prov_hdr, {}).get('selected_model')
+        except Exception:
+            _model_hdr = None
+        log_interaction({
+            "event": "chat_start",
+            "request_id": request_id,
+            "provider_header": (x_llm_provider or "local").lower(),
+            "personality_id": x_personality_id,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
+            "message_chars": len(user_msg or ""),
+            "attachments_count": len(attachments),
+            "model": _model_hdr,
+        })
+    except Exception:
+        pass
+    try:
+        log_system(20, f"REQUEST chat start: id={request_id} provider_hdr={x_llm_provider} personality={x_personality_id} user={getattr(current_user,'id', None) if not isinstance(current_user, dict) else current_user.get('id')} conv={conversation_id} msg_chars={len(user_msg or '')}")
+    except Exception:
+        pass
     
     # Processa gli allegati per aggiungere il contenuto al messaggio
     attachment_content = ""
@@ -154,6 +186,20 @@ async def chat(
                     model_override = p["model"]
         except Exception as e:
             print(f"Personality load failed: {e}")
+    # Log risoluzione provider/modello
+    try:
+        log_interaction({
+            "event": "chat_resolved",
+            "request_id": request_id,
+            "provider": effective_provider,
+            "model": model_override,
+            "personality_id": x_personality_id,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+        })
+        log_system(20, f"REQUEST chat resolved: id={request_id} provider={effective_provider} model={model_override or '-'}")
+    except Exception:
+        pass
 
     # Costruisci la cronologia della conversazione
     if use_memory_buffer:
@@ -200,6 +246,7 @@ async def chat(
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
+    rag_results = None
     if rag_context:
         try:
             # Recupera risultati RAG per le citazioni
@@ -213,6 +260,16 @@ async def chat(
                     group_ids=selected_groups,
                     top_k=5
                 )
+                # Conserva per logging
+                rag_results = [
+                    {
+                        "chunk_id": r.get("chunk_id"),
+                        "document_id": r.get("document_id"),
+                        "filename": r.get("filename"),
+                        "chunk_index": r.get("chunk_index"),
+                        "similarity": r.get("similarity_score")
+                    } for r in (search_results or [])
+                ]
                 answer = format_response_with_citations(answer, search_results)
         except Exception as e:
             print(f"Errore nell'aggiunta citazioni: {e}")
@@ -286,6 +343,33 @@ async def chat(
         "duration_ms": duration_ms,
         "tokens": tokens_full,
     })
+    # Detailed interaction log (JSONL)
+    try:
+        interaction = {
+            "event": "chat_completion",
+            "request_id": request_id,
+            "provider": effective_provider,
+            "model": model_selected,
+            "personality_id": x_personality_id,
+            "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
+            "topic": topic,
+            "conversation_id": conversation_id,
+            "session_id": session_id,
+            "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
+            "attachments_count": len(attachments),
+            "rag_used": bool(rag_context),
+            "rag_results": rag_results,
+            "duration_ms": duration_ms,
+            "tokens": tokens_full,
+        }
+        log_interaction(interaction)
+    except Exception:
+        pass
+    try:
+        from .logging_utils import log_system as _ls
+        _ls(20, f"REQUEST chat done: id={request_id} provider={effective_provider} model={model_selected or model_override or '-'} dur={duration_ms}ms")
+    except Exception:
+        pass
     return resp
 
 @router.post("/chat/stream")
@@ -296,6 +380,8 @@ async def chat_stream(
     x_admin_password: Optional[str] = Header(default=None),
     current_user: dict = Depends(get_current_active_user)
 ):
+    import uuid as _uuid
+    request_id = f"req_{_uuid.uuid4().hex}"
     """Endpoint streaming (SSE-like) che invia la risposta incrementale.
     Formato eventi: linee 'data: {"delta":"..."}\n\n' e finale 'data: {"done":true,"reply":"FULL"}\n\n'"""
 
@@ -309,6 +395,30 @@ async def chat_stream(
     frontend_history = req.conversation_history or []
     attachments = req.attachments or []
     use_memory_buffer = conversation_id is None
+
+    # Log start request stream
+    try:
+        try:
+            _cfg = load_config()
+            _model_hdr = None
+            if isinstance(_cfg, dict):
+                _model_hdr = _cfg.get('ai_providers', {}).get(provider, {}).get('selected_model')
+        except Exception:
+            _model_hdr = None
+        log_interaction({
+            "event": "chat_start_stream",
+            "request_id": request_id,
+            "provider_header": provider,
+            "personality_id": x_personality_id,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
+            "message_chars": len(user_msg or ""),
+            "model": _model_hdr,
+        })
+        log_system(20, f"REQUEST chat_stream start: id={request_id} provider_hdr={provider} personality={x_personality_id} user={getattr(current_user,'id', None) if not isinstance(current_user, dict) else current_user.get('id')} conv={conversation_id} msg_chars={len(user_msg or '')}")
+    except Exception:
+        pass
 
     # Salvataggio messaggio utente (come nell'endpoint non streaming)
     if conversation_id and current_user:
@@ -352,6 +462,20 @@ async def chat_stream(
                     model_override = p["model"]
         except Exception as e:
             print(f"Personality load failed (stream): {e}")
+    # Log risoluzione stream
+    try:
+        log_interaction({
+            "event": "chat_resolved_stream",
+            "request_id": request_id,
+            "provider": effective_provider,
+            "model": model_override,
+            "personality_id": x_personality_id,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+        })
+        log_system(20, f"REQUEST chat_stream resolved: id={request_id} provider={effective_provider} model={model_override or '-'}")
+    except Exception:
+        pass
 
     if use_memory_buffer:
         memory = get_memory()
@@ -369,6 +493,7 @@ async def chat_stream(
 
     start_time = asyncio.get_event_loop().time()
     answer_accum = []  # parti accumulate
+    rag_results = None
 
     async def event_generator():
         nonlocal answer_accum
@@ -410,6 +535,25 @@ async def chat_stream(
                 # Ottiene risposta completa e la spezza in chunk simulati
                 from .llm import chat_with_provider, compute_token_stats
                 import json as _json_local
+                # Se RAG attivo, raccogli anche i top chunk per logging
+                if rag_context:
+                    try:
+                        from .rag_engine import rag_engine
+                        from .rag_routes import get_user_context as _get_uc
+                        sel_groups = _get_uc(session_id)
+                        if sel_groups:
+                            _sr = rag_engine.search(query=user_msg, group_ids=sel_groups, top_k=5)
+                            rag_results = [
+                                {
+                                    "chunk_id": r.get("chunk_id"),
+                                    "document_id": r.get("document_id"),
+                                    "filename": r.get("filename"),
+                                    "chunk_index": r.get("chunk_index"),
+                                    "similarity": r.get("similarity_score")
+                                } for r in (_sr or [])
+                            ]
+                    except Exception:
+                        rag_results = None
                 full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override)
                 # Spezza per frasi o blocchi ~40 char
                 import re
@@ -478,11 +622,37 @@ async def chat_stream(
                     })
                 except Exception:
                     pass
+                # Detailed interaction log (JSONL)
+                try:
+                    log_interaction({
+                        "event": "chat_completion_stream",
+                        "request_id": request_id,
+                        "provider": effective_provider,
+                        "model": model_selected,
+                        "personality_id": x_personality_id,
+                        "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
+                        "topic": topic,
+                        "conversation_id": conversation_id,
+                        "session_id": session_id,
+                        "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
+                        "attachments_count": len(attachments),
+                        "rag_used": bool(rag_context),
+                        "rag_results": rag_results,
+                        "duration_ms": duration_ms,
+                        "tokens": tokens_full,
+                    })
+                except Exception:
+                    pass
             try:
                 import json as _json_final
                 yield f"data: {{\"done\":true,\"reply\":{_json_final.dumps(full_answer)} }}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"
+            try:
+                from .logging_utils import log_system as _ls
+                _ls(20, f"REQUEST chat_stream done: id={request_id} provider={effective_provider} model={model_selected or model_override or '-'} dur={duration_ms}ms")
+            except Exception:
+                pass
 
     headers = {
         "Cache-Control": "no-cache",

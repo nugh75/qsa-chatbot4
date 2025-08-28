@@ -1,8 +1,9 @@
-import os, httpx, base64, asyncio
+import os, httpx, base64, asyncio, re
 import edge_tts
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+from .logging_utils import log_interaction, log_system
 import tempfile
 import io
 
@@ -19,10 +20,64 @@ class TTSRequest(BaseModel):
     provider: str = "edge"  # edge, elevenlabs, openai, piper
     voice: str = "it-IT-ElsaNeural"  # Voce italiana di default per edge-tts
 
+def sanitize_text_for_tts(text: str) -> str:
+    """Rimuove marcatori Markdown/HTML e normalizza il testo per la sintesi vocale.
+    Questo è un fallback lato server: il frontend già invia testo pulito.
+    """
+    if not text:
+        return text
+    cleaned = text
+    # Blocchi di codice
+    cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
+    # Inline code
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    # Immagini: mantieni alt
+    cleaned = re.sub(r"!\[([^\]]*)\]\([^\)]*\)", r"\1", cleaned)
+    # Link: mantieni testo
+    cleaned = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", r"\1", cleaned)
+    # Header
+    cleaned = re.sub(r"^\s{0,3}#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
+    # Citazioni
+    cleaned = re.sub(r"^\s{0,3}>\s?", "", cleaned, flags=re.MULTILINE)
+    # Liste (puntate/numerate)
+    cleaned = re.sub(r"^\s{0,3}[-*+]\s+", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s{0,3}\d+\.\s+", "", cleaned, flags=re.MULTILINE)
+    # Righe separatrici e tabelle
+    cleaned = re.sub(r"^\s*\|?\s*:?[-]{2,}:?\s*(\|\s*:?[-]{2,}:?\s*)+\|?\s*$", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"^\s*[-]{3,}\s*$", "", cleaned, flags=re.MULTILINE)
+    cleaned = cleaned.replace("|", " • ")
+    # Tag HTML
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    # Enfasi
+    cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+    cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
+    cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+    cleaned = re.sub(r"_([^_]+)_", r"\1", cleaned)
+    # Spazi
+    cleaned = re.sub(r"[ \t\f\v]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 @router.post("/tts")
 async def text_to_speech(request: TTSRequest):
     try:
         print(f"TTS Request: provider={request.provider}, voice={request.voice}, text={request.text[:50]}...")
+        import time
+        _start = time.perf_counter()
+        import uuid as _uuid
+        request_id = f"req_{_uuid.uuid4().hex}"
+        try:
+            log_interaction({
+                "event": "tts_start",
+                "request_id": request_id,
+                "provider": request.provider,
+                "voice": request.voice,
+                "text_chars": len(request.text or ""),
+            })
+            log_system(20, f"REQUEST tts start: id={request_id} provider={request.provider} voice={request.voice} chars={len(request.text or '')}")
+        except Exception:
+            pass
+        clean_text = sanitize_text_for_tts(request.text)
         
         # Carica la configurazione admin per ottenere le voci predefinite
         from .admin import load_config
@@ -43,21 +98,101 @@ async def text_to_speech(request: TTSRequest):
         print(f"Final voice: {voice}")
         
         if request.provider == "edge":
-            return await edge_tts_generate(request.text, voice or "it-IT-ElsaNeural")
+            resp = await edge_tts_generate(clean_text, voice or "it-IT-ElsaNeural")
+            duration_ms = int((time.perf_counter() - _start) * 1000)
+            try:
+                log_interaction({
+                    "event": "tts_generate",
+                    "request_id": request_id,
+                    "provider": "edge",
+                    "voice": voice or "it-IT-ElsaNeural",
+                    "text_chars": len(clean_text or ""),
+                    "duration_ms": duration_ms,
+                })
+            except Exception:
+                pass
+            try:
+                log_system(20, f"REQUEST tts done: id={request_id} provider=edge voice={voice or 'it-IT-ElsaNeural'} dur={duration_ms}ms")
+            except Exception:
+                pass
+            return resp
         elif request.provider == "elevenlabs":
             api_key = os.getenv("ELEVENLABS_API_KEY")
             print(f"ElevenLabs API key presente: {'SI' if api_key else 'NO'}")
-            return await elevenlabs_tts_generate(request.text, voice, api_key)
+            resp = await elevenlabs_tts_generate(clean_text, voice, api_key)
+            duration_ms = int((time.perf_counter() - _start) * 1000)
+            try:
+                log_interaction({
+                    "event": "tts_generate",
+                    "request_id": request_id,
+                    "provider": "elevenlabs",
+                    "voice": voice,
+                    "text_chars": len(clean_text or ""),
+                    "duration_ms": duration_ms,
+                })
+            except Exception:
+                pass
+            try:
+                log_system(20, f"REQUEST tts done: id={request_id} provider=elevenlabs voice={voice} dur={duration_ms}ms")
+            except Exception:
+                pass
+            return resp
         elif request.provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
             print(f"OpenAI API key presente: {'SI' if api_key else 'NO'}")
-            return await openai_tts_generate(request.text, voice, api_key)
+            resp = await openai_tts_generate(clean_text, voice, api_key)
+            duration_ms = int((time.perf_counter() - _start) * 1000)
+            try:
+                log_interaction({
+                    "event": "tts_generate",
+                    "request_id": request_id,
+                    "provider": "openai",
+                    "voice": voice,
+                    "text_chars": len(clean_text or ""),
+                    "duration_ms": duration_ms,
+                })
+            except Exception:
+                pass
+            try:
+                log_system(20, f"REQUEST tts done: id={request_id} provider=openai voice={voice} dur={duration_ms}ms")
+            except Exception:
+                pass
+            return resp
         elif request.provider == "piper":
-            return await piper_tts_generate(request.text, voice or "it_IT-riccardo-x_low")
+            resp = await piper_tts_generate(clean_text, voice or "it_IT-riccardo-x_low")
+            duration_ms = int((time.perf_counter() - _start) * 1000)
+            try:
+                log_interaction({
+                    "event": "tts_generate",
+                    "request_id": request_id,
+                    "provider": "piper",
+                    "voice": voice or "it_IT-riccardo-x_low",
+                    "text_chars": len(clean_text or ""),
+                    "duration_ms": duration_ms,
+                })
+            except Exception:
+                pass
+            try:
+                log_system(20, f"REQUEST tts done: id={request_id} provider=piper voice={voice or 'it_IT-riccardo-x_low'} dur={duration_ms}ms")
+            except Exception:
+                pass
+            return resp
         else:
             raise HTTPException(status_code=400, detail="Provider non supportato")
     except Exception as e:
         print(f"TTS Error: {str(e)}")
+        try:
+            import time
+            log_interaction({
+                "event": "tts_generate_error",
+                "request_id": locals().get('request_id'),
+                "provider": request.provider,
+                "voice": request.voice,
+                "text_chars": len((request.text or "")),
+                "error": str(e),
+            })
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 async def edge_tts_generate(text: str, voice: str = "it-IT-ElsaNeural"):

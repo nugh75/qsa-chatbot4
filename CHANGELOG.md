@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.3.0 - 2025-08-28
+
+### Added
+- Frontend: Markdown rendering via `react-markdown` + `remark-gfm` with proper GFM tables, inline code and code blocks styling.
+- Frontend: Arena page (`/arena`) showing feedback stats by provider, model and personality; chip link in header; visibility toggle (public/admin-only) driven by new admin UI setting.
+- Frontend: Admin → Log & Interazioni with:
+  - Filters (provider, event, personality, model, conversation, user, topic, RAG yes/no, duration range, tokens range)
+  - Group-by Request ID view with aggregated duration and tokens
+  - Timeline per request (TS, Δms, event, provider, model, duration, tokens) and raw JSON preview
+  - Download JSONL + system.log buttons and detail dialog
+  - Loading indicator and clearer empty-state message
+- Backend: JSONL interactions logging per day (chat/stream, TTS, ASR) with `request_id`, provider, model, personality, topic, duration_ms, tokens, RAG chunks and user/conversation identifiers.
+- Backend: System logging of request start/resolution/done with durations.
+- Backend: Admin endpoints for logs: list dates, list interactions (filters + grouping), download system and interactions logs, and filters metadata endpoint.
+- Backend: Admin UI setting `arena_public` with GET/POST `/api/admin/ui-settings`; exposed in `/api/config/public`.
+
+### Changed
+- Frontend: TTS now sends sanitized plain text (no Markdown markers) to backend.
+- Backend: TTS sanitizes Markdown/HTML as fallback before synthesis.
+- Backend: Stream chat now emits resolved provider/model event and logs completion with durations.
+
+### Fixed
+- Markdown output from LLMs: tables now render as HTML tables (including cases wrapped in code fences and simple dash-based tables converted to GFM).
+- TTS no longer speaks Markdown tags/symbols.
+
+### Notes
+- To push this release and tag to your remote:
+  - `git push origin HEAD --tags`
+
 ## v0.2.0 - 2025-08-28
 
 ### Added

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 from typing import Dict, Any
 from datetime import datetime
 import json
@@ -20,6 +21,7 @@ from .rag_routes import router as rag_router
 from .survey_routes import router as survey_router
 from .personalities import load_personalities
 from .prompts import load_system_prompts
+from .logging_utils import get_system_logger, log_system
 
 # Carica le variabili di ambiente dal file .env
 load_dotenv()
@@ -42,12 +44,22 @@ try:
 except Exception as e:
     print(f"Static mount error: {e}")
 
+# Init logging
+try:
+    _logger = get_system_logger()
+    log_system(20, "System logging initialized. Storage at 'storage/logs'.")
+except Exception as _e:
+    print(f"Logging init error: {_e}")
+
 # Modello per il feedback
 class FeedbackData(BaseModel):
     messageIndex: int
     feedback: str  # 'like' o 'dislike'
     timestamp: int
     provider: str
+    personality_id: Optional[str] = None
+    personality_name: Optional[str] = None
+    model: Optional[str] = None
 
 app.include_router(chat_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
@@ -96,7 +108,10 @@ async def get_public_config():
                 "enabled_asr_providers": enabled_asr_providers,
                 "default_provider": config.get('default_provider', 'local'),
                 "default_tts": config.get('default_tts', 'edge'),
-                "default_asr": config.get('default_asr', 'openai')
+                "default_asr": config.get('default_asr', 'openai'),
+                "ui_settings": {
+                    "arena_public": config.get('ui_settings', {}).get('arena_public', False)
+                }
             }
         else:
             # Fallback configuration
@@ -106,7 +121,8 @@ async def get_public_config():
                 "enabled_asr_providers": ['openai'],
                 "default_provider": 'local',
                 "default_tts": 'edge',
-                "default_asr": 'openai'
+                "default_asr": 'openai',
+                "ui_settings": { "arena_public": False }
             }
     except Exception as e:
         print(f"Error loading public config: {e}")
@@ -116,7 +132,8 @@ async def get_public_config():
             "enabled_asr_providers": ['openai'],
             "default_provider": 'local',
             "default_tts": 'edge',
-            "default_asr": 'openai'
+            "default_asr": 'openai',
+            "ui_settings": { "arena_public": False }
         }
 
 @app.post("/api/feedback")
@@ -137,6 +154,9 @@ async def save_feedback(feedback_data: FeedbackData):
             "feedback": feedback_data.feedback,
             "timestamp": feedback_data.timestamp,
             "provider": feedback_data.provider,
+            "personality_id": feedback_data.personality_id,
+            "personality_name": feedback_data.personality_name,
+            "model": feedback_data.model,
             "datetime": datetime.now().isoformat(),
             "type": "global" if feedback_data.messageIndex == -1 else "message"
         }
@@ -189,7 +209,7 @@ async def get_feedback_stats():
         if not os.path.exists(feedback_dir):
             return {"total": 0, "likes": 0, "dislikes": 0, "by_provider": {}}
         
-        stats = {"total": 0, "likes": 0, "dislikes": 0, "by_provider": {}}
+        stats = {"total": 0, "likes": 0, "dislikes": 0, "by_provider": {}, "by_model": {}, "by_personality": {}}
         
         # Leggi tutti i file di feedback
         for filename in os.listdir(feedback_dir):
@@ -207,10 +227,30 @@ async def get_feedback_stats():
                                 stats["dislikes"] += 1
                             
                             provider = entry.get("provider", "unknown")
+                            model = entry.get("model") or "unknown"
+                            pers_id = entry.get("personality_id") or "unknown"
+                            pers_name = entry.get("personality_name") or "Sconosciuta"
+
+                            # by_provider
                             if provider not in stats["by_provider"]:
                                 stats["by_provider"][provider] = {"likes": 0, "dislikes": 0}
-                            
                             stats["by_provider"][provider][entry["feedback"] + "s"] += 1
+
+                            # by_model
+                            if model not in stats["by_model"]:
+                                stats["by_model"][model] = {"provider": provider, "likes": 0, "dislikes": 0}
+                            stats["by_model"][model][entry["feedback"] + "s"] += 1
+
+                            # by_personality
+                            if pers_id not in stats["by_personality"]:
+                                stats["by_personality"][pers_id] = {
+                                    "name": pers_name,
+                                    "provider": provider,
+                                    "model": model,
+                                    "likes": 0,
+                                    "dislikes": 0
+                                }
+                            stats["by_personality"][pers_id][entry["feedback"] + "s"] += 1
         
         return stats
         

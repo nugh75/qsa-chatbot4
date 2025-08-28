@@ -1,5 +1,5 @@
 {
-  "default_id": "counselor",
+  "default_id": "counselorbot-o-gptoss",
   "personalities": [
     {
       "id": "counselor",
@@ -23,6 +23,22 @@
       "system_prompt_id": "tutor",
       "provider": "ollama",
       "model": "gpt-oss:latest"
+    },
+    {
+      "id": "couselorbot-kimi-k2",
+      "name": "Couselorbot kimi k2",
+      "system_prompt_id": "default",
+      "provider": "openrouter",
+      "model": "moonshotai/kimi-k2:free",
+      "avatar": null
+    },
+    {
+      "id": "counselorbot-o-gptoss",
+      "name": "Counselorbot-O-Gptoss",
+      "system_prompt_id": "counselorbot-28a",
+      "provider": "ollama",
+      "model": "gpt-oss:latest",
+      "avatar": null
     }
   ]
 }

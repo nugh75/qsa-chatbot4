@@ -3,10 +3,23 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+import shutil
+import logging
 from typing import Dict, List, Optional
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-PERSONALITIES_FILE = DATA_DIR / "PERSONALITIES.json"
+SEED_PERSONALITIES_DIR = Path('/app/data')  # seed read-only
+RUNTIME_PERSONALITIES_DIR = Path(__file__).resolve().parent.parent / 'storage' / 'personalities'
+PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "PERSONALITIES.json"
+
+def _bootstrap_personalities():
+    RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
+    seed_file = SEED_PERSONALITIES_DIR / 'PERSONALITIES.json'
+    if not PERSONALITIES_FILE.exists() and seed_file.exists():
+        try:
+            shutil.copy2(seed_file, PERSONALITIES_FILE)
+            logging.info('[personalities] Copiato seed PERSONALITIES.json nel runtime')
+        except Exception as e:
+            logging.warning(f'[personalities] Impossibile copiare seed PERSONALITIES.json: {e}')
 
 
 def _slugify(name: str) -> str:
@@ -17,18 +30,19 @@ def _slugify(name: str) -> str:
 
 
 def load_personalities() -> Dict:
+    _bootstrap_personalities()
     try:
         if PERSONALITIES_FILE.exists():
             data = json.loads(PERSONALITIES_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict) and "personalities" in data:
                 return data
     except Exception:
-        pass
+        logging.warning('[personalities] Errore caricamento PERSONALITIES.json', exc_info=True)
     return {"default_id": None, "personalities": []}
 
 
 def save_personalities(data: Dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
     PERSONALITIES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

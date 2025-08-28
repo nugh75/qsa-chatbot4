@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import os
 from dotenv import load_dotenv
+from pathlib import Path
 from .chat import router as chat_router
 from .tts import router as tts_router
 from .transcribe import router as asr_router
@@ -20,11 +21,22 @@ from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
 from .survey_routes import router as survey_router
 from .personalities import load_personalities
-from .prompts import load_system_prompts
+from .prompts import load_system_prompts, load_summary_prompt
 from .logging_utils import get_system_logger, log_system
 
-# Carica le variabili di ambiente dal file .env
-load_dotenv()
+# Carica le variabili di ambiente dal file .env (path esplicito) e log mascherato
+_env_path = Path(__file__).resolve().parent.parent / '.env'
+load_dotenv(dotenv_path=_env_path, override=True)
+def _mask(v: str|None):
+    if not v:
+        return 'MISSING'
+    if len(v) <= 8:
+        return '****'
+    return v[:4] + '...' + v[-4:]
+print('[env] Loaded .env at', _env_path.exists(), 'OPENAI_API_KEY=', _mask(os.getenv('OPENAI_API_KEY')),
+      'ELEVENLABS_API_KEY=', _mask(os.getenv('ELEVENLABS_API_KEY')),
+      'GOOGLE_API_KEY=', _mask(os.getenv('GOOGLE_API_KEY')),
+      'OPENROUTER_API_KEY=', _mask(os.getenv('OPENROUTER_API_KEY')))
 
 app = FastAPI(title="QSA Chatbot – Backend")
 
@@ -50,6 +62,13 @@ try:
     log_system(20, "System logging initialized. Storage at 'storage/logs'.")
 except Exception as _e:
     print(f"Logging init error: {_e}")
+
+# Eager bootstrap prompts (seed -> runtime) all'avvio
+try:
+    _ = load_system_prompts()
+    _ = load_summary_prompt()
+except Exception as e:
+    print(f"Prompt bootstrap error: {e}")
 
 # Modello per il feedback
 class FeedbackData(BaseModel):

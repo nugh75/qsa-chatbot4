@@ -5,7 +5,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
 import CloseIcon from '@mui/icons-material/Close'
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
 interface SummaryResp {
   total: number

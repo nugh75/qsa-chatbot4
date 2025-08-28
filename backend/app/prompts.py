@@ -2,16 +2,33 @@ from pathlib import Path
 import json
 import re
 from typing import Optional
+import shutil
+import logging
 
-"""Gestione del prompt di sistema.
+"""Gestione del prompt di sistema con distinzione tra seed (read-only) e runtime (scrivibile).
 
-Nota: la cartella dati è nella root del repository (../.. / data),
-quindi risaliamo di tre livelli da questo file (app -> backend -> repo root).
+Seed:   /app/data (montato read-only da docker-compose)
+Runtime:/app/storage/prompts (volume scrivibile persistente)
+
+Questo permette di aggiornare i prompt senza rebuild e mantenere un file seed
+versionato come riferimento iniziale.
 """
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-SYSTEM_PROMPT_FILE = DATA_DIR / "CLAUDE.md"
+
+SEED_DIR = Path('/app/data')  # percorso seed esplicito nel container
+RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "prompts"
+SUMMARY_RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "summary"
+
+# Il DATA_DIR usato dal resto delle funzioni punta al runtime.
+DATA_DIR = RUNTIME_DIR
+
 SYSTEM_PROMPTS_JSON = DATA_DIR / "SYSTEM_PROMPTS.json"
-SUMMARY_PROMPT_FILE = DATA_DIR / "SUMMARY_PROMPT.md"
+SUMMARY_PROMPT_FILE = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"
+
+# File legacy e nuovo nome per il prompt singolo di default (seed)
+LEGACY_SINGLE_PROMPT_CANDIDATES = [
+    "system-prompt.md",  # nuovo nome
+    "CLAUDE.md",         # legacy
+]
 
 DEFAULT_SYSTEM_TEXT = (
     "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
@@ -26,11 +43,61 @@ def _slugify(name: str) -> str:
 def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+def _bootstrap_runtime():
+    """Inizializza la directory runtime copiando i file seed se mancanti.
+
+    Idempotente: non sovrascrive file già presenti nel runtime.
+    """
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Copia SYSTEM_PROMPTS.json se mancante nel runtime ma presente nel seed
+    seed_json = SEED_DIR / "SYSTEM_PROMPTS.json"
+    if not SYSTEM_PROMPTS_JSON.exists() and seed_json.exists():
+        try:
+            shutil.copy2(seed_json, SYSTEM_PROMPTS_JSON)
+            logging.info("[prompts] Copiato seed SYSTEM_PROMPTS.json nel runtime")
+        except Exception as e:
+            logging.warning(f"[prompts] Impossibile copiare SYSTEM_PROMPTS.json seed: {e}")
+
+    # Copia SUMMARY_PROMPT.md se mancante
+    seed_summary = SEED_DIR / "SUMMARY_PROMPT.md"
+    if not SUMMARY_PROMPT_FILE.exists() and seed_summary.exists():
+        SUMMARY_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(seed_summary, SUMMARY_PROMPT_FILE)
+            logging.info("[prompts] Copiato seed SUMMARY_PROMPT.md nel runtime")
+        except Exception as e:
+            logging.warning(f"[prompts] Impossibile copiare SUMMARY_PROMPT.md seed: {e}")
+
+    # Copia eventuale single prompt seed (system-prompt.md) se manca un JSON (uso come fallback iniziale)
+    # Non necessario se JSON già copiato.
+
+
 def _load_legacy_text() -> str:
-    try:
-        return SYSTEM_PROMPT_FILE.read_text(encoding="utf-8")
-    except Exception:
-        return DEFAULT_SYSTEM_TEXT
+    """Carica il testo da un file single-prompt (legacy) nel seed o runtime.
+
+    Ordine di ricerca:
+    1. Runtime/system-prompt.md
+    2. Seed/system-prompt.md
+    3. Seed/CLAUDE.md
+    """
+    # Runtime first
+    for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
+        candidate_runtime = RUNTIME_DIR / name
+        if candidate_runtime.exists():
+            try:
+                return candidate_runtime.read_text(encoding="utf-8")
+            except Exception:
+                pass
+    # Seed
+    for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
+        candidate_seed = SEED_DIR / name
+        if candidate_seed.exists():
+            try:
+                return candidate_seed.read_text(encoding="utf-8")
+            except Exception:
+                pass
+    return DEFAULT_SYSTEM_TEXT
 
 def load_system_prompts() -> dict:
     """Carica la collezione di system prompts. Se mancante, crea struttura di default.
@@ -38,10 +105,19 @@ def load_system_prompts() -> dict:
     Structure: { "active_id": str, "prompts": [{"id","name","text"}, ...] }
     """
     try:
+        _bootstrap_runtime()
         if SYSTEM_PROMPTS_JSON.exists():
             data = json.loads(SYSTEM_PROMPTS_JSON.read_text(encoding="utf-8"))
             # basic validation
             if isinstance(data, dict) and "prompts" in data:
+                # Se active prompt è vuoto, fallback a default se possibile
+                active_id = data.get("active_id")
+                if active_id:
+                    for p in data.get("prompts", []):
+                        if p.get("id") == active_id and not p.get("text"):
+                            logging.warning("[prompts] Active system prompt vuoto: fallback a 'default'")
+                            data["active_id"] = "default"
+                            break
                 return data
         # Migrate from legacy single file
         text = _load_legacy_text()
@@ -146,11 +222,30 @@ def load_summary_prompt() -> str:
         "Regole: Non inventare dettagli assenti. Mantieni tono professionale, empatico e sintetico."
     )
     try:
-        return SUMMARY_PROMPT_FILE.read_text(encoding="utf-8")
-    except Exception:
+        _bootstrap_runtime()
+        if SUMMARY_PROMPT_FILE.exists():
+            logging.info(f"[prompts] Caricato SUMMARY_PROMPT da {SUMMARY_PROMPT_FILE}")
+            return SUMMARY_PROMPT_FILE.read_text(encoding="utf-8")
+        else:
+            # Debug dettagliato
+            existing = list(SUMMARY_RUNTIME_DIR.glob('*')) if SUMMARY_RUNTIME_DIR.exists() else []
+            logging.warning(
+                "[prompts] SUMMARY_PROMPT.md non trovato nel runtime (%s). File presenti: %s. Uso default",
+                SUMMARY_RUNTIME_DIR,
+                [p.name for p in existing]
+            )
+            # Verifica seed
+            seed_summary = SEED_DIR / 'SUMMARY_PROMPT.md'
+            if seed_summary.exists():
+                logging.warning("[prompts] Il seed SUMMARY_PROMPT.md esiste (%s) ma non è stato copiato (bootstrap?)", seed_summary)
+            else:
+                logging.warning("[prompts] Nessun SUMMARY_PROMPT.md nel seed (%s)", seed_summary)
+            return default
+    except Exception as e:
+        logging.error(f"[prompts] Errore caricamento SUMMARY_PROMPT: {e}")
         return default
 
 def save_summary_prompt(text: str) -> None:
     """Salva (sovrascrive) il prompt di riassunto conversazioni."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SUMMARY_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     SUMMARY_PROMPT_FILE.write_text(text, encoding="utf-8")

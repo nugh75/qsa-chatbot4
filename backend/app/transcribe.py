@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import warnings
 from .logging_utils import log_interaction, log_system
+import threading, time, uuid
 
 # Supprime il warning FP16 per CPU
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU; using FP32 instead")
@@ -177,6 +178,67 @@ class WhisperService:
 # Istanza globale del servizio
 whisper_service = WhisperService()
 
+# ---- Async download task management ----
+_download_tasks: dict[str, dict] = {}
+_tasks_lock = threading.Lock()
+
+def _spawn_download_task(model_name: str) -> str:
+    task_id = uuid.uuid4().hex
+    with _tasks_lock:
+        _download_tasks[task_id] = {
+            'task_id': task_id,
+            'model': model_name,
+            'status': 'pending',  # pending|running|completed|error|skipped
+            'error': None,
+            'started_at': None,
+            'ended_at': None,
+            'progress_pct': 0.0
+        }
+
+    def _run():
+        with _tasks_lock:
+            task = _download_tasks.get(task_id)
+            if not task:
+                return
+            task['status'] = 'running'
+            task['started_at'] = time.time()
+        try:
+            if whisper_service.is_model_downloaded(model_name):
+                with _tasks_lock:
+                    task = _download_tasks.get(task_id)
+                    if task:
+                        task['status'] = 'skipped'
+                        task['progress_pct'] = 100.0
+                        task['ended_at'] = time.time()
+                return
+            # Non abbiamo progress reale intermedio (whisper salva a fine) -> impostiamo step fittizi
+            # Simuliamo qualche tick per dare feedback prima del completamento reale.
+            pseudo_ticks = [10, 25, 40, 55, 70, 85]
+            for pct in pseudo_ticks:
+                time.sleep(1.0)
+                with _tasks_lock:
+                    task = _download_tasks.get(task_id)
+                    if not task or task['status'] != 'running':
+                        return
+                    task['progress_pct'] = pct
+            whisper_service.download_model(model_name)
+            with _tasks_lock:
+                task = _download_tasks.get(task_id)
+                if task:
+                    task['progress_pct'] = 100.0
+                    task['status'] = 'completed'
+                    task['ended_at'] = time.time()
+        except Exception as e:  # noqa
+            with _tasks_lock:
+                task = _download_tasks.get(task_id)
+                if task:
+                    task['status'] = 'error'
+                    task['error'] = str(e)
+                    task['ended_at'] = time.time()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return task_id
+
 @router.post("/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),
@@ -285,6 +347,28 @@ async def download_whisper_model(model_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/whisper/models/{model_name}/download-async")
+async def download_whisper_model_async(model_name: str):
+    """Avvia download asincrono di un modello Whisper e ritorna task_id."""
+    try:
+        if model_name not in whisper_service.available_models:
+            raise HTTPException(status_code=400, detail=f"Model {model_name} not available")
+        task_id = _spawn_download_task(model_name)
+        return {"task_id": task_id, "model": model_name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/whisper/models/download-tasks/{task_id}")
+async def get_download_task_status(task_id: str):
+    with _tasks_lock:
+        task = _download_tasks.get(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        # Clona dict per sicurezza
+        return {**task}
+
 @router.delete("/whisper/models/{model_name}")
 async def delete_whisper_model(model_name: str):
     """Elimina un modello Whisper scaricato"""
@@ -304,5 +388,67 @@ async def delete_whisper_model(model_name: str):
         
         return {"message": f"Model {model_name} deleted successfully", "success": True}
         
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/whisper/models/{model_name}/status")
+async def whisper_model_status(model_name: str):
+    """Ritorna stato download di un singolo modello Whisper.
+    Fornisce:
+      - downloaded: True/False
+      - file_size_bytes: dimensione reale del file .pt se esiste
+      - expected_size_bytes: stima dalla tabella (parsed da disk_space)
+      - progress_pct: percentuale stimata (file_size/expected)
+      - disk_space_label: stringa originale (es. "~1GB")
+    Nota: il processo di download attuale usa whisper.load_model e salva il file
+    solo a completamento, quindi non è disponibile una progressione incrementale;
+    il valore sara' 0% oppure 100% nella maggior parte dei casi.
+    """
+    try:
+        if model_name not in whisper_service.available_models:
+            raise HTTPException(status_code=400, detail=f"Model {model_name} not available")
+
+        disk_label = whisper_service.available_models[model_name]["disk_space"]
+
+        def _parse_disk_space(label: str) -> int | None:
+            # Esempi: "~150MB", "~1GB", "~3GB"
+            import re
+            m = re.match(r"~?(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB)", label, re.I)
+            if not m:
+                return None
+            val = float(m.group(1))
+            unit = m.group(2).upper()
+            mult = {"KB":1024, "MB":1024**2, "GB":1024**3, "TB":1024**4}.get(unit, 1)
+            return int(val * mult)
+
+        expected_bytes = _parse_disk_space(disk_label) or None
+        model_path = whisper_service.models_dir / f"{model_name}.pt"
+        downloaded = model_path.exists()
+        file_size_bytes = model_path.stat().st_size if downloaded else None
+        if expected_bytes and file_size_bytes:
+            progress = min(100.0, (file_size_bytes / expected_bytes) * 100.0)
+        else:
+            # Se non esiste ancora il file, progress=0
+            progress = 100.0 if downloaded and not expected_bytes else (0.0 if not downloaded else 100.0)
+
+        # Se esiste un task attivo per questo modello includilo
+        active_task_id = None
+        with _tasks_lock:
+            for tid, t in _download_tasks.items():
+                if t['model'] == model_name and t['status'] in ('pending','running'):
+                    active_task_id = tid
+                    break
+
+        return {
+            "model": model_name,
+            "downloaded": downloaded,
+            "file_size_bytes": file_size_bytes,
+            "expected_size_bytes": expected_bytes,
+            "progress_pct": round(progress, 2),
+            "disk_space_label": disk_label,
+            "active_task_id": active_task_id
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -44,6 +44,7 @@ interface LoginForm {
   email: string;
   password: string;
   rememberMe: boolean;
+  rememberKeyThisSession?: boolean;
 }
 
 interface RegisterForm {
@@ -52,7 +53,7 @@ interface RegisterForm {
   confirmPassword: string;
 }
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005';
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
 
 const LoginDialog: React.FC<LoginDialogProps> = ({
   open,
@@ -71,6 +72,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
     email: '',
     password: '',
     rememberMe: false,
+    rememberKeyThisSession: false,
   });
 
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
@@ -83,7 +85,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
     if (open) {
       // Reset form quando si apre
       setError(null);
-      setLoginForm({ email: '', password: '', rememberMe: false });
+      setLoginForm({ email: '', password: '', rememberMe: false, rememberKeyThisSession: false });
       setRegisterForm({ email: '', password: '', confirmPassword: '' });
     }
   }, [open]);
@@ -132,7 +134,22 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
 
           // Inizializza crypto con password utente
           const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(loginForm.password, loginForm.email);
+          await crypto.deriveKeyFromPassword(
+            loginForm.password,
+            loginForm.email,
+            !!loginForm.rememberKeyThisSession
+          );
+
+          // Se richiesto, salva la chiave in sessionStorage
+          if (loginForm.rememberKeyThisSession) {
+            try {
+              const raw = await crypto.exportCurrentKeyRaw();
+              sessionStorage.setItem('qsa_crypto_key_raw', raw);
+              sessionStorage.setItem('qsa_crypto_key_user', loginForm.email);
+            } catch (e) {
+              console.warn('Impossibile salvare la chiave in sessione:', e);
+            }
+          }
 
           // Ignora il flusso di cambio password forzato: accesso diretto
           onLoginSuccess(userInfo, crypto);
@@ -353,6 +370,16 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                   />
                 }
                 label="Ricordami"
+              />
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={!!loginForm.rememberKeyThisSession}
+                    onChange={(e) => setLoginForm(prev => ({ ...prev, rememberKeyThisSession: e.target.checked }))}
+                  />
+                }
+                label="Ricorda chiave finché il browser resta aperto"
               />
             </Box>
           ) : (

@@ -17,6 +17,9 @@ COPY app ./app
 # Copia file di configurazione di default
 COPY config ./config
 
+# Copia i file seed dei prompt (read-only nel container quando montato volume host)
+COPY ../data ./data
+
 # Crea le directory per i volumi e i modelli
 RUN mkdir -p storage/databases storage/rag_data storage/feedback storage/usage storage/logs storage/avatars \
     && mkdir -p models/whisper models/piper models/sentence-transformers \

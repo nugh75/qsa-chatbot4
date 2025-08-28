@@ -15,7 +15,7 @@ type FeedbackStats = {
   by_personality?: Record<string, PersonalityStats>
 }
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
 const percent = (likes: number, total: number) => (total > 0 ? Math.round((likes / total) * 100) : 0)
 

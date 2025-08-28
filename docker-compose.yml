@@ -1,6 +1,9 @@
+version: "3.9"
+
 services:
   backend:
     build: ./backend
+    restart: unless-stopped
     environment:
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -8,29 +11,24 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_super_secret_change_me} # Cambia in produzione
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:latest}
     ports:
       - "8005:8005"
     volumes:
-      # Dati di input (read-only)
-      - ./data:/app/data:ro
-      
-      # Storage persistente
-      - ./backend/storage:/app/storage
-      
-      # Modelli AI (per performance, evita di scaricarli ad ogni avvio)
-      - ./backend/models:/app/models
-      
-      # Configurazioni (opzionale: per modifiche senza rebuild)
-      - ./backend/config:/app/config
-      
-      # File di ambiente (opzionale)
-      - ./backend/.env:/app/.env:ro
+      - ./data:/app/data:ro                       # Dati di input (seed, read-only)
+      - ./backend/storage:/app/storage            # Storage persistente generale
+      - ./backend/storage/prompts:/app/storage/prompts           # System prompts runtime
+      - ./backend/storage/personalities:/app/storage/personalities # Personalities runtime
+      - ./backend/storage/summary:/app/storage/summary           # Summary prompt runtime
+      - ./backend/models:/app/models              # Modelli
+      - ./backend/config:/app/config              # Config
+      - ./backend/.env:/app/.env:ro               # Env file
 
   frontend:
     build: ./frontend
+    restart: unless-stopped
     ports:
-      - "5175:5175"
-    environment:
-      - VITE_BACKEND_URL=http://localhost:8005
+      - "5176:5175"
     depends_on:
       - backend

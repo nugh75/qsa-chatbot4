@@ -63,7 +63,7 @@ interface FeedbackStats {
   by_provider: Record<string, { likes: number; dislikes: number }>
 }
 
-const BACKEND = 'http://localhost:8005'
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
 // Componente per la gestione utenti
 const UserManagementComponent: React.FC = () => {

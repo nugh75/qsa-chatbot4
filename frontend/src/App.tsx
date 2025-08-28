@@ -53,7 +53,7 @@ type Msg = {
   ts:number
 }
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
 // Componente per box dati estratti espandibile
 const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: number}> = ({extractedData, messageIndex}) => {

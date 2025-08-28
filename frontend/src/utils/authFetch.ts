@@ -1,6 +1,6 @@
 import { CredentialManager } from '../crypto'
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8005'
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
 export const authFetch = async (url: string, init: RequestInit = {}) => {
   const attachAuth = (token: string | null) => ({
@@ -34,4 +34,3 @@ export const authFetch = async (url: string, init: RequestInit = {}) => {
 
   return res
 }
-

@@ -45,7 +45,7 @@ import {
 } from '@mui/icons-material';
 import { authFetch } from '../utils/authFetch'
 
-const BACKEND = 'http://localhost:8005';
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
 
 interface RAGStats {
   total_groups: number;

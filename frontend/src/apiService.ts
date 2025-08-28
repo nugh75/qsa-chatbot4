@@ -4,7 +4,19 @@
 
 import { CredentialManager } from './crypto';
 
-const API_BASE_URL = 'http://localhost:8005/api';
+// Dynamic API base resolution to avoid hard-coded localhost in deployed/tunneled environments.
+// Priority order:
+// 1. VITE_BACKEND_URL env variable (e.g. https://cb.ai4educ.org or https://api.cb.ai4educ.org)
+// 2. window.location.origin (assuming same-origin deployment / reverse proxy for /api)
+// 3. Fallback to http://localhost:8005
+const _rawBase = (import.meta as any)?.env?.VITE_BACKEND_URL
+  || (typeof window !== 'undefined' && window.location ? window.location.origin : 'http://localhost:8005');
+// Normalize trailing slashes then append /api exactly once
+const API_BASE_URL = _rawBase.replace(/\/+$/, '') + '/api';
+// Debug log solo in sviluppo
+if ((import.meta as any)?.env?.DEV) {
+  console.log('[apiService] Using API base URL:', API_BASE_URL);
+}
 
 export interface ApiResponse<T = any> {
   success: boolean;

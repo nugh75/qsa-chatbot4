@@ -11,7 +11,7 @@ export class ChatCrypto {
   /**
    * Deriva una chiave crittografica dalla password dell'utente
    */
-  async deriveKeyFromPassword(password: string, email: string): Promise<CryptoKey> {
+  async deriveKeyFromPassword(password: string, email: string, extractable: boolean = false): Promise<CryptoKey> {
     // Usa email come salt per consistenza tra dispositivi
     const salt = this.encoder.encode(email);
     
@@ -34,12 +34,40 @@ export class ChatCrypto {
       },
       passwordKey,
       { name: 'AES-GCM', length: 256 },
-      false,
+      extractable,
       ['encrypt', 'decrypt']
     );
 
     this.userKey = key;
     return key;
+  }
+
+  /**
+   * Esporta la chiave corrente in formato raw (base64) per sessionStorage
+   */
+  async exportCurrentKeyRaw(): Promise<string> {
+    if (!this.userKey) throw new Error('User key not initialized');
+    // Se la chiave non è estraibile, questa chiamata fallirà: è voluto per sicurezza
+    const raw = await crypto.subtle.exportKey('raw', this.userKey);
+    const bytes = new Uint8Array(raw);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+
+  /**
+   * Importa una chiave AES-GCM da base64 raw e la imposta come chiave utente
+   */
+  async importKeyFromRaw(base64: string): Promise<void> {
+    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey(
+      'raw',
+      bytes,
+      { name: 'AES-GCM' },
+      true,
+      ['encrypt', 'decrypt']
+    );
+    this.userKey = key;
   }
 
   /**

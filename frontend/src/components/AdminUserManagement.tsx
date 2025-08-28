@@ -34,7 +34,7 @@ import {
   Refresh as RefreshIcon
 } from '@mui/icons-material';
 
-const BACKEND = 'http://localhost:8005';
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
 
 interface User {
   id: number;

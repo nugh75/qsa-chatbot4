@@ -19,6 +19,11 @@ class DatabaseManager:
     
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
+        # Ensure parent directory exists to avoid 'unable to open database file'
+        try:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"[DB] Warning: cannot create database directory: {e}")
         self.init_database()
     
     @contextmanager

@@ -46,8 +46,10 @@ class RAGEngine:
         self.db_path = self.base_dir / "storage" / "databases" / "rag.db"
         
         # Crea directory se non esistono
-        self.data_dir.mkdir(exist_ok=True)
-        self.embeddings_dir.mkdir(exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.embeddings_dir.mkdir(parents=True, exist_ok=True)
+        # Assicurati che esista anche la directory per il database
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Text splitter per chunking
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -65,7 +67,7 @@ class RAGEngine:
         
     def _init_database(self):
         """Inizializza il database SQLite per metadati"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
         
         # Tabella gruppi

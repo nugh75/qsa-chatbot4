@@ -3,6 +3,7 @@ uvicorn
 python-dotenv
 httpx
 pydantic[email]
+python-multipart
 edge-tts
 piper-tts
 PyJWT

@@ -526,6 +526,8 @@ export default function AdminPanel() {
   const [ragFilter, setRagFilter] = useState<string>('')
   const [durationRange, setDurationRange] = useState<number[]>([0, 600000])
   const [tokensRange, setTokensRange] = useState<number[]>([0, 200000])
+  const [logsAutoRefresh, setLogsAutoRefresh] = useState<boolean>(false)
+  const [logPrefsLoaded, setLogPrefsLoaded] = useState<boolean>(false)
   const [interactions, setInteractions] = useState<any[]>([])
   const [interactionsTotal, setInteractionsTotal] = useState<number>(0)
   const [interactionsLoading, setInteractionsLoading] = useState<boolean>(false)
@@ -615,6 +617,98 @@ export default function AdminPanel() {
     } finally {
       setInteractionsLoading(false)
     }
+  }
+
+  // Persistenza filtri: load all on first mount
+  useEffect(() => {
+    if (logPrefsLoaded) return
+    try {
+      const g = localStorage.getItem('logs_group')
+      if (g !== null) setGroupByRequest(g === 'true')
+      const d = localStorage.getItem('logs_date')
+      if (d) setSelectedLogDate(d)
+      const p = localStorage.getItem('logs_provider')
+      if (p !== null) setLogProvider(p)
+      const e = localStorage.getItem('logs_event')
+      if (e !== null) setLogEvent(e)
+      const per = localStorage.getItem('logs_personality')
+      if (per !== null) setLogPersonalityId(per)
+      const m = localStorage.getItem('logs_model')
+      if (m !== null) setLogModel(m)
+      const cid = localStorage.getItem('logs_conv')
+      if (cid !== null) setLogConversationId(cid)
+      const uid = localStorage.getItem('logs_user')
+      if (uid !== null) setLogUserId(uid)
+      const t = localStorage.getItem('logs_topic')
+      if (t !== null) setLogTopic(t)
+      const rag = localStorage.getItem('logs_rag')
+      if (rag !== null) setRagFilter(rag)
+      const dr = localStorage.getItem('logs_duration')
+      if (dr) {
+        const v = JSON.parse(dr)
+        if (Array.isArray(v) && v.length === 2) setDurationRange(v)
+      }
+      const tr = localStorage.getItem('logs_tokens')
+      if (tr) {
+        const v = JSON.parse(tr)
+        if (Array.isArray(v) && v.length === 2) setTokensRange(v)
+      }
+      const ar = localStorage.getItem('logs_auto')
+      if (ar !== null) setLogsAutoRefresh(ar === 'true')
+    } catch {}
+    setLogPrefsLoaded(true)
+  }, [logPrefsLoaded])
+
+  // Persist every change
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_group', String(groupByRequest)) }, [groupByRequest, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded && selectedLogDate) localStorage.setItem('logs_date', selectedLogDate) }, [selectedLogDate, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_provider', logProvider) }, [logProvider, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_event', logEvent) }, [logEvent, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_personality', logPersonalityId) }, [logPersonalityId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_model', logModel) }, [logModel, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_conv', logConversationId) }, [logConversationId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_user', logUserId) }, [logUserId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_topic', logTopic) }, [logTopic, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_rag', ragFilter) }, [ragFilter, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_duration', JSON.stringify(durationRange)) }, [durationRange, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_tokens', JSON.stringify(tokensRange)) }, [tokensRange, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_auto', String(logsAutoRefresh)) }, [logsAutoRefresh, logPrefsLoaded])
+
+  // Auto-refresh logs every 10s when panel open
+  useEffect(() => {
+    if (!expandedPanels.logs || !logsAutoRefresh) return
+    const id = setInterval(() => { loadInteractions() }, 10000)
+    return () => clearInterval(id)
+  }, [expandedPanels.logs, logsAutoRefresh, selectedLogDate, groupByRequest, logProvider, logEvent, logPersonalityId, logModel, logConversationId, logUserId, logTopic, ragFilter, durationRange, tokensRange])
+
+  const downloadInteractionsCsv = () => {
+    const lines: string[] = []
+    const esc = (s: any) => {
+      if (s === undefined || s === null) return ''
+      const str = String(s)
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    if (groupByRequest) {
+      lines.push(['start_ts','end_ts','request_id','provider','model','personality','topic','duration_ms','tokens_total','rag_used','events','raw_count'].join(','))
+      interactions.forEach((it: any) => {
+        const row = [it.start_ts, it.end_ts, it.request_id, it.provider || it.provider_header, it.model, it.personality_name || it.personality_id, it.topic, it.duration_ms, it.tokens_total, it.rag_used, (it.events||[]).join('|'), it.raw_count]
+        lines.push(row.map(esc).join(','))
+      })
+    } else {
+      lines.push(['ts','request_id','event','provider','model','personality','topic','duration_ms','tokens','rag_used'].join(','))
+      interactions.forEach((it: any) => {
+        const tokens = (it.tokens?.total_tokens ?? it.tokens?.total ?? '')
+        const row = [it.ts, it.request_id, it.event, it.provider || it.provider_header, it.model, it.personality_name || it.personality_id, it.topic, it.duration_ms, tokens, it.rag_used]
+        lines.push(row.map(esc).join(','))
+      })
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = groupByRequest ? 'interactions_grouped.csv' : 'interactions_events.csv'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const loadLogFilters = async () => {
@@ -3192,6 +3286,9 @@ export default function AdminPanel() {
                   <Grid item xs={6} sm={3}>
                     <FormControlLabel control={<Switch checked={groupByRequest} onChange={e=> { setGroupByRequest(e.target.checked); setTimeout(loadInteractions, 0) }} />} label="Raggruppa per Request ID" />
                   </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={logsAutoRefresh} onChange={e=> setLogsAutoRefresh(e.target.checked)} />} label="Auto refresh (10s)" />
+                  </Grid>
                   <Grid item xs={6} sm={2}>
                     <FormControl fullWidth size="small">
                       <InputLabel>Provider</InputLabel>
@@ -3201,6 +3298,9 @@ export default function AdminPanel() {
                       </Select>
                     </FormControl>
                   </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={logsAutoRefresh} onChange={e=> setLogsAutoRefresh(e.target.checked)} />} label="Auto refresh (10s)" />
+                  </Grid>
                   <Grid item xs={6} sm={2}>
                     <FormControl fullWidth size="small">
                       <InputLabel>Evento</InputLabel>
@@ -3209,6 +3309,9 @@ export default function AdminPanel() {
                         {logOptions.events.map(ev => <MenuItem key={ev} value={ev}>{ev}</MenuItem>)}
                       </Select>
                     </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={logsAutoRefresh} onChange={e=> setLogsAutoRefresh(e.target.checked)} />} label="Auto refresh (10s)" />
                   </Grid>
                   <Grid item xs={6} sm={2}>
                     <FormControl fullWidth size="small">
@@ -3237,6 +3340,9 @@ export default function AdminPanel() {
                       </Select>
                     </FormControl>
                   </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={logsAutoRefresh} onChange={e=> setLogsAutoRefresh(e.target.checked)} />} label="Auto refresh (10s)" />
+                  </Grid>
                   <Grid item xs={6} sm={2}>
                     <FormControl fullWidth size="small">
                       <InputLabel>Utente ID</InputLabel>
@@ -3245,6 +3351,9 @@ export default function AdminPanel() {
                         {logOptions.user_ids.map((id) => <MenuItem key={String(id)} value={String(id)}>{String(id)}</MenuItem>)}
                       </Select>
                     </FormControl>
+                  </Grid>
+                  <Grid item xs={6} sm={3}>
+                    <FormControlLabel control={<Switch checked={logsAutoRefresh} onChange={e=> setLogsAutoRefresh(e.target.checked)} />} label="Auto refresh (10s)" />
                   </Grid>
                   <Grid item xs={6} sm={2}>
                     <FormControl fullWidth size="small">
@@ -3267,6 +3376,7 @@ export default function AdminPanel() {
                       </Box>
                       <Button variant="outlined" size="small" onClick={()=>{ loadLogDates(); loadLogFilters(); loadInteractions(); }}>Aggiorna</Button>
                       <Button variant="contained" size="small" onClick={downloadInteractions} startIcon={<DownloadIcon/>}>Scarica JSONL</Button>
+                      <Button variant="outlined" size="small" onClick={downloadInteractionsCsv}>Esporta CSV</Button>
                       <Button variant="text" size="small" onClick={()=>{ setLogProvider(''); setLogEvent(''); setLogPersonalityId(''); setLogModel(''); setLogConversationId(''); setLogUserId(''); setLogTopic(''); setRagFilter(''); setDurationRange([0,600000]); setTokensRange([0,200000]); }}>Reset filtri</Button>
                     </Stack>
                   </Grid>
@@ -3286,6 +3396,7 @@ export default function AdminPanel() {
                         <TableCell align="right">Dur. (ms)</TableCell>
                         <TableCell align="right">Token</TableCell>
                         <TableCell>RAG</TableCell>
+                        <TableCell>RAG Preview</TableCell>
                         <TableCell>Azioni</TableCell>
                       </TableRow>
                     ) : (
@@ -3300,6 +3411,7 @@ export default function AdminPanel() {
                         <TableCell align="right">Dur. (ms)</TableCell>
                         <TableCell align="right">Token</TableCell>
                         <TableCell>RAG</TableCell>
+                        <TableCell>RAG Preview</TableCell>
                         <TableCell>Azioni</TableCell>
                       </TableRow>
                     )}
@@ -3325,6 +3437,11 @@ export default function AdminPanel() {
                             <TableCell align="right">{tok || '-'}</TableCell>
                             <TableCell>{it.rag_used ? <Chip label="RAG" size="small" color="success" /> : '-'}</TableCell>
                             <TableCell>
+                              {(it.rag_preview || []).map((r:any, idx:number)=> (
+                                <Typography key={idx} variant="caption" display="block">{r.filename || 'file'}#{r.chunk_index} ({(r.similarity??0).toFixed ? r.similarity.toFixed(2) : r.similarity})</Typography>
+                              ))}
+                            </TableCell>
+                            <TableCell>
                               <Button size="small" variant="text" onClick={()=> openTimeline(it.request_id)}>Timeline</Button>
                               <Button size="small" variant="text" onClick={()=> openDetails(it)}>Dettagli</Button>
                             </TableCell>
@@ -3343,6 +3460,11 @@ export default function AdminPanel() {
                             <TableCell align="right">{it.duration_ms ?? '-'}</TableCell>
                             <TableCell align="right">{tokens}</TableCell>
                             <TableCell>{it.rag_used ? <Chip label="RAG" size="small" color="success" /> : '-'}</TableCell>
+                            <TableCell>
+                              {(it.rag_preview || []).map((r:any, idx:number)=> (
+                                <Typography key={idx} variant="caption" display="block">{r.filename || 'file'}#{r.chunk_index} ({(r.similarity??0).toFixed ? r.similarity.toFixed(2) : r.similarity})</Typography>
+                              ))}
+                            </TableCell>
                             <TableCell>
                               <Button size="small" variant="text" onClick={()=> openDetails(it)}>Dettagli</Button>
                             </TableCell>

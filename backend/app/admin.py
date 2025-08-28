@@ -640,6 +640,7 @@ async def get_interactions_log(
                     'user_id': None,
                     'tokens_total': None,
                     'rag_used': False,
+                    'rag_preview': [],
                     'raw_count': 0,
                 })
                 g['events'].append(ev.get('event'))
@@ -676,6 +677,19 @@ async def get_interactions_log(
                 # rag
                 if ev.get('rag_used'):
                     g['rag_used'] = True
+                # rag preview (first 3 entries if present)
+                if not g['rag_preview'] and ev.get('rag_results'):
+                    try:
+                        rp = []
+                        for r in (ev.get('rag_results') or [])[:3]:
+                            rp.append({
+                                'filename': r.get('filename'),
+                                'chunk_index': r.get('chunk_index'),
+                                'similarity': r.get('similarity')
+                            })
+                        g['rag_preview'] = rp
+                    except Exception:
+                        pass
                 # duration
                 if ev.get('duration_ms') and not g['duration_ms']:
                     g['duration_ms'] = ev.get('duration_ms')

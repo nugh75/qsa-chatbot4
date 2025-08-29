@@ -1,12 +1,13 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Paper, Stack, Typography, Button, Chip, LinearProgress, Alert, Box, Tooltip, Switch, FormControlLabel, IconButton } from '@mui/material'
+import { Paper, Stack, Typography, Button, Chip, LinearProgress, Alert, Box, Switch, FormControlLabel, IconButton, TextField, Divider } from '@mui/material'
 import DownloadIcon from '@mui/icons-material/Download'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import VolumeUpIcon from '@mui/icons-material/VolumeUp'
 import CheckIcon from '@mui/icons-material/Check'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import DeleteIcon from '@mui/icons-material/Delete'
-import { authFetch, BACKEND } from '../utils/authFetch'
+import { apiService } from '../apiService'
+import WhisperRecorder from './WhisperRecorder'
 
 interface WhisperStatusItem {
   name: string
@@ -47,10 +48,11 @@ const WhisperPanel: React.FC = () => {
     setLoading(true)
     setOpError(null)
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/whisper/models`)
-      if (res.ok) {
-        const data: WhisperModelsResponse = await res.json()
-        setStatus(data)
+      const res = await apiService.listWhisperModels()
+      if (!res.error && res.data) {
+        setStatus(res.data as WhisperModelsResponse)
+      } else if (res.error) {
+        setOpError(res.error)
       }
     } catch { /* ignore */ } finally { setLoading(false) }
   }, [])
@@ -61,29 +63,18 @@ const WhisperPanel: React.FC = () => {
     setOpMsg(null); setOpError(null)
     try {
       if (!advanced) {
-        const res = await authFetch(`${BACKEND}/api/admin/whisper/download`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: modelName })
-        })
-        const data = await res.json()
-        if (res.ok) {
-          setOpMsg(data.message || `Download ${modelName} avviato`)
+        const res = await apiService.downloadWhisperModel(modelName)
+        if (!res.error) {
+          setOpMsg(res.data?.message || `Download ${modelName} avviato`)
           setTimeout(load, 1200); setTimeout(load, 3000); setTimeout(load, 6000)
-        } else {
-          setOpError(data.detail || 'Errore download')
-        }
+        } else setOpError(res.error)
       } else {
-        // Async mode
-        const res = await authFetch(`${BACKEND}/api/whisper/models/${modelName}/download-async`, { method: 'POST' })
-        const data = await res.json()
-        if (res.ok && data.task_id) {
-          setTasks(prev => ({ ...prev, [data.task_id]: { task_id: data.task_id, model: data.model, status: 'pending', progress_pct: 0 } }))
+        const res = await apiService.downloadWhisperModelAsync(modelName)
+        if (!res.error && res.data?.task_id) {
+          setTasks(prev => ({ ...prev, [res.data!.task_id]: { task_id: res.data!.task_id, model: res.data!.model, status: 'pending', progress_pct: 0 } }))
           setOpMsg(`Download async avviato: ${modelName}`)
           setPolling(true)
-        } else {
-          setOpError(data.detail || 'Errore avvio download async')
-        }
+        } else setOpError(res.error || 'Errore avvio download async')
       }
     } catch { setOpError('Errore chiamata') }
   }
@@ -91,32 +82,32 @@ const WhisperPanel: React.FC = () => {
   const setModel = async (m: string) => {
     setOpMsg(null); setOpError(null)
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/whisper/set-model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: m })
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setOpMsg(data.message || 'Modello impostato')
+      const res = await apiService.setWhisperModel(m)
+      if (!res.error) {
+        setOpMsg(res.data?.message || 'Modello impostato')
         setTimeout(load, 800)
-      } else {
-        setOpError(data.detail || 'Errore impostazione modello')
-      }
+      } else setOpError(res.error)
+    } catch { setOpError('Errore chiamata') }
+  }
+
+  const activateModel = async (m: string) => {
+    setOpMsg(null); setOpError(null)
+    try {
+      const res = await apiService.activateWhisperModel(m)
+      if (!res.error) {
+        setOpMsg(res.data?.message || 'Modello attivato')
+      } else setOpError(res.error)
     } catch { setOpError('Errore chiamata') }
   }
 
   const deleteModel = async (m: string) => {
     setOpMsg(null); setOpError(null)
     try {
-      const res = await authFetch(`${BACKEND}/api/whisper/models/${m}`, { method: 'DELETE' })
-      const data = await res.json().catch(()=>({}))
-      if (res.ok) {
-        setOpMsg(data.message || `Modello ${m} eliminato`)
+      const res = await apiService.deleteWhisperModel(m)
+      if (!res.error) {
+        setOpMsg(res.data?.message || `Modello ${m} eliminato`)
         setTimeout(load, 800)
-      } else {
-        setOpError(data.detail || 'Errore eliminazione')
-      }
+      } else setOpError(res.error)
     } catch { setOpError('Errore chiamata') }
   }
 
@@ -129,9 +120,9 @@ const WhisperPanel: React.FC = () => {
       if (!activeTasks.length) { setPolling(false); return }
       for (const t of activeTasks) {
         try {
-          const res = await authFetch(`${BACKEND}/api/whisper/models/download-tasks/${t.task_id}`)
-          if (res.ok) {
-            const data = await res.json()
+          const res = await apiService.whisperDownloadTaskStatus(t.task_id)
+          if (!res.error && res.data) {
+            const data = res.data
             setTasks(prev => ({ ...prev, [t.task_id]: { task_id: data.task_id, model: data.model, status: data.status, error: data.error, progress_pct: data.progress_pct || 0 } }))
             if (data.status === 'completed' || data.status === 'skipped') {
               setTimeout(load, 500)
@@ -149,6 +140,23 @@ const WhisperPanel: React.FC = () => {
     const id = setInterval(() => { load() }, 2500)
     return () => clearInterval(id)
   }, [polling, load])
+
+  // Transcription test state
+  const [audioFile, setAudioFile] = useState<File | null>(null)
+  const [transcribing, setTranscribing] = useState(false)
+  const [transcription, setTranscription] = useState<string | null>(null)
+
+  const handleTranscribe = async () => {
+    if (!audioFile) return
+    setTranscribing(true); setOpError(null); setTranscription(null)
+    try {
+      const current = status?.current_model
+      const res = current ? await apiService.transcribeAudio(audioFile, current) : await apiService.transcribeAudio(audioFile)
+      if (!res.error) {
+        setTranscription(res.data?.text || JSON.stringify(res.data))
+      } else setOpError(res.error)
+    } catch { setOpError('Errore trascrizione') } finally { setTranscribing(false) }
+  }
 
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
@@ -188,7 +196,10 @@ const WhisperPanel: React.FC = () => {
                   )}
                   <Stack direction='row' spacing={.5}>
                     {s.downloaded ? (
-                      <Button size='small' onClick={()=>setModel(s.name)} variant='outlined' startIcon={<PlayArrowIcon fontSize='inherit' />} disabled={active}>Usa</Button>
+                      <>
+                        <Button size='small' onClick={()=>setModel(s.name)} variant='outlined' startIcon={<PlayArrowIcon fontSize='inherit' />} disabled={active}>Usa</Button>
+                        {advanced && <Button size='small' onClick={()=>activateModel(s.name)} variant='text' disabled={active}>Attiva</Button>}
+                      </>
                     ) : (
                       <Button size='small' onClick={()=>download(s.name)} variant='contained' startIcon={<DownloadIcon fontSize='inherit' />}>Scarica</Button>
                     )}
@@ -201,6 +212,27 @@ const WhisperPanel: React.FC = () => {
               )
             })}
           </Box>
+          <Paper variant='outlined' sx={{ p:1.2 }}>
+            <Typography variant='subtitle2' gutterBottom>Test Trascrizione</Typography>
+            <Stack direction='row' spacing={1} alignItems='center' sx={{ flexWrap:'wrap' }}>
+              <Button component='label' size='small' variant='contained'>Audio
+                <input hidden type='file' accept='audio/*' onChange={e=>{ const f=e.target.files?.[0]; setAudioFile(f||null); setTranscription(null) }} />
+              </Button>
+              <Typography variant='caption'>{audioFile?.name || 'Nessun file'}</Typography>
+              <Button size='small' disabled={!audioFile || transcribing} onClick={handleTranscribe} variant='outlined'>Trascrivi</Button>
+              {transcribing && <LinearProgress sx={{ flex:1, height:4, borderRadius:1 }} />}
+            </Stack>
+            {transcription && (
+              <TextField multiline fullWidth size='small' margin='dense' value={transcription} onChange={()=>{}} label='Risultato' />
+            )}
+            {advanced && (
+              <>
+                <Divider sx={{ my:1 }} />
+                <Typography variant='subtitle2' gutterBottom>Registrazione (VAD)</Typography>
+                <WhisperRecorder model={status?.current_model} onTranscription={txt=> setTranscription(txt)} />
+              </>
+            )}
+          </Paper>
           {advanced && !!Object.values(tasks).filter(t=>['pending','running'].includes(t.status)).length && (
             <Alert severity='info' sx={{ mt:1 }}>Download in corso: {Object.values(tasks).filter(t=>['pending','running'].includes(t.status)).map(t=>t.model).join(', ')}</Alert>
           )}

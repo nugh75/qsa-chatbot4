@@ -2,6 +2,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import whisper
+import traceback
 import torch
 import os
 import tempfile
@@ -33,10 +34,16 @@ class WhisperModelInfo(BaseModel):
 
 class WhisperService:
     def __init__(self):
+        # Directory locale per i modelli
         self.models_dir = Path(__file__).parent.parent / "models" / "whisper"
         self.models_dir.mkdir(exist_ok=True)
-        self.current_model = None
-        self.current_model_name = None
+
+        # Stato runtime
+        self.current_model: torch.nn.Module | None = None
+        self.current_model_name: str | None = None
+        self._model_lock = threading.Lock()
+
+        # Metadati modelli disponibili (statici)
         self.available_models = {
             "tiny": {
                 "size": "~150MB",
@@ -77,7 +84,10 @@ class WhisperService:
         # Auto-download del modello small al primo avvio (configurabile)
         auto_dl = os.environ.get("WHISPER_AUTO_DOWNLOAD", "1")
         if auto_dl.lower() in ("1", "true", "yes", "on"):
-            self.ensure_default_model()
+            try:
+                self.ensure_default_model()
+            except Exception as e:
+                log_system(30, f"Whisper default model download skipped: {e}")
         else:
             print("WHISPER_AUTO_DOWNLOAD disabilitato: nessun download automatico del modello 'small'.")
     
@@ -91,50 +101,50 @@ class WhisperService:
                 print(f"Failed to download small model: {e}")
     
     def is_model_downloaded(self, model_name: str) -> bool:
-        """Controlla se un modello è già scaricato"""
+        """Controlla se un modello è già scaricato nella directory locale configurata."""
         model_path = self.models_dir / f"{model_name}.pt"
         return model_path.exists()
     
     def download_model(self, model_name: str):
-        """Scarica un modello Whisper"""
+        """Scarica un modello Whisper nella directory locale dedicata.
+
+        Usa il parametro download_root di whisper per evitare doppio download in cache globale.
+        """
         if model_name not in self.available_models:
             raise ValueError(f"Model {model_name} not available")
-        
-        print(f"Downloading Whisper model: {model_name}")
-        
-        # Whisper scarica automaticamente nella cache
-        model = whisper.load_model(model_name)
-        
-        # Salva il modello nella nostra directory
-        model_path = self.models_dir / f"{model_name}.pt"
-        torch.save(model.state_dict(), model_path)
-        
-        print(f"Model {model_name} downloaded successfully")
-        return True
+        try:
+            print(f"[whisper] Downloading model: {model_name} -> {self.models_dir}")
+            # whisper.load_model esegue il download se assente
+            whisper.load_model(model_name, download_root=str(self.models_dir))
+            print(f"[whisper] Model {model_name} downloaded")
+            return True
+        except Exception as e:
+            log_system(40, f"Whisper download failed model={model_name}: {e}")
+            raise
     
     def load_model(self, model_name: str = "small"):
-        """Carica un modello Whisper"""
+        """Carica (con lock) un modello Whisper. Scarica se assente."""
         if not self.is_model_downloaded(model_name):
             self.download_model(model_name)
-        
-        if self.current_model_name != model_name:
-            print(f"Loading Whisper model: {model_name}")
-            
-            # Configura device - forza CPU se non c'è GPU disponibile
+        with self._model_lock:
+            if self.current_model_name == model_name and self.current_model is not None:
+                return self.current_model
+            print(f"[whisper] Loading model: {model_name}")
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            
-            # Carica il modello con configurazione ottimizzata per CPU
-            self.current_model = whisper.load_model(
-                model_name, 
-                device=device,
-                # Usa FP32 su CPU per evitare warning
-                in_memory=True
-            )
-            self.current_model_name = model_name
-            
-            print(f"Model {model_name} loaded on {device}")
-        
-        return self.current_model
+            try:
+                self.current_model = whisper.load_model(
+                    model_name,
+                    device=device,
+                    download_root=str(self.models_dir),
+                    in_memory=False  # evita doppia copia in RAM per modelli grandi
+                )
+                self.current_model_name = model_name
+                print(f"[whisper] Model {model_name} ready on {device}")
+            except Exception as e:
+                tb = traceback.format_exc(limit=6)
+                log_system(40, f"Whisper load failed model={model_name}: {e}\n{tb}")
+                raise
+            return self.current_model
     
     def get_models_status(self) -> List[WhisperModelInfo]:
         """Restituisce lo stato di tutti i modelli disponibili"""
@@ -152,32 +162,31 @@ class WhisperService:
         return models
     
     async def transcribe_audio(self, audio_file: bytes, model_name: str = "small") -> str:
-        """Trascrive un file audio usando Whisper"""
+        """Trascrive un file audio usando Whisper."""
         try:
-            # Carica il modello
             model = self.load_model(model_name)
-            
-            # Salva temporaneamente il file audio
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
                 temp_file.write(audio_file)
                 temp_path = temp_file.name
-            
             try:
-                # Trascrivi l'audio con parametri ottimizzati
                 result = model.transcribe(
                     temp_path,
-                    # Parametri ottimizzati per CPU
-                    fp16=False,  # Forza FP32 su CPU
-                    language="it",  # Specifica italiano per migliore accuratezza
+                    fp16=False,
+                    language="it",
                     task="transcribe"
                 )
-                return result["text"].strip()
+                return result.get("text", "").strip()
             finally:
-                # Rimuovi il file temporaneo
-                os.unlink(temp_path)
-                
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+            tb = traceback.format_exc(limit=8)
+            log_system(40, f"Whisper transcription failed model={model_name}: {e}\n{tb}")
+            raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
 # Istanza globale del servizio
 whisper_service = WhisperService()
@@ -248,77 +257,45 @@ async def transcribe_audio(
     audio: UploadFile = File(...),
     provider: str = "small"
 ):
-    """Trascrivi un file audio usando Whisper locale"""
+    """Trascrivi un file audio usando Whisper locale."""
+    import time as _time
+    import uuid as _uuid
+    start = _time.perf_counter()
+    request_id = f"req_{_uuid.uuid4().hex}"
     try:
-        import time
-        _start = time.perf_counter()
-        try:
-            log_interaction({
-                "event": "transcribe_start",
-                "request_id": locals().get('request_id'),
-                "provider": "whisper_local",
-                "model": provider,
-                "content_type": audio.content_type,
-            })
-            log_system(20, f"REQUEST transcribe start: id={locals().get('request_id')} model={provider} type={audio.content_type}")
-        except Exception:
-            pass
-        # Verifica che il file sia un audio
-        if not audio.content_type.startswith('audio/'):
-            raise HTTPException(status_code=400, detail="File must be an audio file")
-        
-        # Leggi il contenuto del file
-        audio_content = await audio.read()
-        
-        # Trascrivi usando il servizio Whisper (usa provider come model)
-        import uuid as _uuid
-        request_id = f"req_{_uuid.uuid4().hex}"
-        text = await whisper_service.transcribe_audio(audio_content, provider)
-        duration_ms = int((time.perf_counter() - _start) * 1000)
-        try:
-            log_interaction({
-                "event": "transcribe",
-                "request_id": request_id,
-                "provider": "whisper_local",
-                "model": provider,
-                "file_bytes": len(audio_content),
-                "content_type": audio.content_type,
-                "duration_ms": duration_ms,
-            })
-        except Exception:
-            pass
-        try:
-            log_system(20, f"REQUEST transcribe done: id={request_id} model={provider} dur={duration_ms}ms")
-        except Exception:
-            pass
-        return {"text": text, "model_used": provider}
-        
-    except Exception as e:
-        try:
-            log_interaction({
-                "event": "transcribe_error",
-                "request_id": locals().get('request_id'),
-                "provider": "whisper_local",
-                "model": provider,
-                "error": str(e),
-            })
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=str(e))
-    """Trascrivi un file audio usando Whisper locale"""
-    try:
-        # Verifica che il file sia un audio
         if not audio.content_type or not audio.content_type.startswith('audio/'):
             raise HTTPException(status_code=400, detail="File must be an audio file")
-        
-        # Leggi il contenuto del file
         audio_content = await audio.read()
-        
-        # Trascrivi usando il servizio Whisper (usa provider come model_name)
+        log_interaction({
+            "event": "transcribe_start",
+            "request_id": request_id,
+            "provider": "whisper_local",
+            "model": provider,
+            "content_type": audio.content_type,
+            "file_bytes": len(audio_content)
+        })
         text = await whisper_service.transcribe_audio(audio_content, provider)
-        return {"text": text, "model_used": provider}
-        
+        dur_ms = int((_time.perf_counter() - start) * 1000)
+        log_interaction({
+            "event": "transcribe",
+            "request_id": request_id,
+            "provider": "whisper_local",
+            "model": provider,
+            "duration_ms": dur_ms
+        })
+        log_system(20, f"REQUEST transcribe done: id={request_id} model={provider} dur={dur_ms}ms")
+        return {"text": text, "model_used": provider, "request_id": request_id, "duration_ms": dur_ms}
+    except HTTPException:
+        raise
     except Exception as e:
+        log_interaction({
+            "event": "transcribe_error",
+            "request_id": request_id,
+            "provider": "whisper_local",
+            "model": provider,
+            "error": str(e)
+        })
+        log_system(40, f"REQUEST transcribe failed: id={request_id} model={provider} err={e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/whisper/models")
@@ -363,6 +340,21 @@ async def download_whisper_model_async(model_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/whisper/models/{model_name}/activate")
+async def activate_whisper_model(model_name: str):
+    """Precarica (o valida) un modello Whisper in memoria.
+    Ritorna lo stato post-caricamento.
+    """
+    try:
+        if model_name not in whisper_service.available_models:
+            raise HTTPException(status_code=400, detail=f"Model {model_name} not available")
+        whisper_service.load_model(model_name)
+        return {"success": True, "model": model_name, "loaded": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Activation failed: {e}")
 
 @router.get("/whisper/models/download-tasks/{task_id}")
 async def get_download_task_status(task_id: str):
@@ -456,3 +448,39 @@ async def whisper_model_status(model_name: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/whisper/health")
+async def whisper_health():
+    """Diagnostica Whisper: stato modelli, modello corrente, GPU, ffmpeg e versioni."""
+    import shutil, subprocess
+    gpu = torch.cuda.is_available()
+    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_version = None
+    if ffmpeg_path:
+        try:
+            out = subprocess.run([ffmpeg_path, '-version'], capture_output=True, text=True, timeout=2)
+            if out.returncode == 0:
+                ffmpeg_version = out.stdout.split('\n',1)[0]
+        except Exception:
+            pass
+    models_status = whisper_service.get_models_status()
+    return {
+        "current_model": whisper_service.current_model_name,
+        "models": [m.dict() for m in models_status],
+        "gpu_available": gpu,
+        "ffmpeg": {"found": bool(ffmpeg_path), "path": ffmpeg_path, "version": ffmpeg_version},
+        "versions": {
+            "torch": getattr(torch, '__version__', 'n/a'),
+            "whisper": getattr(whisper, '__version__', 'n/a')
+        }
+    }
+
+@router.post("/whisper/warm")
+async def whisper_warm(model: str | None = None):
+    """Forza il caricamento (warm-up) di un modello Whisper (default small)."""
+    try:
+        target = model or whisper_service.current_model_name or "small"
+        whisper_service.load_model(target)
+        return {"success": True, "model": target, "warmed": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Warm failed: {e}")

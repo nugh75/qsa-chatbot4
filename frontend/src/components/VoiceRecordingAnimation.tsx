@@ -28,16 +28,7 @@ const waveAnimation3 = keyframes`
   }
 `;
 
-const pulseAnimation = keyframes`
-  0% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1.4);
-    opacity: 0;
-  }
-`;
+// Rimosso pulse/dot: solo onde verticali
 
 interface VoiceRecordingAnimationProps {
   isRecording: boolean;
@@ -54,30 +45,15 @@ const VoiceRecordingAnimation: React.FC<VoiceRecordingAnimationProps> = ({
     <Box
       sx={{
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-end',
         justifyContent: 'center',
-        gap: 0.8,  // Spazio tra le barre
-        position: 'relative',
-        width: size * 4,  // Ancora più largo
+        gap: 0.6,
+        width: size * 4,
         height: size,
+        px: 0.5
       }}
     >
-      {/* Pulse effect background */}
-      <Box
-        sx={{
-          position: 'absolute',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          width: size * 1.2,
-          height: size * 1.2,
-          borderRadius: '50%',
-          backgroundColor: 'error.main',
-          opacity: 0.15,
-          animation: `${pulseAnimation} 2.5s ease-out infinite`,
-        }}
-      />
-      
-      {/* Wave bars - ancora più barre per un effetto più ricco */}
+      {/* Wave bars */}
       {[
         waveAnimation, 
         waveAnimation2, 
@@ -93,13 +69,13 @@ const VoiceRecordingAnimation: React.FC<VoiceRecordingAnimationProps> = ({
         <Box
           key={index}
           sx={{
-            width: 4,  // Barre più larghe
-            height: size * 1.1,  // Altezza maggiore
+            width: 3,
+            height: size,
             backgroundColor: 'error.main',
-            borderRadius: 2,
+            borderRadius: 1.5,
             transformOrigin: 'center',
-            animation: `${animation} 1s ease-in-out infinite`,  // Animazione più fluida
-            animationDelay: `${index * 0.06}s`,  // Delay per effetto cascata
+            animation: `${animation} 1s ease-in-out infinite`,
+            animationDelay: `${index * 0.06}s`,
           }}
         />
       ))}

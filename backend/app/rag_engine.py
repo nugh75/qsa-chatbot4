@@ -29,15 +29,15 @@ class RAGEngine:
     """
     
     def __init__(self, model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
-        """
-        Inizializza il RAG Engine
-        
+        """Inizializza il RAG Engine.
+
         Args:
-            model_name: Nome del modello SentenceTransformer per gli embedding
+            model_name: Nome del modello SentenceTransformer per gli embedding (fallback legacy)
         """
         self.model_name = model_name
+        # embedding gestito da embedding_manager (fallback legacy se manager non disponibile)
         self.embedding_model = None
-        self.dimension = 384  # Dimensione embedding del modello di default
+        self.dimension = 384  # aggiornato dal provider quando disponibile
         
         # Percorsi file
         self.base_dir = Path(__file__).parent.parent
@@ -121,13 +121,26 @@ class RAGEngine:
         conn.commit()
         conn.close()
         
-    def _load_embedding_model(self):
-        """Carica il modello di embedding"""
-        if self.embedding_model is None:
-            logger.info(f"Caricamento modello embedding: {self.model_name}")
-            self.embedding_model = SentenceTransformer(self.model_name)
-            self.dimension = self.embedding_model.get_sentence_embedding_dimension()
-            logger.info(f"Modello caricato, dimensione embedding: {self.dimension}")
+    def _ensure_provider(self):
+        """Recupera provider embedding da embedding_manager se possibile, altrimenti fallback legacy."""
+        if self.embedding_model is not None:
+            return
+        try:
+            from . import embedding_manager  # import lazy
+            provider = embedding_manager.get_provider()
+            info = provider.info()
+            self.embedding_model = provider
+            if info.get('dimension'):
+                self.dimension = info['dimension']
+            self.model_name = info.get('model_name', self.model_name)
+            logger.info(f"Embedding provider attivo: {info.get('provider_type')} {self.model_name} dim={self.dimension}")
+        except Exception as e:  # fallback
+            logger.warning(f"Embedding manager non disponibile, uso fallback legacy: {e}")
+            try:
+                self.embedding_model = SentenceTransformer(self.model_name)
+                self.dimension = self.embedding_model.get_sentence_embedding_dimension()
+            except Exception as le:
+                raise RuntimeError(f"Impossibile inizializzare embedding: {le}")
     
     def create_group(self, name: str, description: str = "") -> int:
         """
@@ -287,28 +300,27 @@ class RAGEngine:
             conn.close()
     
     def _process_document(self, document_id: int, group_id: int, content: str) -> int:
-        """
-        Processa un documento: chunking ed embedding
-        
+        """Processa un documento: chunking + embedding e memorizzazione.
+
         Returns:
             Numero di chunks creati
         """
-        # Carica modello se necessario
-        self._load_embedding_model()
-        
-        # Chunking del contenuto
+        # Assicura provider
+        self._ensure_provider()
+
+        # Chunking
         chunks = self.text_splitter.split_text(content)
-        
         if not chunks:
             return 0
-        
-        # Genera embeddings per tutti i chunks
-        embeddings = self.embedding_model.encode(chunks)
-        
+
+        # Embedding
+        if hasattr(self.embedding_model, 'embed'):
+            embeddings = self.embedding_model.embed(chunks)
+        else:  # legacy SentenceTransformer
+            embeddings = self.embedding_model.encode(chunks)
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        # Salva chunks e embeddings
         for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
             metadata = {
                 "chunk_index": i,
@@ -316,26 +328,23 @@ class RAGEngine:
                 "document_id": document_id,
                 "group_id": group_id
             }
-            
-            cursor.execute("""
-                INSERT INTO rag_chunks 
-                (document_id, group_id, chunk_index, content, embedding_vector, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                document_id, 
-                group_id, 
-                i, 
-                chunk_text, 
-                pickle.dumps(embedding), 
-                json.dumps(metadata)
-            ))
-        
+            cursor.execute(
+                """INSERT INTO rag_chunks (document_id, group_id, chunk_index, content, embedding_vector, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    document_id,
+                    group_id,
+                    i,
+                    chunk_text,
+                    pickle.dumps(embedding),
+                    json.dumps(metadata)
+                )
+            )
         conn.commit()
         conn.close()
-        
-        # Aggiorna/ricostruisci indice FAISS per il gruppo
+
+        # Ricostruisce indice del gruppo
         self._rebuild_group_index(group_id)
-        
         return len(chunks)
     
     def _rebuild_group_index(self, group_id: int):
@@ -416,57 +425,38 @@ class RAGEngine:
             return False
     
     def search(self, query: str, group_ids: List[int], top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Cerca nei gruppi specificati
-        
-        Args:
-            query: Query di ricerca
-            group_ids: Lista degli ID dei gruppi da cercare
-            top_k: Numero massimo di risultati per gruppo
-            
-        Returns:
-            Lista di risultati ordinati per rilevanza
-        """
+        """Esegue ricerca semantica sui gruppi indicati."""
         if not group_ids:
             return []
-        
-        # Carica modello se necessario
-        self._load_embedding_model()
-        
-        # Genera embedding della query
-        query_embedding = self.embedding_model.encode([query])[0]
+
+        self._ensure_provider()
+
+        # Query embedding
+        if hasattr(self.embedding_model, 'embed'):
+            query_embedding = self.embedding_model.embed([query])[0]
+        else:
+            query_embedding = self.embedding_model.encode([query])[0]
         query_embedding = query_embedding.astype('float32').reshape(1, -1)
         faiss.normalize_L2(query_embedding)
-        
-        all_results = []
-        
+
+        all_results: List[Dict[str, Any]] = []
         for group_id in group_ids:
-            # Carica indice se necessario
             if not self._load_group_index(group_id):
                 continue
-            
             group_data = self.group_indexes[str(group_id)]
             index = group_data["index"]
             chunk_ids = group_data["chunk_ids"]
-            
             if index.ntotal == 0:
                 continue
-            
-            # Cerca nell'indice
             scores, indices = index.search(query_embedding, min(top_k, index.ntotal))
-            
-            # Recupera i dettagli dei chunks
             chunk_details = self._get_chunk_details([chunk_ids[i] for i in indices[0]])
-            
-            # Aggiungi scores e group info
             for score, chunk_detail in zip(scores[0], chunk_details):
                 chunk_detail["similarity_score"] = float(score)
                 chunk_detail["group_id"] = group_id
                 all_results.append(chunk_detail)
-        
-        # Ordina per score e restituisci top results
+
         all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        return all_results[:top_k * len(group_ids)]
+        return all_results[: top_k * len(group_ids)]
     
     def _get_chunk_details(self, chunk_ids: List[int]) -> List[Dict[str, Any]]:
         """Recupera i dettagli dei chunks dal database"""

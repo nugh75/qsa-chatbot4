@@ -1186,7 +1186,32 @@ async def get_available_files():
 
 # ---- Pipeline file content edit/upload ----
 def _pipeline_data_dir() -> Path:
-    return Path(__file__).resolve().parent.parent.parent / "data"
+    """Return the data directory used for pipeline editable files.
+
+    Original implementation climbed three parents from this file. In the
+    repository layout that resolved to the repo root (correct), but inside the
+    Docker image the path of this file is typically /app/app/admin.py; climbing
+    three levels yields '/', so '/data' (missing) instead of '/app/data'. This
+    caused 404 (file not found) when requesting /admin/pipeline/file/content.
+
+    We try multiple candidate bases (2-level and 3-level) and pick the first
+    existing one, creating the primary candidate if none exist yet.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parent.parent / "data",          # repo when run locally & desired in container (/app/data)
+        here.parent.parent.parent / "data",    # fallback to repo root variant
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            continue
+    # Ensure primary path exists
+    primary = candidates[0]
+    primary.mkdir(parents=True, exist_ok=True)
+    return primary
 
 def _safe_pipeline_file(filename: str) -> Path:
     if not filename or any(sep in filename for sep in ["..", "/", "\\"]):
@@ -1671,6 +1696,7 @@ async def set_whisper_model(request: WhisperSetModelRequest):
 
 # ==== ADMIN RAG ENDPOINTS ====
 from .rag_engine import rag_engine
+from . import embedding_manager
 
 class RAGGroupRequest(BaseModel):
     name: str
@@ -1679,6 +1705,77 @@ class RAGGroupRequest(BaseModel):
 class RAGGroupUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+
+# ==== EMBEDDING CONFIG ENDPOINTS ====
+class EmbeddingSetRequest(BaseModel):
+    provider_type: str
+    model_name: str
+
+class EmbeddingDownloadRequest(BaseModel):
+    model_name: str
+
+@router.get("/admin/rag/embedding/config")
+async def get_embedding_config():
+    try:
+        cfg = embedding_manager.get_config()
+        # Augment with runtime provider info
+        try:
+            prov = embedding_manager.get_provider()
+            cfg["runtime"] = prov.info()
+        except Exception as e:  # provider non caricato
+            cfg["runtime_error"] = str(e)
+        return {"success": True, "config": cfg}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento embedding config: {e}")
+
+@router.get("/admin/rag/embedding/local-models")
+async def list_local_embedding_models():
+    try:
+        return {"success": True, "models": embedding_manager.list_local_models()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore elenco modelli: {e}")
+
+@router.post("/admin/rag/embedding/set")
+async def set_embedding_provider(req: EmbeddingSetRequest):
+    try:
+        embedding_manager.set_provider(req.provider_type, req.model_name)
+        info = embedding_manager.get_config()
+        # Nota: cambiamento di dimensione potrebbe richiedere reindicizzazione manuale
+        return {"success": True, "message": "Provider embedding aggiornato", "config": info}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore set provider: {e}")
+
+@router.post("/admin/rag/embedding/download/start")
+async def start_embedding_download(req: EmbeddingDownloadRequest):
+    try:
+        task_id = embedding_manager.start_model_download(req.model_name)
+        return {"success": True, "task_id": task_id}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore avvio download: {e}")
+
+@router.get("/admin/rag/embedding/download/status")
+async def get_embedding_download_status(task_id: str):
+    try:
+        status = embedding_manager.download_status(task_id)
+        if not status:
+            raise HTTPException(status_code=404, detail="Task non trovato")
+        return {"success": True, "status": status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore status download: {e}")
+
+@router.get("/admin/rag/embedding/download/tasks")
+async def list_embedding_download_tasks():
+    try:
+        tasks = embedding_manager.download_tasks()
+        return {"success": True, "tasks": tasks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore elenco tasks: {e}")
 
 @router.get("/admin/rag/stats")
 async def admin_get_rag_stats():

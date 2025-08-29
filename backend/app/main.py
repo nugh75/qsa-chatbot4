@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -38,7 +39,23 @@ print('[env] Loaded .env at', _env_path.exists(), 'OPENAI_API_KEY=', _mask(os.ge
       'GOOGLE_API_KEY=', _mask(os.getenv('GOOGLE_API_KEY')),
       'OPENROUTER_API_KEY=', _mask(os.getenv('OPENROUTER_API_KEY')))
 
-app = FastAPI(title="QSA Chatbot – Backend")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # On startup
+    import os as _os
+    if _os.environ.get("WHISPER_WARMUP", "1").lower() in ("1","true","yes","on"):
+        try:
+            from .transcribe import whisper_service
+            # Non bloccare eccessivamente: warm in thread
+            import threading
+            threading.Thread(target=lambda: whisper_service.load_model("small"), daemon=True).start()
+            log_system(20, "Whisper warm-up (small) scheduled")
+        except Exception as e:
+            log_system(30, f"Whisper warm-up skipped: {e}")
+    yield
+    # On shutdown (nothing special yet)
+
+app = FastAPI(title="QSA Chatbot – Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

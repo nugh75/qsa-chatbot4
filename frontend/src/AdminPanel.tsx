@@ -7,7 +7,7 @@ import {
   Tooltip, Slider
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon } from '@mui/icons-material'
 
 import UserManagement from './components/UserManagement'
 import ModelProvidersPanel from './components/ModelProvidersPanel'
@@ -20,7 +20,11 @@ import SystemPromptsPanel from './components/SystemPromptsPanel'
 import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
 import APIDocsPanel from './components/APIDocsPanel'
+import RagDocumentsPanel from './components/RagDocumentsPanel'
+import WhisperHealthPanel from './components/WhisperHealthPanel'
+import PipelinePanel from './components/PipelinePanel'
 import { authFetch, BACKEND } from './utils/authFetch'
+import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
 
 const AdminPanel: React.FC = () => {
@@ -43,13 +47,25 @@ const AdminPanel: React.FC = () => {
   usage: false,
   summary: false,
   memory: false,
-  apidocs: false
+  apidocs: false,
+  embedding: false,
+  ragdocs: false,
+  whisper_health: false,
+  pipeline: false,
   })
 
   // Token test
   const [tokenTestInput, setTokenTestInput] = useState<string>('Ciao! Questo è un test.')
   const [testingTokens, setTestingTokens] = useState<boolean>(false)
   const [tokenTestResult, setTokenTestResult] = useState<any>(null)
+
+  // Embedding state
+  const [embeddingConfig, setEmbeddingConfig] = useState<any>(null);
+  const [embeddingModels, setEmbeddingModels] = useState<string[]>([]);
+  const [embeddingLoading, setEmbeddingLoading] = useState(false);
+  const [downloadTasks, setDownloadTasks] = useState<any[]>([]);
+  const [startingDownload, setStartingDownload] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<string>('');
 
   // Memo per provider e voci disponibili
   const providerNames = useMemo(() => {
@@ -180,6 +196,56 @@ const AdminPanel: React.FC = () => {
       /* noop */
     }
   }
+
+  // Embedding functions
+  const loadEmbeddingData = async () => {
+    setEmbeddingLoading(true);
+    try {
+      const [cfgRes, modelsRes, tasksRes] = await Promise.all([
+        apiService.getEmbeddingConfig(),
+        apiService.listLocalEmbeddingModels(),
+        apiService.listEmbeddingDownloadTasks()
+      ]);
+      if (cfgRes.success) setEmbeddingConfig(cfgRes.data?.config || cfgRes.data);
+      if (modelsRes.success) setEmbeddingModels(modelsRes.data?.models || []);
+      if (tasksRes.success) setDownloadTasks(tasksRes.data?.tasks || []);
+      if (cfgRes.success) {
+        setSelectedModel(cfgRes.data?.config?.model_name || cfgRes.data?.model_name || '');
+      }
+    } catch {/* noop */} finally {
+      setEmbeddingLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (expandedPanels.embedding) {
+      loadEmbeddingData();
+      const id = setInterval(loadEmbeddingData, 4000);
+      return () => clearInterval(id);
+    }
+  }, [expandedPanels.embedding]);
+
+  const handleSetEmbeddingProvider = async () => {
+    if (!selectedModel) return;
+    setEmbeddingLoading(true);
+    try {
+      const res = await apiService.setEmbeddingProvider('local', selectedModel);
+      if (res.success) {
+        loadEmbeddingData();
+      }
+    } finally { setEmbeddingLoading(false); }
+  };
+
+  const handleStartDownload = async () => {
+    if (!selectedModel) return;
+    setStartingDownload(true);
+    try {
+      const res = await apiService.startEmbeddingDownload(selectedModel);
+      if (res.success) {
+        loadEmbeddingData();
+      }
+    } finally { setStartingDownload(false); }
+  };
 
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
@@ -345,6 +411,19 @@ const AdminPanel: React.FC = () => {
         </AccordionDetails>
       </Accordion>
 
+      {/* Whisper Health */}
+      <Accordion expanded={expandedPanels.whisper_health} onChange={handlePanelExpansion('whisper_health')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <StorageIcon fontSize="small" />
+            <Typography variant="h6">Whisper Health</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <WhisperHealthPanel />
+        </AccordionDetails>
+      </Accordion>
+
       {/* Prompts (System & Summary) */}
       <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -384,6 +463,93 @@ const AdminPanel: React.FC = () => {
         </AccordionSummary>
         <AccordionDetails>
           <APIDocsPanel />
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Embedding Management */}
+      <Accordion expanded={expandedPanels.embedding} onChange={handlePanelExpansion('embedding')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <HubIcon fontSize="small" />
+            <Typography variant="h6">RAG Embedding</Typography>
+            {embeddingConfig && <Chip size="small" label={embeddingConfig.model_name || embeddingConfig?.config?.model_name} />}
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Card>
+            <CardContent>
+              {embeddingLoading && <LinearProgress sx={{ mb:2 }} />}
+              {!embeddingConfig ? (
+                <Button variant="outlined" startIcon={<RefreshIcon />} onClick={loadEmbeddingData}>Ricarica configurazione</Button>
+              ) : (
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>Modello attivo</Typography>
+                    <Typography variant="body2">{embeddingConfig?.config?.model_name || embeddingConfig.model_name} ({embeddingConfig?.config?.dimension || embeddingConfig.dimension || 'dim ?'})</Typography>
+                  </Box>
+                  <FormControl size="small" fullWidth>
+                    <InputLabel id="embedding-model-label">Modello locale</InputLabel>
+                    <Select labelId="embedding-model-label" label="Modello locale" value={selectedModel} onChange={(e)=> setSelectedModel(e.target.value)}>
+                      {embeddingModels.map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                    </Select>
+                  </FormControl>
+                  <Stack direction="row" spacing={2}>
+                    <Button variant="contained" size="small" disabled={!selectedModel || embeddingLoading} onClick={handleSetEmbeddingProvider}>Imposta provider</Button>
+                    <Button variant="outlined" size="small" startIcon={<CloudDownloadIcon />} disabled={!selectedModel || startingDownload} onClick={handleStartDownload}>Scarica / Warm</Button>
+                    <IconButton size="small" onClick={loadEmbeddingData} disabled={embeddingLoading}><RefreshIcon fontSize="small" /></IconButton>
+                  </Stack>
+                  <Box>
+                    <Typography variant="subtitle2" gutterBottom>Download tasks</Typography>
+                    <Stack spacing={1}>
+                      {downloadTasks.length === 0 && <Typography variant="body2" color="text.secondary">Nessun task</Typography>}
+                      {downloadTasks.map(t => {
+                        let icon = <HourglassBottomIcon fontSize="small" color="action" />;
+                        if (t.status === 'completed') icon = <CheckCircleIcon fontSize="small" color="success" />;
+                        if (t.status === 'failed') icon = <ErrorIcon fontSize="small" color="error" />;
+                        return (
+                          <Paper key={t.id} variant="outlined" sx={{ p:1, display:'flex', alignItems:'center', gap:1 }}>
+                            {icon}
+                            <Box sx={{ flexGrow:1 }}>
+                              <Typography variant="caption">{t.model_name}</Typography>
+                              <LinearProgress variant="determinate" value={t.progress||0} sx={{ height:6, borderRadius:1, mt:0.5 }} />
+                            </Box>
+                            <Chip size="small" label={t.status} />
+                          </Paper>
+                        );
+                      })}
+                    </Stack>
+                  </Box>
+                  {embeddingConfig?.runtime_error && <Alert severity="warning">{embeddingConfig.runtime_error}</Alert>}
+                </Stack>
+              )}
+            </CardContent>
+          </Card>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* RAG Documenti */}
+      <Accordion expanded={expandedPanels.ragdocs} onChange={handlePanelExpansion('ragdocs')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <DescriptionIcon fontSize="small" />
+            <Typography variant="h6">RAG Documenti</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <RagDocumentsPanel />
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Pipeline / Regex Management */}
+      <Accordion expanded={expandedPanels.pipeline} onChange={handlePanelExpansion('pipeline')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <DescriptionIcon fontSize="small" />
+            <Typography variant="h6">Pipeline (Regex & Files)</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <PipelinePanel />
         </AccordionDetails>
       </Accordion>
     </Container>

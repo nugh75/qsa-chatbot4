@@ -448,6 +448,172 @@ class ApiService {
   async delete(path: string, init?: RequestInit): Promise<any> {
     return this.makeRequest(path, { method: 'DELETE', ...(init||{}) });
   }
+
+  // === RAG Embedding Management ===
+  async getEmbeddingConfig(): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/rag/embedding/config');
+  }
+  async listLocalEmbeddingModels(): Promise<ApiResponse<{ models: string[] }>> {
+    return this.makeRequest('/admin/rag/embedding/local-models');
+  }
+  async setEmbeddingProvider(provider_type: string, model_name: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/rag/embedding/set', {
+      method: 'POST',
+      body: JSON.stringify({ provider_type, model_name })
+    });
+  }
+  async startEmbeddingDownload(model_name: string): Promise<ApiResponse<{ task_id: string }>> {
+    return this.makeRequest('/admin/rag/embedding/download/start', {
+      method: 'POST',
+      body: JSON.stringify({ model_name })
+    });
+  }
+  async getEmbeddingDownloadStatus(task_id: string): Promise<ApiResponse<any>> {
+    const q = encodeURIComponent(task_id);
+    return this.makeRequest(`/admin/rag/embedding/download/status?task_id=${q}`);
+  }
+  async listEmbeddingDownloadTasks(): Promise<ApiResponse<{ tasks: any[] }>> {
+    return this.makeRequest('/admin/rag/embedding/download/tasks');
+  }
+
+  // === RAG Groups & Documents ===
+  async getRagStats(): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/rag/stats');
+  }
+  async listRagGroups(): Promise<ApiResponse<{ groups: any[] }>> {
+    return this.makeRequest('/admin/rag/groups');
+  }
+  async createRagGroup(name: string, description: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
+  }
+  async updateRagGroup(id: number, payload: { name?: string; description?: string }): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+  async deleteRagGroup(id: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'DELETE' });
+  }
+  async listRagDocuments(groupId: number): Promise<ApiResponse<{ documents: any[] }>> {
+    return this.makeRequest(`/admin/rag/groups/${groupId}/documents`);
+  }
+  async deleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}`, { method: 'DELETE' });
+  }
+  async uploadRagDocument(groupId: number, file: File): Promise<ApiResponse<any>> {
+    const form = new FormData();
+    form.append('group_id', String(groupId));
+    form.append('file', file);
+    const accessToken = CredentialManager.getAccessToken();
+    const resp = await fetch(`${API_BASE_URL}/admin/rag/upload`, {
+      method: 'POST',
+      headers: accessToken ? { 'Authorization': `Bearer ${accessToken}` } : undefined,
+      body: form
+    });
+    try {
+      const data = await resp.json();
+      if (resp.ok) return { success: true, data };
+      return { success: false, error: data.detail || 'Upload failed' };
+    } catch {
+      return { success: false, error: 'Upload parse error' };
+    }
+  }
+
+  // === Whisper ASR ===
+  async listWhisperModels(): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/whisper/models');
+  }
+  async downloadWhisperModel(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/whisper/download', { method: 'POST', body: JSON.stringify({ model }) });
+  }
+  async setWhisperModel(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/whisper/set-model', { method: 'POST', body: JSON.stringify({ model }) });
+  }
+  async downloadWhisperModelAsync(model: string): Promise<ApiResponse<{ task_id: string; model: string }>> {
+    return this.makeRequest(`/whisper/models/${encodeURIComponent(model)}/download-async`, { method: 'POST' });
+  }
+  async whisperDownloadTaskStatus(task_id: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/whisper/models/download-tasks/${encodeURIComponent(task_id)}`);
+  }
+  async activateWhisperModel(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/whisper/models/${encodeURIComponent(model)}/activate`, { method: 'POST' });
+  }
+  async deleteWhisperModel(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/whisper/models/${encodeURIComponent(model)}`, { method: 'DELETE' });
+  }
+  async transcribeAudio(file: File, model?: string): Promise<ApiResponse<{ text: string; model_used: string }>> {
+    const form = new FormData();
+    form.append('audio', file);
+    if (model) form.append('provider', model);
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {};
+    try {
+      const resp = await fetch(`${API_BASE_URL}/transcribe`, { method: 'POST', headers, body: form });
+      const data = await resp.json();
+      if (resp.ok) return { success: true, data };
+      return { success: false, error: data.detail || 'Transcription failed' };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+  async getWhisperHealth(): Promise<ApiResponse<any>> {
+    return this.makeRequest('/whisper/health');
+  }
+  async warmWhisperModel(model?: string): Promise<ApiResponse<any>> {
+    const body = model ? JSON.stringify({ model }) : undefined;
+    return this.makeRequest('/whisper/warm' + (model && !body ? `?model=${encodeURIComponent(model)}` : ''), { method: 'POST', body });
+  }
+
+  // === Pipeline (Regex Routes & File Mappings) ===
+  async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
+    return this.makeRequest('/admin/pipeline');
+  }
+  async savePipelineConfig(cfg: { routes: { pattern: string; topic: string }[]; files: Record<string,string> }): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline', { method: 'POST', body: JSON.stringify(cfg) });
+  }
+  async resetPipelineConfig(): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/reset', { method: 'POST' });
+  }
+  async addPipelineRoute(pattern: string, topic: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/route/add', { method: 'POST', body: JSON.stringify({ pattern, topic }) });
+  }
+  async updatePipelineRoute(old_pattern: string, old_topic: string, new_pattern: string, new_topic: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/route/update', { method: 'POST', body: JSON.stringify({ old_pattern, old_topic, new_pattern, new_topic }) });
+  }
+  async deletePipelineRoute(pattern: string, topic: string): Promise<ApiResponse<any>> {
+    const qp = `?pattern=${encodeURIComponent(pattern)}&topic=${encodeURIComponent(topic)}`;
+    return this.makeRequest(`/admin/pipeline/route${qp}`, { method: 'DELETE' });
+  }
+  async addPipelineFile(topic: string, filename: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/file/add', { method: 'POST', body: JSON.stringify({ topic, filename }) });
+  }
+  async updatePipelineFile(old_topic: string, new_topic: string, new_filename: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/file/update', { method: 'POST', body: JSON.stringify({ old_topic, new_topic, new_filename }) });
+  }
+  async deletePipelineFile(topic: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/pipeline/file?topic=${encodeURIComponent(topic)}`, { method: 'DELETE' });
+  }
+  async listAvailablePipelineFiles(): Promise<ApiResponse<{ files: string[] }>> {
+    return this.makeRequest('/admin/pipeline/files/available');
+  }
+  async getPipelineFileContent(filename: string): Promise<ApiResponse<{ filename: string; content: string }>> {
+    return this.makeRequest(`/admin/pipeline/file/content?filename=${encodeURIComponent(filename)}`);
+  }
+  async savePipelineFileContent(filename: string, content: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/file/content', { method: 'POST', body: JSON.stringify({ filename, content }) });
+  }
+  async uploadPipelineFile(file: File): Promise<ApiResponse<{ filename: string }>> {
+    const form = new FormData();
+    form.append('file', file);
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {};
+    try {
+      const resp = await fetch(`${API_BASE_URL}/admin/pipeline/file/upload`, { method: 'POST', headers, body: form });
+      const data = await resp.json();
+      if (resp.ok) return { success: true, data };
+      return { success: false, error: data.detail || 'Upload failed' };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
 }
 
 // Istanza singola del servizio API

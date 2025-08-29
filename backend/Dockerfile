@@ -5,6 +5,8 @@ WORKDIR /app
 # Installa dipendenze sistema necessarie
 RUN apt-get update && apt-get install -y \
     curl \
+    ffmpeg \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copia e installa dipendenze Python

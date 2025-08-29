@@ -65,6 +65,48 @@ class AdminConfig(BaseModel):
     default_provider: str
     default_tts: str
 
+# ---- Endpoint introspection ----
+class EndpointInfo(BaseModel):
+    method: str
+    path: str
+    name: str | None = None
+    summary: str | None = None
+
+@router.get("/admin/endpoints")
+async def list_endpoints(limit_prefix: str = "/api"):
+    """Elenca gli endpoint GET/POST esposti (solo letti dall'app FastAPI principale).
+    Filtra facoltativamente per prefix (default '/api'). Ritorna solo metodi GET/POST.
+    Nota: questo endpoint mostra le route effettive dopo l'inclusione dei router.
+    """
+    try:
+        from fastapi import FastAPI
+        # L'app globale è raggiungibile tramite router.dependency_overrides se montato? fallback a traversal.
+        # In FastAPI non c'è riferimento diretto all'app dentro il router, quindi usiamo "request" se servisse.
+        # Qui importiamo l'istanza app dal modulo main.
+        from . import main as _main
+        app_obj = getattr(_main, 'app', None)
+        if app_obj is None or not isinstance(app_obj, FastAPI):
+            raise RuntimeError("App FastAPI principale non trovata")
+        items: list[EndpointInfo] = []
+        for route in app_obj.routes:
+            methods = getattr(route, 'methods', []) or []
+            path = getattr(route, 'path', '')
+            if limit_prefix and not path.startswith(limit_prefix):
+                continue
+            for m in methods:
+                if m in ("GET", "POST"):
+                    items.append(EndpointInfo(
+                        method=m,
+                        path=path,
+                        name=getattr(route, 'name', None),
+                        summary=getattr(route, 'summary', None)
+                    ))
+        # Ordina per path poi metodo
+        items.sort(key=lambda x: (x.path, x.method))
+        return {"success": True, "count": len(items), "endpoints": [i.dict() for i in items]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore introspezione endpoints: {e}")
+
 # Configurazione predefinita
 DEFAULT_CONFIG = {
     "ai_providers": {
@@ -1085,12 +1127,11 @@ async def add_pipeline_file(file_mapping: PipelineFile):
         # Verifica che il topic non esista già
         if file_mapping.topic in data["files"]:
             raise HTTPException(status_code=400, detail="Topic già esistente")
-        
-        # Verifica che il file esista nella directory data
-        data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        # Verifica che il file esista nella directory pipeline_files
+        data_dir = _pipeline_data_dir()
         file_path = data_dir / file_mapping.filename
         if not file_path.exists():
-            raise HTTPException(status_code=400, detail=f"File {file_mapping.filename} non trovato nella directory data")
+            raise HTTPException(status_code=400, detail=f"File {file_mapping.filename} non trovato nella directory pipeline_files")
         
         # Aggiungi il nuovo mapping
         data["files"][file_mapping.topic] = file_mapping.filename
@@ -1119,12 +1160,11 @@ async def update_pipeline_file(update: FileUpdate):
         # Verifica che il nuovo topic non esista già (se diverso dal vecchio)
         if update.new_topic != update.old_topic and update.new_topic in data["files"]:
             raise HTTPException(status_code=400, detail="Il nuovo topic è già in uso")
-        
-        # Verifica che il file esista nella directory data
-        data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        # Verifica che il file esista nella directory pipeline_files
+        data_dir = _pipeline_data_dir()
         file_path = data_dir / update.new_filename
         if not file_path.exists():
-            raise HTTPException(status_code=400, detail=f"File {update.new_filename} non trovato nella directory data")
+            raise HTTPException(status_code=400, detail=f"File {update.new_filename} non trovato nella directory pipeline_files")
         
         # Rimuovi il vecchio mapping
         del data["files"][update.old_topic]
@@ -1168,9 +1208,9 @@ async def delete_pipeline_file(topic: str):
 
 @router.get("/admin/pipeline/files/available")
 async def get_available_files():
-    """Ottieni la lista dei file disponibili nella directory data"""
+    """Ottieni la lista dei file disponibili nella directory pipeline_files"""
     try:
-        data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        data_dir = _pipeline_data_dir()
         if not data_dir.exists():
             return {"files": []}
         
@@ -1185,33 +1225,39 @@ async def get_available_files():
         raise HTTPException(status_code=500, detail=f"Errore nel recupero file disponibili: {str(e)}")
 
 # ---- Pipeline file content edit/upload ----
+import shutil
 def _pipeline_data_dir() -> Path:
-    """Return the data directory used for pipeline editable files.
-
-    Original implementation climbed three parents from this file. In the
-    repository layout that resolved to the repo root (correct), but inside the
-    Docker image the path of this file is typically /app/app/admin.py; climbing
-    three levels yields '/', so '/data' (missing) instead of '/app/data'. This
-    caused 404 (file not found) when requesting /admin/pipeline/file/content.
-
-    We try multiple candidate bases (2-level and 3-level) and pick the first
-    existing one, creating the primary candidate if none exist yet.
-    """
+    """Restituisce la directory pipeline_files persistente, con migrazione automatica e log diagnostico."""
+    import os
+    env_dir = os.getenv("PIPELINE_FILES_DIR")
     here = Path(__file__).resolve()
-    candidates = [
-        here.parent.parent / "data",          # repo when run locally & desired in container (/app/data)
-        here.parent.parent.parent / "data",    # fallback to repo root variant
-    ]
-    for c in candidates:
-        try:
-            if c.exists():
-                return c
-        except Exception:
-            continue
-    # Ensure primary path exists
-    primary = candidates[0]
-    primary.mkdir(parents=True, exist_ok=True)
-    return primary
+    storage_dir = here.parent.parent / "storage" / "pipeline_files"
+    legacy_data_dir = here.parent.parent.parent / "data"
+    # Priorità: env, storage, legacy
+    if env_dir:
+        d = Path(env_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        print(f"[Pipeline] PIPELINE_FILES_DIR attivo: {d}")
+        return d
+    migrated = 0
+    if not storage_dir.exists():
+        storage_dir.mkdir(parents=True, exist_ok=True)
+        # Migrazione automatica
+        if legacy_data_dir.exists():
+            for f in legacy_data_dir.iterdir():
+                if f.is_file() and f.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
+                    target = storage_dir / f.name
+                    if not target.exists():
+                        try:
+                            shutil.copy2(f, target)
+                            migrated += 1
+                        except Exception as e:
+                            print(f"[Pipeline] Errore migrazione file: {e}")
+            # Marker file
+            marker = storage_dir / ".pipeline_migrated"
+            marker.write_text(f"Migrati {migrated} file da {legacy_data_dir} all'avvio\n", encoding="utf-8")
+    print(f"[Pipeline] pipeline_files dir: {storage_dir} (migrati {migrated} nuovi file)")
+    return storage_dir
 
 def _safe_pipeline_file(filename: str) -> Path:
     if not filename or any(sep in filename for sep in ["..", "/", "\\"]):
@@ -1906,7 +1952,7 @@ async def admin_get_users():
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, email, created_at, last_login 
+            SELECT id, email, created_at, last_login, is_admin 
             FROM users 
             ORDER BY created_at DESC
         """)
@@ -1917,7 +1963,8 @@ async def admin_get_users():
                 "id": row[0],
                 "email": row[1],
                 "created_at": row[2],
-                "last_login": row[3]
+                "last_login": row[3],
+                "is_admin": bool(row[4]) if row[4] is not None else False
             })
         
         conn.close()
@@ -1991,6 +2038,40 @@ async def admin_reset_user_password(user_id: int):
             "message": f"Password reset per {email}",
             "temporary_password": temp_password,
             "email": email
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class UserRoleRequest(BaseModel):
+    is_admin: bool
+
+@router.put("/admin/users/{user_id}/role")
+async def admin_change_user_role(user_id: int, request: UserRoleRequest):
+    """Change user role (admin/user)"""
+    try:
+        conn = sqlite3.connect(str(DATABASE_PATH))
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+        # Update user role
+        cursor.execute(
+            "UPDATE users SET is_admin = ? WHERE id = ?",
+            (1 if request.is_admin else 0, user_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        role_name = "amministratore" if request.is_admin else "utente"
+        return {
+            "success": True,
+            "message": f"Ruolo cambiato a {role_name} per {user[0]}"
         }
     except HTTPException:
         raise

@@ -16,7 +16,7 @@ interface EndpointItem { method: string; path: string; summary?: string; tags?: 
 const ALL_METHODS = ['GET','POST','PUT','DELETE','PATCH'];
 const CACHE_KEY = 'endpoints_explorer_openapi_v1';
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minuti
-const FALLBACK_SPEC_PATHS = ['/openapi.json','/api/openapi.json','/docs/openapi.json'];
+const FALLBACK_SPEC_PATHS = ['/api/openapi.json','/openapi.json','/docs/openapi.json'];
 
 const groupAndSort = (items: EndpointItem[]) => [...items].sort((a,b)=> a.path===b.path ? a.method.localeCompare(b.method): a.path.localeCompare(b.path));
 

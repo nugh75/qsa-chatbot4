@@ -55,7 +55,14 @@ async def lifespan(app: FastAPI):
     yield
     # On shutdown (nothing special yet)
 
-app = FastAPI(title="QSA Chatbot – Backend", lifespan=lifespan)
+# Espone OpenAPI e docs sotto /api/* così il frontend può cercare /api/openapi.json
+app = FastAPI(
+    title="QSA Chatbot – Backend",
+    lifespan=lifespan,
+    openapi_url="/api/openapi.json",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
+)
 
 app.add_middleware(
     CORSMiddleware,

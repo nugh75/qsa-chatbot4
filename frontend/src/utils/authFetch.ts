@@ -1,18 +1,19 @@
 import { CredentialManager } from '../crypto'
 
-const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
+export const BACKEND: string =
+  (import.meta as any).env?.VITE_BACKEND_URL
+  ?? (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
-export const authFetch = async (url: string, init: RequestInit = {}) => {
-  const attachAuth = (token: string | null) => ({
+export async function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const attachAuth = (token: string | null): HeadersInit => ({
     ...(init.headers || {}),
     ...(token ? { Authorization: `Bearer ${token}` } : {})
-  } as HeadersInit)
+  })
 
   let access = CredentialManager.getAccessToken()
   let res = await fetch(url, { ...init, headers: attachAuth(access) })
 
   if (res.status === 401) {
-    // Try refresh
     const refresh = CredentialManager.getRefreshToken()
     if (refresh) {
       try {
@@ -28,7 +29,7 @@ export const authFetch = async (url: string, init: RequestInit = {}) => {
             res = await fetch(url, { ...init, headers: attachAuth(access) })
           }
         }
-      } catch {}
+      } catch { /* ignore */ }
     }
   }
 

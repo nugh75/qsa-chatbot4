@@ -1,0 +1,986 @@
+import React, { useState, useEffect } from 'react'
+import {
+  Container, Paper, Typography, TextField, Button, Stack, Box,
+  FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
+  Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
+  Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
+  Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
+  Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, Slider
+} from '@mui/material'
+import Avatar from '@mui/material/Avatar'
+import {
+  Settings as SettingsIcon,
+  VolumeUp as VolumeIcon,
+  Psychology as AIIcon,
+  Analytics as StatsIcon,
+  Security as SecurityIcon,
+  ExpandMore as ExpandMoreIcon,
+  Mic as MicIcon,
+  Check as CheckIcon,
+  Download as DownloadIcon,
+  Add as AddIcon,
+  Remove as RemoveIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+  Key as KeyIcon,
+  Storage as StorageIcon,
+  Upload as UploadIcon,
+  Description as DescriptionIcon
+} from '@mui/icons-material'
+import AdminRAGManagement from './components/AdminRAGManagement'
+import { useAuth } from './contexts/AuthContext'
+import { CredentialManager } from './crypto'
+
+// --- INTERFACES ---
+interface AdminConfig {
+  ai_providers: {
+    local: { enabled: boolean; name: string; models: string[]; selected_model: string }
+    gemini: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
+    claude: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
+    openai: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
+    openrouter: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
+    ollama: { enabled: boolean; name: string; base_url: string; models: string[]; selected_model: string }
+  }
+  tts_providers: {
+    edge: { enabled: boolean; name: string; voices: string[]; selected_voice: string }
+    elevenlabs: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; voices: string[]; selected_voice: string }
+    openai_voice: { enabled: boolean; name: string; voices: string[]; selected_voice: string }
+    piper: { enabled: boolean; name: string; voices: string[]; selected_voice: string }
+  }
+  default_provider: string
+  default_tts: string
+  summary_settings?: {
+    provider: string
+    enabled: boolean
+  }
+}
+
+interface FeedbackStats {
+  total: number
+  likes: number
+  dislikes: number
+  by_provider: Record<string, { likes: number; dislikes: number }>
+}
+
+// --- CONSTANTS ---
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
+
+// --- COMPONENT: UserManagementComponent ---
+const UserManagementComponent: React.FC = () => {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [resetPasswordDialog, setResetPasswordDialog] = useState(false);
+  const [deleteDialog, setDeleteDialog] = useState(false);
+  const [passwordResetResult, setPasswordResetResult] = useState<any>(null);
+
+  const loadUsers = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.get('/auth/admin/users')
+      if (resp.success && resp.data) {
+        setUsers((resp.data as any).users || [])
+      } else {
+        setError((resp as any).error || 'Errore nel caricamento utenti')
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!selectedUser) return;
+    try {
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.delete(`/admin/users/${selectedUser.id}`)
+      if ((resp as any).success) {
+        setUsers(users.filter(u => u.id !== selectedUser.id));
+        setDeleteDialog(false);
+        setSelectedUser(null);
+      } else {
+        setError('Errore nell\'eliminazione utente');
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!selectedUser) return;
+    try {
+      const { apiService } = await import('./apiService')
+      const resp = await apiService.post(`/admin/users/${selectedUser.id}/reset-password`)
+      if ((resp as any).success) {
+        setPasswordResetResult((resp as any).data || (resp as any));
+        setResetPasswordDialog(true);
+      } else {
+        setError('Errore nel reset password');
+      }
+    } catch (err) {
+      setError('Errore di connessione');
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const filteredUsers = users.filter(user =>
+    user.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  useEffect(() => {
+    loadUsers();
+  }, []);
+
+  return (
+    <Box sx={{ width: '100%' }}>
+      {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>{error}</Alert>}
+      {loading && <LinearProgress sx={{ mb: 2 }} />}
+      <Card>
+        <CardContent>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <Typography variant="h6">Gestione Utenti</Typography>
+              <Chip label={`${users.length} utenti`} size="small" />
+            </Box>
+            <Button variant="outlined" onClick={loadUsers} disabled={loading} size="small">Aggiorna</Button>
+          </Box>
+          <TextField fullWidth size="small" placeholder="Cerca utenti..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} sx={{ mb: 3 }} />
+          <TableContainer component={Paper}>
+            <Table>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Email</TableCell>
+                  <TableCell>Data Registrazione</TableCell>
+                  <TableCell>Ultimo Login</TableCell>
+                  <TableCell>Ruolo</TableCell>
+                  <TableCell>Stato</TableCell>
+                  <TableCell>Azioni</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filteredUsers.length > 0 ? (
+                  filteredUsers.map((user) => (
+                    <TableRow key={user.id}>
+                      <TableCell>{user.email}</TableCell>
+                      <TableCell>{new Date(user.created_at).toLocaleDateString('it-IT')}</TableCell>
+                      <TableCell>{user.last_login ? new Date(user.last_login).toLocaleDateString('it-IT') : 'Mai'}</TableCell>
+                      <TableCell>
+                        <FormControlLabel
+                          control={<Switch size="small" checked={!!user.is_admin} onChange={async (e) => {
+                            try {
+                              const { apiService } = await import('./apiService')
+                              const resp = await apiService.post(`/auth/admin/users/${user.id}/role`, { is_admin: e.target.checked })
+                              if ((resp as any).success) {
+                                setUsers(prev => prev.map(u => u.id === user.id ? { ...u, is_admin: e.target.checked } : u))
+                              }
+                            } catch (err) { console.error('Errore aggiornamento ruolo') }
+                          }} />}
+                          label={user.is_admin ? 'Amministratore' : 'Utente'}
+                        />
+                      </TableCell>
+                      <TableCell><Chip label={user.last_login ? 'Attivo' : 'Mai loggato'} color={user.last_login ? 'success' : 'default'} size="small" /></TableCell>
+                      <TableCell>
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Tooltip title="Reset Password"><IconButton size="small" onClick={() => { setSelectedUser(user); handleResetPassword(); }}><KeyIcon fontSize="small" /></IconButton></Tooltip>
+                          <Tooltip title="Elimina Utente"><IconButton size="small" color="error" onClick={() => { setSelectedUser(user); setDeleteDialog(true); }}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
+                        </Box>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow><TableCell colSpan={6} align="center"><Typography color="text.secondary">{searchTerm ? 'Nessun utente trovato' : 'Nessun utente registrato'}</Typography></TableCell></TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </CardContent>
+      </Card>
+      <Dialog open={deleteDialog} onClose={() => setDeleteDialog(false)}>
+        <DialogTitle>Conferma Eliminazione</DialogTitle>
+        <DialogContent>
+          <Typography>Sei sicuro di voler eliminare l'utente <strong>{selectedUser?.email}</strong>?</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Questa azione non può essere annullata.</Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteDialog(false)}>Annulla</Button>
+          <Button onClick={handleDeleteUser} variant="contained" color="error">Elimina</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={resetPasswordDialog} onClose={() => { setResetPasswordDialog(false); setPasswordResetResult(null); }}>
+        <DialogTitle>Password Reset Completato</DialogTitle>
+        <DialogContent>
+          <Alert severity="success" sx={{ mb: 2 }}>Password resettata con successo per {passwordResetResult?.email}</Alert>
+          <Typography variant="body2" gutterBottom><strong>Nuova password temporanea:</strong></Typography>
+          <TextField fullWidth value={passwordResetResult?.temporary_password || ''} InputProps={{ readOnly: true, endAdornment: (<Button size="small" onClick={() => copyToClipboard(passwordResetResult?.temporary_password || '')}>Copia</Button>) }} sx={{ mb: 2 }} />
+          <Alert severity="info">L'utente dovrà cambiare questa password al primo login.</Alert>
+        </DialogContent>
+        <DialogActions><Button onClick={() => { setResetPasswordDialog(false); setPasswordResetResult(null); }} variant="contained">Chiudi</Button></DialogActions>
+      </Dialog>
+    </Box>
+  );
+};
+
+// --- MAIN COMPONENT: AdminPanel ---
+export default function AdminPanel() {
+  const authenticated = true
+  const { logout } = useAuth()
+
+  // --- STATE MANAGEMENT ---
+  const [authWarning, setAuthWarning] = useState(false)
+  const [config, setConfig] = useState<AdminConfig | null>(null)
+  const [stats, setStats] = useState<FeedbackStats | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState('')
+  const [loadingModels, setLoadingModels] = useState<Record<string, boolean>>({})
+  const [testingModels, setTestingModels] = useState<Record<string, boolean>>({})
+  const [modelTestResults, setModelTestResults] = useState<Record<string, {success: boolean, message: string}>>({})
+  const [loadingVoices, setLoadingVoices] = useState<Record<string, boolean>>({})
+  const [testingVoices, setTestingVoices] = useState<Record<string, boolean>>({})
+  const [voiceTestResults, setVoiceTestResults] = useState<Record<string, {success: boolean, message: string}>>({})
+  
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [systemPrompts, setSystemPrompts] = useState<{id:string; name:string; text:string}[]>([])
+  const [activeSystemPromptId, setActiveSystemPromptId] = useState<string>('')
+  const [selectedSystemPromptId, setSelectedSystemPromptId] = useState<string>('')
+  const [selectedSystemPromptName, setSelectedSystemPromptName] = useState<string>('')
+  const [savingPrompt, setSavingPrompt] = useState(false)
+  const [promptChars, setPromptChars] = useState(0)
+  const [promptTokens, setPromptTokens] = useState(0)
+  const [systemPromptRows, setSystemPromptRows] = useState(8)
+
+  const [personalities, setPersonalities] = useState<{id:string; name:string; provider:string; model:string; system_prompt_id:string; avatar?: string}[]>([])
+  const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
+  const [defaultPersonalityId, setDefaultPersonalityId] = useState<string>('')
+  const [personalityName, setPersonalityName] = useState<string>('')
+  const [personalityProvider, setPersonalityProvider] = useState<string>('openai')
+  const [personalityModel, setPersonalityModel] = useState<string>('gpt-4o-mini')
+  const [personalityPromptId, setPersonalityPromptId] = useState<string>('')
+  const [avatars, setAvatars] = useState<string[]>([])
+  const [personalityAvatar, setPersonalityAvatar] = useState<string>('')
+
+  const [summaryPrompt, setSummaryPrompt] = useState('')
+  const [summaryPromptRows, setSummaryPromptRows] = useState(6)
+  const [summarySettings, setSummarySettings] = useState<{provider: string, enabled: boolean}>({provider: 'anthropic', enabled: true})
+  const [savingSummaryPrompt, setSavingSummaryPrompt] = useState(false)
+  const [savingSummarySettings, setSavingSummarySettings] = useState(false)
+  const [summaryPrompts, setSummaryPrompts] = useState<{id:string; name:string; text:string}[]>([])
+  const [activeSummaryPromptId, setActiveSummaryPromptId] = useState<string>('')
+  const [selectedSummaryPromptId, setSelectedSummaryPromptId] = useState<string>('')
+  const [selectedSummaryPromptName, setSelectedSummaryPromptName] = useState<string>('')
+  
+  const [whisperModels, setWhisperModels] = useState<string[]>([])
+  const [availableWhisperModels] = useState<string[]>(['tiny', 'base', 'small', 'medium', 'large-v1', 'large-v2', 'large-v3'])
+  const [downloadingModel, setDownloadingModel] = useState<string | null>(null)
+  const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>('')
+  const [whisperModelStatus, setWhisperModelStatus] = useState<Record<string, string>>({})
+  
+  const [pipelineConfig, setPipelineConfig] = useState<{routes: {pattern: string; topic: string}[]; files: Record<string,string>} | null>(null)
+  const [savingPipeline, setSavingPipeline] = useState(false)
+  const [pipelineDialogs, setPipelineDialogs] = useState({ addRoute: false, editRoute: false, addFile: false, editFile: false })
+  const [selectedPipelineRoute, setSelectedPipelineRoute] = useState<{pattern: string, topic: string} | null>(null)
+  const [selectedPipelineFile, setSelectedPipelineFile] = useState<{topic: string, filename: string} | null>(null)
+  const [availableFiles, setAvailableFiles] = useState<string[]>([])
+  const [fileEditorOpen, setFileEditorOpen] = useState(false)
+  const [fileEditorFilename, setFileEditorFilename] = useState<string>('')
+  const [fileEditorContent, setFileEditorContent] = useState<string>('')
+  const [fileEditorLoading, setFileEditorLoading] = useState<boolean>(false)
+  const [fileEditorSaving, setFileEditorSaving] = useState<boolean>(false)
+  
+  const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
+    ai_providers: true, tts_providers: false, ui_settings: false, logs: false,
+    stats: false, feedback: false, prompts: false, personalities: false,
+    whisper: false, usage: false, memory: false, rag_management: false, user_management: false
+  })
+  const [uiSettings, setUiSettings] = useState<{ arena_public: boolean }>({ arena_public: false })
+  const [savingUi, setSavingUi] = useState(false)
+
+  const [usageItems, setUsageItems] = useState<any[]>([])
+  const [loadingUsage, setLoadingUsage] = useState(false)
+  const [usageStats, setUsageStats] = useState<any | null>(null)
+  const [usageDaily, setUsageDaily] = useState<Record<string, {count:number; tokens:number}>>({})
+  const [usageProviders, setUsageProviders] = useState<any>({})
+  const [usageModels, setUsageModels] = useState<any>({})
+  const [filterProvider, setFilterProvider] = useState<string>('')
+  const [filterModel, setFilterModel] = useState<string>('')
+  const [filterQ, setFilterQ] = useState<string>('')
+  const [filterDateFrom, setFilterDateFrom] = useState<string>('')
+  const [filterDateTo, setFilterDateTo] = useState<string>('')
+  const [page, setPage] = useState<number>(1)
+  const [pageSize, setPageSize] = useState<number>(50)
+  const [totalUsage, setTotalUsage] = useState<number>(0)
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(false)
+  const [refreshTick, setRefreshTick] = useState<number>(0)
+
+  const [tokenTestInput, setTokenTestInput] = useState('')
+  const [tokenTestResult, setTokenTestResult] = useState<any | null>(null)
+  const [testingTokens, setTestingTokens] = useState(false)
+  const [showTokenDetails, setShowTokenDetails] = useState<boolean>(false)
+
+  const [memoryStats, setMemoryStats] = useState<any | null>(null)
+  const [maxMessages, setMaxMessages] = useState<number>(10)
+  const [loadingMemory, setLoadingMemory] = useState(false)
+
+  const [systemLog, setSystemLog] = useState<string[]>([])
+  const [systemTail, setSystemTail] = useState<number>(300)
+  const [logDates, setLogDates] = useState<string[]>([])
+  const [selectedLogDate, setSelectedLogDate] = useState<string>('')
+  const [logProvider, setLogProvider] = useState<string>('')
+  const [logEvent, setLogEvent] = useState<string>('')
+  const [logPersonalityId, setLogPersonalityId] = useState<string>('')
+  const [logModel, setLogModel] = useState<string>('')
+  const [logConversationId, setLogConversationId] = useState<string>('')
+  const [logUserId, setLogUserId] = useState<string>('')
+  const [logTopic, setLogTopic] = useState<string>('')
+  const [logOptions, setLogOptions] = useState<{ providers: string[]; events: string[]; models: string[]; topics: string[]; user_ids: (string|number)[]; conversation_ids: string[]; personalities: {id:string; name:string}[] }>({ providers: [], events: [], models: [], topics: [], user_ids: [], conversation_ids: [], personalities: [] })
+  const [ragFilter, setRagFilter] = useState<string>('')
+  const [durationRange, setDurationRange] = useState<number[]>([0, 600000])
+  const [tokensRange, setTokensRange] = useState<number[]>([0, 200000])
+  const [logsAutoRefresh, setLogsAutoRefresh] = useState<boolean>(false)
+  const [logPrefsLoaded, setLogPrefsLoaded] = useState<boolean>(false)
+  const [interactions, setInteractions] = useState<any[]>([])
+  const [interactionsTotal, setInteractionsTotal] = useState<number>(0)
+  const [interactionsLoading, setInteractionsLoading] = useState<boolean>(false)
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [detailItem, setDetailItem] = useState<any | null>(null)
+  const [groupByRequest, setGroupByRequest] = useState<boolean>(true)
+  const [timelineOpen, setTimelineOpen] = useState(false)
+  const [timelineItems, setTimelineItems] = useState<any[]>([])
+
+  // --- ASYNC FUNCTIONS & HELPERS ---
+  const authFetch = async (url: string, init: RequestInit = {}) => {
+    const attachAuth = (token: string | null) => ({
+      ...(init.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    } as HeadersInit)
+
+    let access = CredentialManager.getAccessToken()
+    let res = await fetch(url, { ...init, headers: attachAuth(access) })
+
+    if (res.status === 401) {
+      const refresh = CredentialManager.getRefreshToken()
+      if (refresh) {
+        try {
+          const r = await fetch(`${BACKEND}/api/auth/refresh`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${refresh}` }
+          })
+          if (r.ok) {
+            const data = await r.json()
+            if (data?.access_token) {
+              CredentialManager.updateAccessToken(data.access_token)
+              access = data.access_token
+              res = await fetch(url, { ...init, headers: attachAuth(access) })
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (res.status === 401 || res.status === 403) setAuthWarning(true)
+    return res
+  }
+
+  const handlePanelExpansion = (panel: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
+    setExpandedPanels(prev => ({ ...prev, [panel]: isExpanded }))
+  }
+
+  const buildQuery = () => {
+    const params: Record<string,string|number> = { page, page_size: 10000 }
+    if (filterProvider) params.provider = filterProvider
+    if (filterModel) params.model = filterModel
+    if (filterQ) params.q = filterQ
+    if (filterDateFrom) params.start = filterDateFrom + 'T00:00:00'
+    if (filterDateTo) params.end = filterDateTo + 'T23:59:59'
+    return Object.entries(params).map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&')
+  }
+
+  const loadConfig = async () => {
+    try {
+      const response = await authFetch(`${BACKEND}/api/admin/config`)
+      const data = await response.json()
+      setConfig(data)
+      const memorySettings = data.memory_settings || {}
+      setMaxMessages(memorySettings.max_messages_per_session || 10)
+      if (data.ai_providers) {
+        Object.keys(data.ai_providers).forEach(provider => {
+          if (data.ai_providers[provider].enabled) {
+            // loadModels(provider) // Definizione di loadModels non presente nello snippet
+          }
+        })
+      }
+    } catch (error) {
+      setMessage('Errore nel caricamento configurazione')
+    }
+  }
+
+  const loadUiSettings = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/ui-settings`)
+      if (res.ok) {
+        const data = await res.json()
+        setUiSettings(data.settings || { arena_public: false })
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  const saveUiSettings = async () => {
+    try {
+      setSavingUi(true)
+      const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(uiSettings)
+      })
+      const data = await res.json()
+      setMessage(data.success ? 'Impostazioni UI salvate' : 'Errore salvataggio impostazioni UI')
+    } catch (e) {
+      setMessage('Errore salvataggio impostazioni UI')
+    } finally {
+      setSavingUi(false)
+    }
+  }
+
+  const loadSystemLog = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/system?tail=${systemTail}`)
+      const data = await res.json()
+      setSystemLog((data.lines || []) as string[])
+    } catch (e) {
+      setMessage('Errore caricamento system log')
+    }
+  }
+
+  const downloadSystem = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/system/download`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = `system.log`; a.click();
+      URL.revokeObjectURL(url)
+    } catch {
+      setMessage('Errore download system log')
+    }
+  }
+
+  const loadLogDates = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/dates`)
+      const data = await res.json()
+      const dates = (data.dates || []) as string[]
+      setLogDates(dates)
+      if (!selectedLogDate && dates.length > 0) setSelectedLogDate(dates[0])
+    } catch (e) { /* ignore */ }
+  }
+
+  const loadInteractions = async () => {
+    try {
+      setInteractionsLoading(true)
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      params.set('limit', '200'); params.set('offset', '0')
+      if (logProvider) params.set('provider', logProvider)
+      if (logEvent) params.set('event', logEvent)
+      if (logPersonalityId) params.set('personality_id', logPersonalityId)
+      if (logModel) params.set('model', logModel)
+      if (logConversationId) params.set('conversation_id', logConversationId)
+      if (logUserId) params.set('user_id', logUserId)
+      if (logTopic) params.set('topic', logTopic)
+      if (ragFilter) params.set('rag', ragFilter === 'true' ? 'true' : 'false')
+      if (durationRange) { params.set('min_duration_ms', String(durationRange[0])); params.set('max_duration_ms', String(durationRange[1])) }
+      if (tokensRange) { params.set('min_tokens', String(tokensRange[0])); params.set('max_tokens', String(tokensRange[1])) }
+      if (groupByRequest) params.set('group_by_request_id', 'true')
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions?${params.toString()}`)
+      const data = await res.json()
+      setInteractions(data.items || [])
+      setInteractionsTotal(data.total || 0)
+      if (!selectedLogDate && data.date) setSelectedLogDate(data.date)
+    } catch (e) {
+      setMessage('Errore caricamento interactions log')
+    } finally {
+      setInteractionsLoading(false)
+    }
+  }
+
+  const downloadInteractions = async () => {
+    try {
+      const params = selectedLogDate ? `?date=${encodeURIComponent(selectedLogDate)}` : ''
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/download${params}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = `interactions_${selectedLogDate || 'latest'}.jsonl`; a.click();
+      URL.revokeObjectURL(url)
+    } catch {
+      setMessage('Errore download interactions log')
+    }
+  }
+
+  const downloadInteractionsCsv = () => {
+    const lines: string[] = []
+    const esc = (s: any) => `"${String(s ?? '').replace(/"/g, '""')}"`
+    if (groupByRequest) {
+      lines.push(['start_ts','end_ts','request_id','provider','model','personality','topic','duration_ms','tokens_total','rag_used','events','raw_count'].join(','))
+      interactions.forEach((it: any) => {
+        const row = [it.start_ts, it.end_ts, it.request_id, it.provider || it.provider_header, it.model, it.personality_name || it.personality_id, it.topic, it.duration_ms, it.tokens_total, it.rag_used, (it.events||[]).join('|'), it.raw_count]
+        lines.push(row.map(esc).join(','))
+      })
+    } else {
+      lines.push(['ts','request_id','event','provider','model','personality','topic','duration_ms','tokens','rag_used'].join(','))
+      interactions.forEach((it: any) => {
+        const tokens = (it.tokens?.total_tokens ?? it.tokens?.total ?? '')
+        const row = [it.ts, it.request_id, it.event, it.provider || it.provider_header, it.model, it.personality_name || it.personality_id, it.topic, it.duration_ms, tokens, it.rag_used]
+        lines.push(row.map(esc).join(','))
+      })
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = groupByRequest ? 'interactions_grouped.csv' : 'interactions_events.csv'; a.click();
+    URL.revokeObjectURL(url)
+  }
+
+  const loadLogFilters = async () => {
+    try {
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions/filters?${params.toString()}`)
+      const data = await res.json()
+      setLogOptions({
+        providers: data.providers || [], events: data.events || [], models: data.models || [],
+        topics: data.topics || [], user_ids: data.user_ids || [], conversation_ids: data.conversation_ids || [],
+        personalities: data.personalities || []
+      })
+    } catch (e) { /* ignore */ }
+  }
+
+  const openDetails = (item: any) => { setDetailItem(item); setDetailOpen(true) }
+  const closeDetails = () => { setDetailOpen(false); setDetailItem(null) }
+  const copyDetails = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(detailItem, null, 2))
+      setMessage('Dettagli copiati')
+    } catch {
+      setMessage('Copia fallita')
+    }
+  }
+
+  const openTimeline = async (requestId: string) => {
+    try {
+      const params = new URLSearchParams()
+      if (selectedLogDate) params.set('date', selectedLogDate)
+      params.set('limit', '1000')
+      params.set('request_id', requestId)
+      const res = await authFetch(`${BACKEND}/api/admin/logs/interactions?${params.toString()}`)
+      const data = await res.json()
+      setTimelineItems(data.items || [])
+      setTimelineOpen(true)
+    } catch {
+      setMessage('Errore caricamento timeline')
+    }
+  }
+
+  const loadUsage = async () => {
+    try {
+      setLoadingUsage(true)
+      const qs = buildQuery()
+      const res = await authFetch(`${BACKEND}/api/admin/usage?${qs}`)
+      const data = await res.json()
+      if (data.mode === 'query') {
+        setUsageItems(data.items || [])
+        setUsageDaily(data.daily || {})
+        setUsageProviders(data.providers || {})
+        setUsageModels(data.models || {})
+        setTotalUsage(data.total || 0)
+      } else {
+        setUsageItems(data.items || [])
+        setTotalUsage(data.items?.length || 0)
+      }
+      const statsRes = await authFetch(`${BACKEND}/api/admin/usage/stats`)
+      const statsData = await statsRes.json()
+      setUsageStats(statsData)
+    } catch (e) {
+      setMessage('Errore caricamento usage')
+    } finally {
+      setLoadingUsage(false)
+    }
+  }
+
+  const presetRange = (type: string) => {
+    const today = new Date()
+    const toISODate = (d: Date) => d.toISOString().slice(0,10)
+    if (type === 'clear') { setFilterDateFrom(''); setFilterDateTo(''); }
+    else if (type === 'oggi') { setFilterDateFrom(toISODate(today)); setFilterDateTo(toISODate(today)); }
+    else if (type === 'ieri') { const y = new Date(today.getTime()-86400000); setFilterDateFrom(toISODate(y)); setFilterDateTo(toISODate(y)); }
+    else if (type === '7g') { const s = new Date(today.getTime()-6*86400000); setFilterDateFrom(toISODate(s)); setFilterDateTo(toISODate(today)); }
+    else if (type === '30g') { const s = new Date(today.getTime()-29*86400000); setFilterDateFrom(toISODate(s)); setFilterDateTo(toISODate(today)); }
+    setPage(1)
+  }
+
+  const exportUsage = async (format: 'csv' | 'jsonl') => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/usage/export?format=${format}`)
+      const text = await res.text()
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = `usage_export.${format}`; a.click();
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setMessage('Errore export')
+    }
+  }
+
+  const resetUsage = async () => {
+    if (!window.confirm('Sicuro di voler cancellare i log di utilizzo?')) return
+    await authFetch(`${BACKEND}/api/admin/usage/reset`, { method: 'POST' })
+    loadUsage()
+  }
+
+  const updatePromptStats = (text: string) => {
+    setPromptChars(text.length)
+    setPromptTokens(Math.max(1, Math.round(text.length / 4)))
+  }
+
+  const loadSystemPrompts = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`)
+      if (res.ok) {
+        const data = await res.json()
+        const list = (data.prompts || []) as {id:string; name:string; text:string}[]
+        const activeId = data.active_id as string
+        setSystemPrompts(list)
+        setActiveSystemPromptId(activeId)
+        const current = list.find(p=>p.id===activeId) || list[0]
+        if (current) {
+          setSelectedSystemPromptId(current.id)
+          setSelectedSystemPromptName(current.name)
+          setSystemPrompt(current.text || '')
+          updatePromptStats(current.text || '')
+        }
+        return
+      }
+    } catch {}
+    // Fallback
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompt`)
+      const data = await res.json()
+      const text = data.prompt || ''
+      const fallback = [{id:'default', name:'Default', text}]
+      setSystemPrompts(fallback); setActiveSystemPromptId('default'); setSelectedSystemPromptId('default');
+      setSelectedSystemPromptName('Default'); setSystemPrompt(text); updatePromptStats(text);
+    } catch (e) {
+      setMessage('Errore caricamento system prompt')
+    }
+  }
+
+  const saveSystemPrompt = async () => {
+    try {
+      setSavingPrompt(true)
+      const payload = { id: selectedSystemPromptId || undefined, name: selectedSystemPromptName || 'Profilo', text: systemPrompt, set_active: false }
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Prompt salvato con successo'); await loadSystemPrompts();
+      } else setMessage('Errore salvataggio prompt')
+      updatePromptStats(systemPrompt)
+    } catch (e) {
+      setMessage('Errore salvataggio prompt')
+    } finally {
+      setSavingPrompt(false)
+    }
+  }
+
+  const setActiveSystemPrompt = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts/activate?prompt_id=${encodeURIComponent(selectedSystemPromptId)}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setActiveSystemPromptId(selectedSystemPromptId); setMessage('Profilo attivato');
+      } else setMessage('Errore attivazione profilo')
+    } catch (e) {
+      setMessage('Errore attivazione profilo')
+    }
+  }
+
+  const createNewSystemPrompt = async () => {
+    const name = window.prompt('Nome del nuovo profilo:', 'Nuovo profilo')
+    if (!name) return;
+    try {
+      setSavingPrompt(true)
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text: '', set_active: false }) })
+      const data = await res.json()
+      if (data.success) {
+        await loadSystemPrompts(); setSelectedSystemPromptId(data.id); setSelectedSystemPromptName(name);
+        setSystemPrompt(''); updatePromptStats('');
+      } else setMessage('Errore creazione profilo')
+    } catch (e) {
+      setMessage('Errore creazione profilo')
+    } finally {
+      setSavingPrompt(false)
+    }
+  }
+
+  const deleteSystemPromptEntry = async () => {
+    if (!selectedSystemPromptId || systemPrompts.length <= 1) return
+    if (!window.confirm('Eliminare questo profilo di prompt?')) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/system-prompts/${encodeURIComponent(selectedSystemPromptId)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Profilo eliminato'); await loadSystemPrompts();
+      } else setMessage('Errore eliminazione profilo')
+    } catch (e) {
+      setMessage('Errore eliminazione profilo')
+    }
+  }
+
+  const loadSummaryPrompts = async () => {
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompts`)
+      if (res.ok) {
+        const data = await res.json()
+        const list = (data.prompts || []) as {id:string; name:string; text:string}[]
+        const activeId = data.active_id as string
+        setSummaryPrompts(list); setActiveSummaryPromptId(activeId);
+        const current = list.find(p=>p.id===activeId) || list[0]
+        if (current) {
+          setSelectedSummaryPromptId(current.id); setSelectedSummaryPromptName(current.name); setSummaryPrompt(current.text || '');
+        }
+        return
+      }
+    } catch {}
+    // Fallback
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompt`)
+      const data = await res.json()
+      const text = data.prompt || ''
+      const fallback = [{id:'default', name:'Default', text}]
+      setSummaryPrompts(fallback); setActiveSummaryPromptId('default'); setSelectedSummaryPromptId('default');
+      setSelectedSummaryPromptName('Default'); setSummaryPrompt(text);
+    } catch (e) {
+      setMessage('Errore caricamento summary prompt')
+    }
+  }
+
+  const saveSummaryPromptMulti = async () => {
+    try {
+      setSavingSummaryPrompt(true)
+      const payload = { id: selectedSummaryPromptId || undefined, name: selectedSummaryPromptName || 'Profilo', text: summaryPrompt, set_active: false }
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      const data = await res.json()
+      if (data.success) {
+        setMessage('Summary prompt salvato'); await loadSummaryPrompts();
+      } else setMessage('Errore salvataggio summary prompt')
+    } catch (e) {
+      setMessage('Errore salvataggio summary prompt')
+    } finally {
+      setSavingSummaryPrompt(false)
+    }
+  }
+
+  const setActiveSummaryPrompt = async () => {
+    if (!selectedSummaryPromptId) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompts/${encodeURIComponent(selectedSummaryPromptId)}/activate`, { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setActiveSummaryPromptId(selectedSummaryPromptId); setMessage('Summary prompt attivato');
+      } else setMessage('Errore attivazione summary prompt')
+    } catch (e) {
+      setMessage('Errore attivazione summary prompt')
+    }
+  }
+
+  const createNewSummaryPrompt = async () => {
+    const name = window.prompt('Nome del nuovo summary prompt:', 'Nuovo summary')
+    if (!name) return;
+    try {
+      setSavingSummaryPrompt(true)
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, text: '', set_active: false }) })
+      const data = await res.json()
+      if (data.success) {
+        await loadSummaryPrompts(); setSelectedSummaryPromptId(data.id);
+        setSelectedSummaryPromptName(name); setSummaryPrompt('');
+      } else setMessage('Errore creazione summary prompt')
+    } catch (e) {
+      setMessage('Errore creazione summary prompt')
+    } finally {
+      setSavingSummaryPrompt(false)
+    }
+  }
+
+  const deleteSummaryPromptEntry = async () => {
+    if (!selectedSummaryPromptId || summaryPrompts.length <= 1) return
+    if (!window.confirm('Eliminare questo summary prompt?')) return
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/summary-prompts/${encodeURIComponent(selectedSummaryPromptId)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) {
+        await loadSummaryPrompts(); setMessage('Summary prompt eliminato');
+      } else setMessage('Errore eliminazione summary prompt')
+    } catch (e) {
+      setMessage('Errore eliminazione summary prompt')
+    }
+  }
+
+  // --- EFFECTS ---
+  useEffect(() => {
+    loadConfig()
+    loadSystemPrompts()
+    loadSummaryPrompts()
+    loadUiSettings()
+  }, [])
+
+  useEffect(() => {
+    if (!autoRefresh) return
+    const id = setInterval(() => setRefreshTick(t => t+1), 10000)
+    return () => clearInterval(id)
+  }, [autoRefresh])
+
+  useEffect(() => { 
+    loadUsage() 
+  }, [page, pageSize, refreshTick, filterProvider, filterModel, filterQ, filterDateFrom, filterDateTo])
+
+  useEffect(() => {
+    if (logPrefsLoaded) return
+    try {
+      const g = localStorage.getItem('logs_group'); if (g !== null) setGroupByRequest(g === 'true')
+      const d = localStorage.getItem('logs_date'); if (d) setSelectedLogDate(d)
+      const p = localStorage.getItem('logs_provider'); if (p !== null) setLogProvider(p)
+      const e = localStorage.getItem('logs_event'); if (e !== null) setLogEvent(e)
+      const per = localStorage.getItem('logs_personality'); if (per !== null) setLogPersonalityId(per)
+      const m = localStorage.getItem('logs_model'); if (m !== null) setLogModel(m)
+      const cid = localStorage.getItem('logs_conv'); if (cid !== null) setLogConversationId(cid)
+      const uid = localStorage.getItem('logs_user'); if (uid !== null) setLogUserId(uid)
+      const t = localStorage.getItem('logs_topic'); if (t !== null) setLogTopic(t)
+      const rag = localStorage.getItem('logs_rag'); if (rag !== null) setRagFilter(rag)
+      const dr = localStorage.getItem('logs_duration'); if (dr) setDurationRange(JSON.parse(dr))
+      const tr = localStorage.getItem('logs_tokens'); if (tr) setTokensRange(JSON.parse(tr))
+      const ar = localStorage.getItem('logs_auto'); if (ar !== null) setLogsAutoRefresh(ar === 'true')
+    } catch {}
+    setLogPrefsLoaded(true)
+  }, [logPrefsLoaded])
+
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_group', String(groupByRequest)) }, [groupByRequest, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded && selectedLogDate) localStorage.setItem('logs_date', selectedLogDate) }, [selectedLogDate, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_provider', logProvider) }, [logProvider, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_event', logEvent) }, [logEvent, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_personality', logPersonalityId) }, [logPersonalityId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_model', logModel) }, [logModel, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_conv', logConversationId) }, [logConversationId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_user', logUserId) }, [logUserId, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_topic', logTopic) }, [logTopic, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_rag', ragFilter) }, [ragFilter, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_duration', JSON.stringify(durationRange)) }, [durationRange, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_tokens', JSON.stringify(tokensRange)) }, [tokensRange, logPrefsLoaded])
+  useEffect(() => { if (logPrefsLoaded) localStorage.setItem('logs_auto', String(logsAutoRefresh)) }, [logsAutoRefresh, logPrefsLoaded])
+
+  useEffect(() => {
+    if (!expandedPanels.logs || !logsAutoRefresh) return
+    const id = setInterval(() => { loadInteractions() }, 10000)
+    return () => clearInterval(id)
+  }, [expandedPanels.logs, logsAutoRefresh, selectedLogDate, groupByRequest, logProvider, logEvent, logPersonalityId, logModel, logConversationId, logUserId, logTopic, ragFilter, durationRange, tokensRange])
+
+  // --- RENDER ---
+  if (!authenticated) {
+    return <Container><Typography>Non autenticato.</Typography></Container>
+  }
+
+  return (
+    <Container maxWidth="lg" sx={{ py: 4 }}>
+      <Typography variant="h4" gutterBottom>Admin Panel</Typography>
+      {message && <Alert severity="info" sx={{ mb:2 }} onClose={()=>setMessage('')}>{message}</Alert>}
+      {authWarning && <Alert severity="warning" sx={{ mb: 2 }}>Attenzione: la sessione potrebbe essere scaduta. Ricarica la pagina se riscontri problemi.</Alert>}
+      
+      <Stack spacing={2}>
+        {/* Pannello Gestione Utenti */}
+        <Accordion expanded={expandedPanels.user_management} onChange={handlePanelExpansion('user_management')}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Gestione Utenti</Typography></AccordionSummary>
+          <AccordionDetails><UserManagementComponent /></AccordionDetails>
+        </Accordion>
+
+        {/* Pannello Prompts di Sistema */}
+        <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Prompts di Sistema</Typography></AccordionSummary>
+          <AccordionDetails>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:2 }} flexWrap="wrap">
+              <FormControl size="small" sx={{ minWidth: 180, flexGrow: 1 }}>
+                <InputLabel>Profilo</InputLabel>
+                <Select label="Profilo" value={selectedSystemPromptId} onChange={e=>{
+                  const id = e.target.value as string; setSelectedSystemPromptId(id);
+                  const p = systemPrompts.find(x=>x.id===id);
+                  if (p) { setSelectedSystemPromptName(p.name); setSystemPrompt(p.text); updatePromptStats(p.text) }
+                }}>
+                  {systemPrompts.map(p=> <MenuItem key={p.id} value={p.id}>{p.name}{p.id===activeSystemPromptId?' (attivo)':''}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <TextField size="small" label="Nome Profilo" value={selectedSystemPromptName} onChange={e=>setSelectedSystemPromptName(e.target.value)} sx={{flexGrow: 1}} />
+              <Button size="small" variant="contained" onClick={createNewSystemPrompt} startIcon={<AddIcon />}>Nuovo</Button>
+              <Button size="small" variant="outlined" onClick={setActiveSystemPrompt} disabled={!selectedSystemPromptId || selectedSystemPromptId===activeSystemPromptId}>Attiva</Button>
+              <Button size="small" variant="contained" color="success" onClick={saveSystemPrompt} disabled={savingPrompt}>Salva</Button>
+              <Button size="small" variant="outlined" color="error" onClick={deleteSystemPromptEntry} disabled={!selectedSystemPromptId || systemPrompts.length <= 1}>Elimina</Button>
+            </Stack>
+            <TextField multiline minRows={systemPromptRows} value={systemPrompt} onChange={e=>{ setSystemPrompt(e.target.value); updatePromptStats(e.target.value) }} fullWidth label={`Prompt (${promptChars} chars ~${promptTokens} tokens)`} />
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Pannello Prompts Riassunti */}
+        <Accordion>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Prompts per Riassunti</Typography></AccordionSummary>
+          <AccordionDetails>
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:2 }} flexWrap="wrap">
+              <FormControl size="small" sx={{ minWidth: 180, flexGrow: 1 }}>
+                <InputLabel>Profilo Summary</InputLabel>
+                <Select label="Profilo Summary" value={selectedSummaryPromptId} onChange={e=>{
+                  const id = e.target.value as string; setSelectedSummaryPromptId(id);
+                  const p = summaryPrompts.find(x=>x.id===id);
+                  if (p) { setSelectedSummaryPromptName(p.name); setSummaryPrompt(p.text) }
+                }}>
+                  {summaryPrompts.map(p=> <MenuItem key={p.id} value={p.id}>{p.name}{p.id===activeSummaryPromptId?' (attivo)':''}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <TextField size="small" label="Nome Summary" value={selectedSummaryPromptName} onChange={e=>setSelectedSummaryPromptName(e.target.value)} sx={{flexGrow: 1}} />
+              <Button size="small" variant="contained" onClick={createNewSummaryPrompt} startIcon={<AddIcon />}>Nuovo</Button>
+              <Button size="small" variant="outlined" onClick={setActiveSummaryPrompt} disabled={!selectedSummaryPromptId || selectedSummaryPromptId===activeSummaryPromptId}>Attiva</Button>
+              <Button size="small" variant="contained" color="success" onClick={saveSummaryPromptMulti} disabled={savingSummaryPrompt}>Salva</Button>
+              <Button size="small" variant="outlined" color="error" onClick={deleteSummaryPromptEntry} disabled={!selectedSummaryPromptId || summaryPrompts.length <= 1}>Elimina</Button>
+            </Stack>
+            <TextField multiline minRows={summaryPromptRows} value={summaryPrompt} onChange={e=> setSummaryPrompt(e.target.value)} fullWidth label="Prompt per Riassunto" />
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Pannello Gestione RAG */}
+        <Accordion expanded={expandedPanels.rag_management} onChange={handlePanelExpansion('rag_management')}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Gestione RAG</Typography></AccordionSummary>
+          <AccordionDetails>
+            <AdminRAGManagement />
+          </AccordionDetails>
+        </Accordion>
+
+        {/* Aggiungere qui gli altri pannelli (Accordion) con la loro logica specifica */}
+        <Accordion expanded={expandedPanels.ai_providers} onChange={handlePanelExpansion('ai_providers')}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Provider AI</Typography></AccordionSummary>
+            <AccordionDetails><Typography>Contenuto per la gestione dei provider AI...</Typography></AccordionDetails>
+        </Accordion>
+        <Accordion expanded={expandedPanels.tts_providers} onChange={handlePanelExpansion('tts_providers')}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Provider TTS</Typography></AccordionSummary>
+            <AccordionDetails><Typography>Contenuto per la gestione dei provider TTS...</Typography></AccordionDetails>
+        </Accordion>
+        <Accordion expanded={expandedPanels.logs} onChange={handlePanelExpansion('logs')}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Logs</Typography></AccordionSummary>
+            <AccordionDetails><Typography>Contenuto per la visualizzazione dei log...</Typography></AccordionDetails>
+        </Accordion>
+        <Accordion expanded={expandedPanels.usage} onChange={handlePanelExpansion('usage')}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}><Typography>Utilizzo e Statistiche</Typography></AccordionSummary>
+            <AccordionDetails><Typography>Contenuto per le statistiche di utilizzo...</Typography></AccordionDetails>
+        </Accordion>
+
+      </Stack>
+    </Container>
+  )
+}

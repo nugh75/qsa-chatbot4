@@ -74,8 +74,12 @@ class WhisperService:
                 "disk_space": "~6GB"
             }
         }
-        # Auto-download del modello small al primo avvio
-        self.ensure_default_model()
+        # Auto-download del modello small al primo avvio (configurabile)
+        auto_dl = os.environ.get("WHISPER_AUTO_DOWNLOAD", "1")
+        if auto_dl.lower() in ("1", "true", "yes", "on"):
+            self.ensure_default_model()
+        else:
+            print("WHISPER_AUTO_DOWNLOAD disabilitato: nessun download automatico del modello 'small'.")
     
     def ensure_default_model(self):
         """Assicura che ci sia almeno il modello small disponibile"""

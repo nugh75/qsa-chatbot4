@@ -334,7 +334,7 @@ const SurveyResults: React.FC = () => {
           )}
           {/* Demografia PER PRIMA */}
           {data.demographics && (
-            <Paper elevation={2} sx={{ p:3, borderRadius:4, mb:4, background:'linear-gradient(135deg,#fff,#f9fbff)' }}>
+            <Paper elevation={2} sx={{ p:3, borderRadius:2, mb:4, background:'linear-gradient(135deg,#fff,#f9fbff)' }}>
               <Box sx={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:2, mb:1 }}>
                 <Typography variant="subtitle1" sx={{ fontWeight:600 }}>Dati demografici</Typography>
                 <ToggleButtonGroup size="small" exclusive value={demoChart} onChange={(e, val)=> val && setDemoChart(val)}>
@@ -345,7 +345,7 @@ const SurveyResults: React.FC = () => {
               <Grid container spacing={3}>
                 {data.demographics.eta && (
                   <Grid item xs={12} md={6}>
-                    <Paper variant="outlined" sx={{ p:2, borderRadius:3 }}>
+                    <Paper variant="outlined" sx={{ p:2, borderRadius:2 }}>
                       <SectionHeader title="Distribuzione età" open={openAge} onToggle={()=> setOpenAge(v=>!v)} />
                       <Collapse in={openAge} timeout="auto" unmountOnExit>
                       <Zoomable
@@ -405,7 +405,7 @@ const SurveyResults: React.FC = () => {
                 )}
                 {data.demographics.sesso && (
                   <Grid item xs={12} md={6}>
-                    <Paper variant="outlined" sx={{ p:2, borderRadius:3 }}>
+                    <Paper variant="outlined" sx={{ p:2, borderRadius:2 }}>
                       <SectionHeader title="Sesso" open={openSesso} onToggle={()=> setOpenSesso(v=>!v)} />
                       <Collapse in={openSesso} timeout="auto" unmountOnExit>
                         <Zoomable
@@ -459,7 +459,7 @@ const SurveyResults: React.FC = () => {
                 )}
                 {data.demographics.istruzione && (
                   <Grid item xs={12} md={6}>
-                    <Paper variant="outlined" sx={{ p:2, borderRadius:3 }}>
+                    <Paper variant="outlined" sx={{ p:2, borderRadius:2 }}>
                       <SectionHeader title="Istruzione" open={openIstruzione} onToggle={()=> setOpenIstruzione(v=>!v)} />
                       <Collapse in={openIstruzione} timeout="auto" unmountOnExit>
                         <Zoomable
@@ -710,7 +710,7 @@ const SurveyResults: React.FC = () => {
           )}
 
           {/* Toolbar dinamica per viste */}
-          <Paper variant="outlined" sx={{ mb:3, p:2, borderRadius:3 }}>
+          <Paper variant="outlined" sx={{ mb:3, p:2, borderRadius:2 }}>
             <Box sx={{ display:'flex', flexWrap:'wrap', gap:2, alignItems:'center' }}>
               <FormControl size="small" sx={{ minWidth: 160 }}>
                 <InputLabel>Raggruppa per</InputLabel>
@@ -735,7 +735,7 @@ const SurveyResults: React.FC = () => {
 
           {/* Vista dinamica: medie per gruppo e domanda selezionata */}
           {groupBy !== 'none' && (
-            <Paper elevation={2} sx={{ p:3, borderRadius:4, mb:4 }}>
+            <Paper elevation={2} sx={{ p:3, borderRadius:2, mb:4 }}>
               <Typography variant="subtitle1" sx={{ fontWeight:600, mb:2 }}>Media per {groupBy} – {labels[question] || question}</Typography>
               <Box sx={{ display:'flex', alignItems:'flex-end', gap:1, height:160 }}>
                 {(() => {
@@ -764,7 +764,7 @@ const SurveyResults: React.FC = () => {
           )}
 
           {/* Grafico a linee per tutte le domande Likert */}
-          <Paper elevation={2} sx={{ p:3, borderRadius:4, mb:4 }}>
+          <Paper elevation={2} sx={{ p:3, borderRadius:2, mb:4 }}>
             <Box sx={{ display:'flex', alignItems:'center', justifyContent:'space-between', mb:1 }}>
               <Typography variant="subtitle1" sx={{ fontWeight:600 }}>Grafico a linee (Likert 1–5)</Typography>
               <IconButton size="small" onClick={()=> setOpenLikertLines(v=>!v)}>
@@ -777,7 +777,7 @@ const SurveyResults: React.FC = () => {
           </Paper>
 
           {/* Sezione distribuzioni */}
-          <Paper elevation={3} sx={{ mb:4, p:3, borderRadius:4, background:'linear-gradient(135deg,#e3f2fd 0%, #e8f5e9 100%)' }}>
+          <Paper elevation={3} sx={{ mb:4, p:3, borderRadius:2, background:'linear-gradient(135deg,#e3f2fd 0%, #e8f5e9 100%)' }}>
             <Box sx={{ display:'flex', alignItems:'center', justifyContent:'space-between', mb:2 }}>
               <Typography variant="subtitle1" sx={{ fontWeight:600, display:'flex', alignItems:'center', gap:1 }}>
                 Andamento risposte (1–5)
@@ -794,7 +794,7 @@ const SurveyResults: React.FC = () => {
                 const palette = ['#e57373','#ffb74d','#64b5f6','#4db6ac','#9575cd']
                 return (
                   <Grid item xs={12} sm={6} md={4} lg={3} key={k}>
-                    <Paper variant="outlined" sx={{ p:2, borderRadius:3, bgcolor:'#ffffffcc', backdropFilter:'blur(4px)' }}>
+                    <Paper variant="outlined" sx={{ p:2, borderRadius:2, bgcolor:'#ffffffcc', backdropFilter:'blur(4px)' }}>
                       <Box sx={{ display:'flex', justifyContent:'space-between', alignItems:'center', mb:1 }}>
                         <Typography variant="subtitle2" sx={{ fontWeight:600 }}>{labels[k] || k}</Typography>
                         <Chip size="small" label={v.avg ? v.avg.toFixed(2) : '-'} color="primary" variant="outlined" />
@@ -835,7 +835,7 @@ const SurveyResults: React.FC = () => {
           </Paper>
 
           {/* Tabella riepilogo (con media, deviazione standard, mediana) */}
-          <Paper variant="outlined" sx={{ mb:4, borderRadius:4, overflow:'hidden' }}>
+          <Paper variant="outlined" sx={{ mb:4, borderRadius:2, overflow:'hidden' }}>
             <Table size="small">
               <TableHead>
                 <TableRow sx={{ bgcolor:'#1976d2' }}>
@@ -866,7 +866,7 @@ const SurveyResults: React.FC = () => {
 
           
           {/* Risposte aperte */}
-          <Paper elevation={2} sx={{ p:3, borderRadius:4, background:'linear-gradient(135deg,#fafafa,#f0f4ff)' }}>
+          <Paper elevation={2} sx={{ p:3, borderRadius:2, background:'linear-gradient(135deg,#fafafa,#f0f4ff)' }}>
             <Box sx={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:2, mb:2 }}>
               <Typography variant="subtitle1" sx={{ fontWeight:600 }}>Risposte aperte</Typography>
               <TextField size="small" placeholder="Cerca testo..." value={filter} onChange={e=> setFilter(e.target.value)} sx={{ maxWidth:280 }} />
@@ -876,7 +876,7 @@ const SurveyResults: React.FC = () => {
               {openAnswers
                 .filter(a=> !filter || a.text.toLowerCase().includes(filter.toLowerCase()))
                 .map((a,i)=>(
-                  <Paper key={i} variant="outlined" sx={{ p:1.5, borderRadius:3, background:'#fff', position:'relative' }}>
+                  <Paper key={i} variant="outlined" sx={{ p:1.5, borderRadius:2, background:'#fff', position:'relative' }}>
                     <Typography variant="caption" sx={{ color:'text.secondary', display:'block', mb:0.5 }}>{a.type} · {new Date(a.submitted_at).toLocaleString()}</Typography>
                     <Typography variant="body2" sx={{ whiteSpace:'pre-wrap', lineHeight:1.5 }}>{a.text}</Typography>
                   </Paper>

@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
-import VolumeUpIcon from '@mui/icons-material/VolumeUp'
+// VolumeUpIcon removed from inline usage (handled by HeaderBar)
 import MicIcon from '@mui/icons-material/Mic'
 import StopIcon from '@mui/icons-material/Stop'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
@@ -12,6 +12,7 @@ import ThumbDownIcon from '@mui/icons-material/ThumbDown'
 import CheckIcon from '@mui/icons-material/Check'
 import MenuIcon from '@mui/icons-material/Menu'
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline'
+import MoreVertIcon from '@mui/icons-material/MoreVert'
 import LoginIcon from '@mui/icons-material/Login'
 import LogoutIcon from '@mui/icons-material/Logout'
 import SearchIcon from '@mui/icons-material/Search'
@@ -33,6 +34,8 @@ import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
+import { ThemeProvider } from '@mui/material/styles'
+import { appTheme } from './theme'
 import RAGContextSelector from './components/RAGContextSelector'
 import SurveyForm from './SurveyForm'
 // (SurveyLink rimosso: inline link custom)
@@ -40,6 +43,9 @@ import SurveyResults from './SurveyResults'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useTheme, useMediaQuery } from '@mui/material'
+import MobileChatBar from './components/MobileChatBar'
+import HeaderBar from './components/HeaderBar'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -200,6 +206,13 @@ const AppContent: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
+  const isVerySmall = useMediaQuery('(max-width:420px)')
+  const [moreAnchor, setMoreAnchor] = useState<null | HTMLElement>(null)
+  const openMore = Boolean(moreAnchor)
+  const handleOpenMore = (e: React.MouseEvent<HTMLElement>) => setMoreAnchor(e.currentTarget)
+  const handleCloseMore = () => setMoreAnchor(null)
 
   // Converte Markdown in testo semplice per TTS (rimuove tag e simboli)
   const sanitizeMarkdownToPlainText = (input: string): string => {
@@ -774,7 +787,46 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Container maxWidth="xl" sx={{ py: 3, px: 2 }}>
+    <Container maxWidth={isMobile ? 'sm' : 'xl'} sx={{ py: isMobile ? 1 : 3, px: isMobile ? 1 : 2, pb: isMobile ? 10 : 3 }}>
+      {/* Unified responsive header bar with personality, voice and download */}
+      <HeaderBar
+        personalities={personalities}
+        selectedPersonalityId={selectedPersonalityId}
+        onChangePersonality={(id)=>{
+          setSelectedPersonalityId(id)
+          const p = personalities.find(pp=>pp.id===id)
+          if (p && enabledProviders.includes(p.provider)) setProvider(p.provider as any)
+        }}
+        ttsProviders={enabledTtsProviders}
+        ttsProvider={ttsProvider}
+        onChangeTts={(p)=> setTtsProvider(p as any)}
+        onDownloadChat={messages.length ? ()=>{
+          const blob = new Blob([messages.map(m=>`[${new Date(m.ts).toLocaleString()}] ${m.role}: ${m.content}`).join('\n\n')], { type:'text/plain' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = 'chat.txt'
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+        } : undefined}
+        onNewChat={()=>{
+          setMessages([{ 
+            role: 'assistant', 
+            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
+            ts: Date.now()
+          }]);
+          setCurrentConversationId(null);
+        }}
+        onShowGuide={()=> setShowHelp(true)}
+        onOpenArena={()=> window.location.href = '/arena'}
+        showArena={user?.is_admin || arenaPublic}
+        isAuthenticated={isAuthenticated}
+        onLogin={()=> setShowLoginDialog(true)}
+        onLogout={handleLogout}
+        dense={isMobile}
+      />
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
         <Alert severity="warning" sx={{ mb: 2 }} action={
@@ -786,8 +838,9 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
       
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:2 }}>
-        <Stack direction="row" spacing={1} alignItems="center">
+  {/* Legacy top bar simplified: only left chat title/menu and mobile/overflow controls; desktop actions moved to HeaderBar */}
+  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:2, flexWrap: 'nowrap' }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth:0 }}>
           <Tooltip title="Menu conversazioni">
             <IconButton
               size="small"
@@ -798,7 +851,7 @@ const AppContent: React.FC = () => {
             </IconButton>
           </Tooltip>
           <ChatAvatar key={selectedPersonalityId || 'default'} src={assistantAvatarSrc} />
-          <Typography variant="h6">Counselorbot</Typography>
+          {!isVerySmall && <Typography variant="h6" noWrap>Counselorbot</Typography>}
           {user?.is_admin && (
             <Chip
               component="a"
@@ -811,141 +864,44 @@ const AppContent: React.FC = () => {
             />
           )}
         </Stack>
-        
-        {/* Controlli principali */}
-        <Stack direction="row" spacing={1} alignItems="center">
-          {/* Nuova conversazione */}
-          <Tooltip title="Nuova conversazione">
-            <IconButton
-              size="small"
-              onClick={() => {
-                setMessages([{
-                  role: 'assistant', 
-                  content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
-                  ts: Date.now()
-                }]);
-                setCurrentConversationId(null);
-              }}
-              sx={{ color: 'primary.main' }}
-            >
-              <Typography component="span" sx={{ fontSize: '1.2rem' }}>+</Typography>
-            </IconButton>
-          </Tooltip>
-          
-          {/* Selezione personalità (preset) con icona */}
-          <Box sx={{ display:'flex', alignItems:'center', gap: 0.5 }}>
-            <PersonIcon sx={{ color:'text.secondary', fontSize: 20 }} />
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <Select
-                value={selectedPersonalityId || ''}
-                onChange={(e) => {
-                  const id = e.target.value as string
-                  setSelectedPersonalityId(id)
-                  const p = personalities.find(pp=>pp.id===id)
-                  if (p && enabledProviders.includes(p.provider)) setProvider(p.provider as any)
-                }}
-                displayEmpty
-                renderValue={(value) => {
-                  const p = personalities.find(pp => pp.id === value)
-                  if (!p) return <em>Nessuna personalità</em> as any
-                  return (<Typography variant="body2">{p.name}</Typography>)
-                }}
-                sx={{ height: 32, borderRadius: 2, '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' } }}
-              >
-                {personalities.length === 0 && (
-                  <MenuItem value="">
-                    <em>Nessuna personalità</em>
-                  </MenuItem>
-                )}
-                {personalities.map(p => (
-                  <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-
-          {/* Selezione voce (TTS) con icona */}
-          <Box sx={{ display:'flex', alignItems:'center', gap: 0.5 }}>
-            <VolumeUpIcon sx={{ color:'text.secondary', fontSize: 20 }} />
-            <FormControl size="small" sx={{ minWidth: 120 }}>
-              <Select
-                value={enabledTtsProviders.includes(ttsProvider) ? ttsProvider : ''}
-                onChange={(e) => setTtsProvider((e.target.value as any) || ttsProvider)}
-                sx={{ 
-                  height: 32,
-                  borderRadius: 2,
-                  '& .MuiOutlinedInput-notchedOutline': { borderColor: '#ddd' }
-                }}
-              >
-                {enabledTtsProviders.length === 0 && (
-                  <MenuItem value=""><em>Nessuna voce disponibile</em></MenuItem>
-                )}
-                {enabledTtsProviders.map(ttsKey => (
-                  <MenuItem key={ttsKey} value={ttsKey}>
-                    {ttsLabels[ttsKey] || ttsKey}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-
-          {/* Guida rapida */}
-          <Tooltip title="Guida">
-            <IconButton
-              size="small"
-              onClick={() => setShowHelp(true)}
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                border: '1px solid #ddd',
-                color: 'primary.main',
-                bgcolor: '#fff',
-                '&:hover': { bgcolor: '#f7f7f7' }
-              }}
-            >
-              <HelpOutlineIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-
-          {/* Arena: statistiche feedback (visibile a admin o se abilitata pubblicamente) */}
-          {(user?.is_admin || arenaPublic) && (
-            <Chip
-              component="a"
-              href="/arena"
-              label="Arena"
-              clickable
-              size="small"
-              variant="outlined"
-              sx={{ borderColor: '#ddd' }}
-            />
-          )}
-
-          {/* Download Chat + Report */}
-          <DownloadChatButton messages={messages} conversationId={currentConversationId} />
-
+  {/* Controlli principali (pruned: personality, voice now in HeaderBar) */}
+  <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap:'nowrap', overflow:'hidden' }}>
+          {/* Desktop action buttons removed (now in HeaderBar). */}
           {/* Login/Logout */}
-          {isAuthenticated ? (
-            <Tooltip title={`Logout (${user?.email})`}>
-              <IconButton
-                size="small"
-                onClick={handleLogout}
-                sx={{ color: 'error.main' }}
-              >
-                <LogoutIcon />
+          {/* Menu overflow mobile */}
+          {isMobile && (
+            <>
+              <IconButton size="small" onClick={handleOpenMore} sx={{ color:'primary.main' }}>
+                <MoreVertIcon />
               </IconButton>
-            </Tooltip>
-          ) : (
-            <Tooltip title="Login">
-              <IconButton
-                size="small"
-                onClick={() => setShowLoginDialog(true)}
-                sx={{ color: 'primary.main' }}
-              >
-                <LoginIcon />
-              </IconButton>
-            </Tooltip>
+              <Menu anchorEl={moreAnchor} open={openMore} onClose={handleCloseMore} keepMounted>
+                <MenuItem onClick={() => { handleCloseMore(); setShowHelp(true) }}>
+                  <ListItemIcon><HelpOutlineIcon fontSize="small" /></ListItemIcon>
+                  <ListItemText>Guida</ListItemText>
+                </MenuItem>
+                {(user?.is_admin || arenaPublic) && (
+                  <MenuItem component="a" href="/arena" onClick={handleCloseMore}>
+                    <ListItemText>Arena</ListItemText>
+                  </MenuItem>
+                )}
+                <MenuItem onClick={() => { handleCloseMore(); setMessages([{ role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]); setCurrentConversationId(null) }}>
+                  <ListItemText>Nuova conversazione</ListItemText>
+                </MenuItem>
+                {isAuthenticated ? (
+                  <MenuItem onClick={() => { handleCloseMore(); handleLogout() }}>
+                    <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon>
+                    <ListItemText>Logout</ListItemText>
+                  </MenuItem>
+                ) : (
+                  <MenuItem onClick={() => { handleCloseMore(); setShowLoginDialog(true) }}>
+                    <ListItemIcon><LoginIcon fontSize="small" /></ListItemIcon>
+                    <ListItemText>Login</ListItemText>
+                  </MenuItem>
+                )}
+              </Menu>
+            </>
           )}
+          {/* Desktop login/logout moved to HeaderBar */}
         </Stack>
       </Stack>
 
@@ -959,13 +915,9 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
 
-      <Paper variant="outlined" sx={{ p: 3, minHeight: 600, position: 'relative', bgcolor: '#fafafa', borderRadius: 4 }}>
-        {error && (
-          <Box sx={{ position:'absolute', top:8, right:8, bgcolor:'#ffe6e6', border:'1px solid #ffb3b3', px:1.5, py:0.5, borderRadius:1 }}>
-            <Typography variant="caption" color="error">{error}</Typography>
-          </Box>
-        )}
-        <Stack spacing={3}>
+  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 230px)' : 600, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflow:'hidden' }}>
+        {/* messages stack */}
+        <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 6 : 0 }}>
           {messages.map((m,i)=>(
             <Box key={i} display="flex" flexDirection="column" gap={1} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
               {/* Messaggio principale */}
@@ -979,14 +931,14 @@ const AppContent: React.FC = () => {
                 
                 {/* Bolla del messaggio - aumentata la dimensione */}
                 <Box sx={{ 
-                  maxWidth: '85%',  // Aumentato da 80% a 85%
+                  maxWidth: '85%',
                   bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
                   color: m.role === 'assistant' ? '#000' : '#fff',
-                  p: 2.5,  // Aumentato il padding
-                  borderRadius: 6,  // Angoli più arrotondati
-                  borderTopLeftRadius: m.role === 'assistant' ? 2 : 6,
-                  borderTopRightRadius: m.role === 'user' ? 2 : 6,
-                  boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                  p: 2,
+                  borderRadius: 3,
+                  borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
+                  borderTopRightRadius: m.role === 'user' ? 1 : 3,
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
                   position: 'relative',
                 }}>
                   <Box sx={{
@@ -1188,114 +1140,128 @@ const AppContent: React.FC = () => {
       </Box>
 
       {/* Input Area */}
-      <Paper elevation={2} sx={{ mt: 2, borderRadius: 4 }}>
-        <Box sx={{ p: 2 }}>
-          <Stack direction="row" spacing={2} alignItems="flex-end">
-            <Box position="relative" flex={1}>
-              <TextField 
-                fullWidth 
-                placeholder="Scrivi un messaggio…"
-                value={input} 
-                onChange={e=>setInput(e.target.value)} 
-                onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }}}
-                variant="outlined"
-                size="medium"
-                disabled={isRecording || isTranscribing}
-                sx={{
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: 4,  // Angoli più arrotondati anche per il TextField
-                  }
-                }}
-                multiline
-                maxRows={6}
-                minRows={2}
-              />
-              
-              {/* Animazione onde dentro il TextField quando si registra */}
-              {isRecording && (
-                <Box
-                  position="absolute"
-                  top="50%"
-                  left="50%"
+      {!isMobile && (
+  <Paper elevation={2} sx={{ mt: 2, borderRadius: 2 }}>
+          <Box sx={{ p: 2 }}>
+            <Stack direction="row" spacing={2} alignItems="flex-end">
+              <Box position="relative" flex={1}>
+                <TextField 
+                  fullWidth 
+                  placeholder="Scrivi un messaggio…"
+                  value={input} 
+                  onChange={e=>setInput(e.target.value)} 
+                  onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }}}
+                  variant="outlined"
+                  size="medium"
+                  disabled={isRecording || isTranscribing}
                   sx={{
-                    transform: 'translate(-50%, -50%)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 2,
-                    pointerEvents: 'none'
+                    '& .MuiOutlinedInput-root': { borderRadius: 2 }
                   }}
-                >
-                  <MicIcon sx={{ color: 'error.main', fontSize: 24 }} />
-                  <VoiceRecordingAnimation isRecording={isRecording} size={36} />
-                  <Typography 
-                    variant="body1" 
-                    color="error.main"
-                    sx={{ 
-                      fontWeight: 600,
-                      fontSize: '1rem'
+                  multiline
+                  maxRows={6}
+                  minRows={2}
+                />
+                
+                {/* Animazione onde dentro il TextField quando si registra */}
+                {isRecording && (
+                  <Box
+                    position="absolute"
+                    top="50%"
+                    left="50%"
+                    sx={{
+                      transform: 'translate(-50%, -50%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 2,
+                      pointerEvents: 'none'
                     }}
                   >
-                    Sto ascoltando...
-                  </Typography>
-                </Box>
+                    <MicIcon sx={{ color: 'error.main', fontSize: 24 }} />
+                    <VoiceRecordingAnimation isRecording={isRecording} size={36} />
+                    <Typography 
+                      variant="body1" 
+                      color="error.main"
+                      sx={{ 
+                        fontWeight: 600,
+                        fontSize: '1rem'
+                      }}
+                    >
+                      Sto ascoltando...
+                    </Typography>
+                  </Box>
+                )}
+                
+                {/* Indicatore trascrizione */}
+                {isTranscribing && (
+                  <Box
+                    position="absolute"
+                    top="50%"
+                    left="50%"
+                    sx={{
+                      transform: 'translate(-50%, -50%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 2,
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    <CircularProgress size={24} color="primary" />
+                    <Typography variant="body1" color="primary" sx={{ fontWeight: 600 }}>
+                      Trascrizione in corso...
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+              <ChatToolbar
+                onSend={send}
+                onStartRecording={startRecording}
+                onStopRecording={stopRecording}
+                canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
+                isRecording={isRecording}
+                isLoading={loading || isTranscribing || isStreaming}
+              />
+            </Stack>
+          </Box>
+          {(isRecording || playingMessageIndex !== null) && (
+            <Box sx={{ px: 2, pb: 1 }}>
+              {isRecording && (
+                <Typography variant="caption" color="error" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Box sx={{ color: '#f44336', display: 'flex', alignItems: 'center' }}>
+                    <SmallMicIcon size={12} />
+                  </Box>
+                  Registrazione in corso...
+                </Typography>
               )}
-              
-              {/* Indicatore trascrizione */}
-              {isTranscribing && (
-                <Box
-                  position="absolute"
-                  top="50%"
-                  left="50%"
-                  sx={{
-                    transform: 'translate(-50%, -50%)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 2,
-                    pointerEvents: 'none'
-                  }}
-                >
-                  <CircularProgress size={24} color="primary" />
-                  <Typography variant="body1" color="primary" sx={{ fontWeight: 600 }}>
-                    Trascrizione in corso...
-                  </Typography>
-                </Box>
+              {playingMessageIndex !== null && (
+                <Typography variant="caption" color="primary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  <Box sx={{ color: '#1976d2', display: 'flex', alignItems: 'center' }}>
+                    <SpeakerIcon size={12} />
+                  </Box>
+                  Riproduzione audio ({ttsProvider})...
+                </Typography>
               )}
             </Box>
-            
-            {/* Chat Toolbar - icone a destra */}
-            <ChatToolbar
-              onSend={send}
-              onStartRecording={startRecording}
-              onStopRecording={stopRecording}
-              canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
-              isRecording={isRecording}
-              isLoading={loading || isTranscribing || isStreaming}
-            />
-          </Stack>
-        </Box>
-        
-        {/* Indicatori di stato */}
-        {(isRecording || playingMessageIndex !== null) && (
-          <Box sx={{ px: 2, pb: 1 }}>
-            {isRecording && (
-              <Typography variant="caption" color="error" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Box sx={{ color: '#f44336', display: 'flex', alignItems: 'center' }}>
-                  <SmallMicIcon size={12} />
-                </Box>
-                Registrazione in corso...
-              </Typography>
-            )}
-            {playingMessageIndex !== null && (
-              <Typography variant="caption" color="primary" sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                <Box sx={{ color: '#1976d2', display: 'flex', alignItems: 'center' }}>
-                  <SpeakerIcon size={12} />
-                </Box>
-                Riproduzione audio ({ttsProvider})...
-              </Typography>
-            )}
-          </Box>
-        )}
-      </Paper>
+          )}
+        </Paper>
+      )}
+      {isMobile && (
+        <MobileChatBar
+          value={input}
+          onChange={setInput}
+          onSend={send}
+          canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
+            isRecording={isRecording}
+          onStartRecording={startRecording}
+          onStopRecording={stopRecording}
+          disabled={isTranscribing}
+          isLoading={loading || isTranscribing || isStreaming}
+          onAttachClick={()=> {
+            // scroll to attachments section
+            const el = document.getElementById('attachments-section')
+            if (el) el.scrollIntoView({ behavior:'smooth' })
+          }}
+        />
+      )}
 
       {/* File Manager */}
       <Box sx={{ mt: 2 }}>
@@ -1544,8 +1510,10 @@ export default function App() {
   }
 
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ThemeProvider theme={appTheme}>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

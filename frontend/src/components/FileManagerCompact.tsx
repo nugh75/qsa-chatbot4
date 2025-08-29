@@ -131,7 +131,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
         sx={{
           p: 1.5,
           mb: 1,
-          borderRadius: 4,  // Angoli più arrotondati
+          borderRadius: 2,
           border: '1px solid',
           borderColor: dragOver ? 'primary.main' : 'grey.200',
           bgcolor: dragOver ? 'primary.50' : 'grey.50',
@@ -221,7 +221,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
                 onClick={() => showPreview(file)}
                 deleteIcon={<CloseIcon />}
                 sx={{ 
-                  borderRadius: 2,
+                  borderRadius: 1,
                   '& .MuiChip-label': {
                     fontSize: '0.75rem',
                     maxWidth: 120,
@@ -242,7 +242,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
         maxWidth="md"
         fullWidth
         PaperProps={{
-          sx: { borderRadius: 3 }
+          sx: { borderRadius: 2 }
         }}
       >
         <DialogTitle sx={{ pb: 1 }}>
@@ -262,7 +262,7 @@ const FileManagerCompact: React.FC<FileManagerProps> = ({
               overflow: 'auto',
               p: 2,
               bgcolor: 'grey.50',
-              borderRadius: 2
+              borderRadius: 1
             }}
           >
             {previewFile?.content || 'Contenuto non disponibile'}

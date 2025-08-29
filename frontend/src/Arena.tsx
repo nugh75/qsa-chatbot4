@@ -1,5 +1,6 @@
 import React from 'react'
-import { Container, Box, Typography, Grid, Card, CardContent, LinearProgress, Table, TableHead, TableRow, TableCell, TableBody, Chip, Stack, CircularProgress, Button } from '@mui/material'
+import { Container, Box, Typography, Grid, Card, CardContent, LinearProgress, Table, TableHead, TableRow, TableCell, TableBody, Chip, Stack, CircularProgress, Button, IconButton, Tooltip } from '@mui/material'
+import ChatIcon from '@mui/icons-material/Chat'
 import { useAuth } from './contexts/AuthContext'
 
 type ProviderStats = { likes: number; dislikes: number }
@@ -100,9 +101,17 @@ const Arena: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
-      <Typography variant="h5" sx={{ mb: 2 }}>
-        Arena – Statistiche Feedback
-      </Typography>
+      <Box sx={{ display:'flex', alignItems:'center', justifyContent:'space-between', mb:2, flexWrap:'wrap', gap:1 }}>
+        <Typography variant="h5">Arena – Statistiche Feedback</Typography>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip title="Vai alla chat">
+            <IconButton color="primary" size="small" href="/">
+              <ChatIcon />
+            </IconButton>
+          </Tooltip>
+          <Button variant="outlined" size="small" href="/">Chat</Button>
+        </Stack>
+      </Box>
 
       {loading && <LinearProgress />}
       {error && (
@@ -138,6 +147,9 @@ const Arena: React.FC = () => {
                   </Stack>
                 </CardContent>
               </Card>
+            </Grid>
+            <Grid item xs={12} sx={{ display:{ xs:'block', sm:'none' } }}>
+              <Button fullWidth variant="contained" color="primary" href="/" startIcon={<ChatIcon />}>Vai alla Chat</Button>
             </Grid>
           </Grid>
 

@@ -68,6 +68,15 @@ export interface MessageData {
   processing_time?: number;
 }
 
+export interface SummaryPrompt {
+  id: string;
+  name: string;
+  text: string;
+  created_at?: string;
+  updated_at?: string;
+  active?: boolean;
+}
+
 class ApiService {
   private refreshTimeout: any = null;
   private async makeRequest<T>(
@@ -326,7 +335,20 @@ class ApiService {
   async updateSummarySettings(settings: { provider: string; enabled: boolean }): Promise<ApiResponse> {
     return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
   }
-  
+  // New multi summary prompts endpoints
+  async listSummaryPrompts(): Promise<ApiResponse<{ active_id: string; prompts: SummaryPrompt[] }>> {
+    return this.makeRequest<{ active_id: string; prompts: SummaryPrompt[] }>('/admin/summary-prompts');
+  }
+  async upsertSummaryPrompt(payload: { id?: string; name: string; text: string; set_active?: boolean }): Promise<ApiResponse<{ id: string }>> {
+    return this.makeRequest<{ id: string }>('/admin/summary-prompts', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  async activateSummaryPrompt(promptId: string): Promise<ApiResponse> {
+    return this.makeRequest(`/admin/summary-prompts/${encodeURIComponent(promptId)}/activate`, { method: 'POST' });
+  }
+  async deleteSummaryPrompt(promptId: string): Promise<ApiResponse> {
+    return this.makeRequest(`/admin/summary-prompts/${encodeURIComponent(promptId)}`, { method: 'DELETE' });
+  }
+
   // Get public config for enabled providers and models
   async getPublicConfig(): Promise<ApiResponse<{
     enabled_providers: string[];

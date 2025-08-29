@@ -672,3 +672,24 @@ pip install -r backend/requirements.txt
 - **RAG Intelligente**: Routing automatico verso 4 file di conoscenza
 - **Download Chat**: Esportazione conversazioni in JSON
 - **Clear automatico**: La chat si resetta alla chiusura della tab
+
+# Multi Summary Prompts
+
+Il sistema supporta ora più profili di summary prompt memorizzati in `backend/storage/summary/SUMMARY_PROMPTS.json`.
+Struttura file:
+```
+{
+  "active_id": "default",
+  "prompts": [
+    {"id": "default", "name": "Default", "text": "..."}
+  ]
+}
+```
+Operazioni disponibili nel pannello Admin:
+- Creazione nuovo profilo
+- Selezione e modifica testo
+- Attivazione profilo (imposta `active_id`)
+- Eliminazione (non è possibile eliminare l'ultimo profilo)
+- Reset dal seed (endpoint legacy `/admin/summary-prompt/reset`)
+
+Compatibilità: gli endpoint legacy `/admin/summary-prompt` continuano a funzionare restituendo il testo del profilo attivo.

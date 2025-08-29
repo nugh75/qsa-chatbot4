@@ -31,13 +31,23 @@ export function createApiService(baseUrl: string): ApiService {
       const response = await fetch(`${baseUrl}${url}`, {
         method: 'GET',
         headers: {
-          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/plain, */*',
           ...options?.headers
         },
         ...options
       });
-      
-      const data = await response.json();
+      let data: any = null;
+      try {
+        const ct = response.headers.get('content-type') || ''
+        if (ct.includes('application/json')) {
+          data = await response.json();
+        } else {
+          const txt = await response.text();
+          try { data = JSON.parse(txt) } catch { data = { raw: txt } }
+        }
+      } catch (e) {
+        data = { error: 'parse_failed' }
+      }
       return { data, status: response.status };
     },
 
@@ -57,16 +67,24 @@ export function createApiService(baseUrl: string): ApiService {
       };
 
       const response = await fetch(`${baseUrl}${url}`, config);
-      
       let responseData: any;
-      if (options?.responseType === 'blob') {
-        responseData = await response.blob();
-      } else if (options?.responseType === 'text') {
-        responseData = await response.text();
-      } else {
-        responseData = await response.json();
+      try {
+        if (options?.responseType === 'blob') {
+          responseData = await response.blob();
+        } else if (options?.responseType === 'text') {
+          responseData = await response.text();
+        } else {
+          const ct = response.headers.get('content-type') || ''
+          if (ct.includes('application/json')) {
+            responseData = await response.json();
+          } else {
+            const txt = await response.text();
+            try { responseData = JSON.parse(txt) } catch { responseData = { raw: txt } }
+          }
+        }
+      } catch {
+        responseData = { error: 'parse_failed' }
       }
-      
       return { data: responseData, status: response.status };
     }
   };

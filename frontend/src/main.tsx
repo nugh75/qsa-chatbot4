@@ -5,6 +5,8 @@ import App from './App'
 import AdminPanel from './AdminPanel'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { Box, CircularProgress, Typography } from '@mui/material'
+import { ThemeProvider, CssBaseline } from '@mui/material'
+import { appTheme } from './theme'
 import LoginDialog from './components/LoginDialog'
 import Arena from './Arena'
 
@@ -35,16 +37,17 @@ const AdminRoute: React.FC = () => {
 import SurveyResults from './SurveyResults'
 
 createRoot(document.getElementById('root')!).render(
-  <AuthProvider>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<App />} />
-        <Route path="/admin" element={<AdminRoute />} />
-        {/* Survey results dedicated route */}
-        <Route path="/survey-results" element={<SurveyResults />} />
-        {/* Arena: statistiche feedback per provider/modello/personalità */}
-        <Route path="/arena" element={<Arena />} />
-      </Routes>
-    </BrowserRouter>
-  </AuthProvider>
+  <ThemeProvider theme={appTheme}>
+    <CssBaseline />
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<App />} />
+          <Route path="/admin" element={<AdminRoute />} />
+          <Route path="/survey-results" element={<SurveyResults />} />
+          <Route path="/arena" element={<Arena />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  </ThemeProvider>
 )

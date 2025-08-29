@@ -1,8 +1,19 @@
+from .prompts import (
+    load_system_prompts,
+    load_summary_prompt,
+    save_summary_prompt,
+    reset_summary_prompt_from_seed,
+    load_summary_prompts,
+    upsert_summary_prompt,
+    set_active_summary_prompt,
+    delete_summary_prompt
+)
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from pydantic import BaseModel
 from typing import Dict, List, Any, Optional
 import json
 import os
+import logging
 from .prompts import (
     load_system_prompt,
     save_system_prompt,
@@ -125,7 +136,7 @@ DEFAULT_CONFIG = {
         "arena_public": False
     },
     "summary_settings": {
-        "provider": "anthropic",  # Provider dedicato per i summary (NON local)
+        "provider": "openrouter",  # Provider dedicato per i summary (NON local)
         "enabled": True
     },
     "memory_settings": {
@@ -161,14 +172,14 @@ def get_summary_provider():
     """Ottiene il provider configurato per i summary (mai 'local')"""
     config = load_config()
     summary_settings = config.get("summary_settings", {})
-    provider = summary_settings.get("provider", "anthropic")
+    provider = summary_settings.get("provider", "openrouter")
     enabled = summary_settings.get("enabled", True)
     
     # Fallback se il provider è local (non dovrebbe mai succedere)
     if provider == "local":
-        provider = "anthropic"
+        provider = "openrouter"
     
-    return provider if enabled else "anthropic"  # Fallback sicuro
+    return provider if enabled else "openrouter"  # Fallback sicuro
 
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
@@ -315,7 +326,13 @@ async def delete_system_prompt_api(prompt_id: str):
 async def get_summary_prompt():
     """Restituisce il prompt di riassunto conversazioni."""
     try:
-        return {"prompt": load_summary_prompt()}
+        prompt = load_summary_prompt()
+        logging.info(
+            "[admin] GET summary-prompt len=%d sha1=%s",
+            len(prompt),
+            __import__('hashlib').sha1(prompt.encode('utf-8')).hexdigest()[:10]
+        )
+        return {"prompt": prompt}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento summary prompt: {str(e)}")
 
@@ -323,8 +340,27 @@ async def get_summary_prompt():
 async def update_summary_prompt(payload: SystemPromptIn):
     """Aggiorna il prompt di riassunto conversazioni."""
     try:
+        before = None
+        try:
+            # Legge eventuale versione precedente per confronto (best-effort)
+            from .prompts import load_summary_prompt as _ls
+            before = _ls()
+        except Exception:
+            before = None
         save_summary_prompt(payload.prompt)
-        return {"success": True, "message": "Summary prompt salvato"}
+        diff_info = {
+            "new_len": len(payload.prompt),
+            "old_len": (len(before) if before is not None else None),
+            "changed": (before != payload.prompt) if before is not None else True,
+        }
+        logging.info(
+            "[admin] Summary prompt update: changed=%s old_len=%s new_len=%s first20_new=%r",
+            diff_info["changed"],
+            diff_info["old_len"],
+            diff_info["new_len"],
+            payload.prompt[:20]
+        )
+        return {"success": True, "message": "Summary prompt salvato", "meta": diff_info}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio summary prompt: {str(e)}")
 
@@ -338,17 +374,64 @@ async def reset_summary_prompt():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore reset summary prompt: {str(e)}")
 
+@router.post("/admin/summary-prompt/reset-seed")
+async def reset_summary_prompt_seed():
+    """Forza il reset copiando il file seed /app/data/SUMMARY_PROMPT.md (se presente)."""
+    try:
+        text = reset_summary_prompt_from_seed()
+        return {"success": True, "prompt": text, "seed": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore reset seed summary prompt: {str(e)}")
+
 # ---- Summary settings endpoints ----
 class SummarySettingsIn(BaseModel):
     provider: str
     enabled: bool
+
+# ---- Summary prompts (multi) endpoints ----
+class SummaryPromptIn(BaseModel):
+    name: str
+    text: str
+    id: str | None = None
+    set_active: bool = False
+
+@router.get("/admin/summary-prompts")
+async def list_summary_prompts():
+    try:
+        return load_summary_prompts()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento summary prompts: {e}")
+
+@router.post("/admin/summary-prompts")
+async def create_or_update_summary_prompt(payload: SummaryPromptIn):
+    try:
+        res = upsert_summary_prompt(payload.name, payload.text, payload.id, payload.set_active)
+        return {"success": True, **res}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore upsert summary prompt: {e}")
+
+@router.post("/admin/summary-prompts/{prompt_id}/activate")
+async def activate_summary_prompt(prompt_id: str):
+    try:
+        set_active_summary_prompt(prompt_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore attivazione summary prompt: {e}")
+
+@router.delete("/admin/summary-prompts/{prompt_id}")
+async def remove_summary_prompt(prompt_id: str):
+    try:
+        delete_summary_prompt(prompt_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione summary prompt: {e}")
 
 @router.get("/admin/summary-settings")
 async def get_summary_settings():
     """Ottiene le impostazioni correnti per la generazione dei summary"""
     try:
         config = load_config()
-        summary_settings = config.get("summary_settings", {"provider": "anthropic", "enabled": True})
+        summary_settings = config.get("summary_settings", {"provider": "openrouter", "enabled": True})
         return {"settings": summary_settings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento impostazioni summary: {str(e)}")

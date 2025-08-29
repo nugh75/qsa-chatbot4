@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Tooltip, Chip, Divider, LinearProgress, Dialog, DialogTitle, DialogContent, DialogActions, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert } from '@mui/material';
 import { Add as AddIcon, Delete as DeleteIcon, Edit as EditIcon, Save as SaveIcon, Refresh as RefreshIcon, UploadFile as UploadIcon, FileOpen as FileOpenIcon } from '@mui/icons-material';
 import { apiService } from '../apiService';
+import DebugPipelineTest from './DebugPipelineTest';
 
 interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; }
 
@@ -31,12 +32,18 @@ const PipelinePanel: React.FC = () => {
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null);
     try {
+      console.log('[PipelinePanel] Loading config and files...');
       const cfgRes = await apiService.getPipelineConfig();
+      console.log('[PipelinePanel] Config result:', cfgRes);
       if (cfgRes.success) setConfig(cfgRes.data as any);
       else setError(cfgRes.error||'Errore caricamento config');
       const filesRes = await apiService.listAvailablePipelineFiles();
+      console.log('[PipelinePanel] Files result:', filesRes);
       if (filesRes.success) setAvailableFiles(filesRes.data?.files||[]);
-    } catch (e:any) { setError(e?.message||'Errore'); } finally { setLoading(false); }
+    } catch (e:any) { 
+      console.error('[PipelinePanel] Load error:', e);
+      setError(e?.message||'Errore'); 
+    } finally { setLoading(false); }
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
@@ -44,18 +51,27 @@ const PipelinePanel: React.FC = () => {
   const handleAddRoute = () => { setEditingRoute({ ...emptyRoute, mode:'add' }); };
   const handleEditRoute = (r: { pattern: string; topic: string }) => { setEditingRoute({ mode:'edit', old_pattern: r.pattern, old_topic: r.topic, pattern: r.pattern, topic: r.topic }); };
   const handleSubmitRoute = async () => {
-    if (!editingRoute.pattern || !editingRoute.topic) return;
+    if (!editingRoute.pattern || !editingRoute.topic) {
+      setError('Pattern e Topic sono obbligatori');
+      return;
+    }
     try {
+      console.log(`[PipelinePanel] Submit route: mode=${editingRoute.mode}, pattern="${editingRoute.pattern}", topic="${editingRoute.topic}"`);
       if (editingRoute.mode === 'add') {
         const res = await apiService.addPipelineRoute(editingRoute.pattern, editingRoute.topic);
+        console.log('[PipelinePanel] Add route result:', res);
         if (!res.success) return setError(res.error||'Errore aggiunta route');
       } else {
         const res = await apiService.updatePipelineRoute(editingRoute.old_pattern!, editingRoute.old_topic!, editingRoute.pattern, editingRoute.topic);
+        console.log('[PipelinePanel] Update route result:', res);
         if (!res.success) return setError(res.error||'Errore update route');
       }
       setEditingRoute(emptyRoute);
       loadAll();
-    } catch {};
+    } catch (e) {
+      console.error('[PipelinePanel] Submit route error:', e);
+      setError(e instanceof Error ? e.message : 'Errore durante il salvataggio');
+    }
   };
   const handleDeleteRoute = async (r: { pattern: string; topic: string }) => {
     if (!window.confirm('Eliminare questa route?')) return;
@@ -95,13 +111,22 @@ const PipelinePanel: React.FC = () => {
     if (!res.success) setError(res.error||'Errore salvataggio file');
     setSavingFileContent(false);
   };
+  // Upload disabilitato nella pipeline regex: solo mapping e editing file esistenti
+  // Se serve upload, usare sezione file mapping, non regex pipeline
+
+  // Mostra errore specifico se upload fallisce per file system read-only
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
     setUploading(true);
     const file = e.target.files[0];
     const res = await apiService.uploadPipelineFile(file);
-    if (!res.success) setError(res.error||'Upload fallito');
-    else loadAll();
+    if (!res.success) {
+      if (res.error && res.error.includes('Read-only file system')) {
+        setError('Errore upload: il file system è in sola lettura. Verifica i volumi Docker e la directory di destinazione.');
+      } else {
+        setError(res.error||'Upload fallito');
+      }
+    } else loadAll();
     setUploading(false);
   };
 
@@ -120,6 +145,9 @@ const PipelinePanel: React.FC = () => {
 
   return (
     <Stack spacing={2}>
+      {/* Debug Test Component - Remove in production */}
+      <DebugPipelineTest />
+      
       {loading && <LinearProgress />}
       {error && <Alert severity="error" onClose={()=> setError(null)}>{error}</Alert>}
       <Tabs value={tab} onChange={(_,v)=> setTab(v)} variant="scrollable" allowScrollButtonsMobile>
@@ -137,7 +165,7 @@ const PipelinePanel: React.FC = () => {
             <TextField size="small" label="Testo per test regex" value={regexTestInput} onChange={e=> setRegexTestInput(e.target.value)} fullWidth />
             {regexMatches.length>0 && <Chip color="success" label={`Match: ${regexMatches.join(', ')}`} />}
           </Stack>
-          {editingRoute.pattern!=='' && (
+           {(editingRoute.mode==='add' || editingRoute.mode==='edit') && (
             <Stack direction={{ xs:'column', sm:'row' }} spacing={1} sx={{ mb:2 }}>
               <TextField label="Pattern" size="small" value={editingRoute.pattern} onChange={e=> setEditingRoute(r=> ({...r, pattern:e.target.value}))} fullWidth />
               <TextField label="Topic" size="small" value={editingRoute.topic} onChange={e=> setEditingRoute(r=> ({...r, topic:e.target.value}))} fullWidth />

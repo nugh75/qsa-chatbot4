@@ -15,6 +15,10 @@
     {
       "pattern": "\\b(FAQ|domande frequenti|domande e risposte|aiuto rapido|come fare)\\b",
       "topic": "faq_qsa"
+    },
+    {
+      "pattern": "prova",
+      "topic": "prova"
     }
   ],
   "files": {

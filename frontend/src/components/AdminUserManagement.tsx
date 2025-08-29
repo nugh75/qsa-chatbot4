@@ -31,7 +31,9 @@ import {
   Person as PersonIcon,
   Email as EmailIcon,
   Search as SearchIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  AdminPanelSettings as AdminIcon,
+  PersonOutline as UserIcon
 } from '@mui/icons-material';
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
@@ -41,6 +43,7 @@ interface User {
   email: string;
   created_at: string;
   last_login: string | null;
+  is_admin: boolean;
 }
 
 interface PasswordResetResult {
@@ -130,6 +133,29 @@ export default function AdminUserManagement() {
     }
   };
 
+  const handleChangeRole = async (user: User) => {
+    try {
+      const newIsAdmin = !user.is_admin;
+      const res = await fetch(`${BACKEND}/api/admin/users/${user.id}/role`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_admin: newIsAdmin })
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        // Aggiorna la lista utenti localmente
+        setUsers(prev => prev.map(u => 
+          u.id === user.id ? { ...u, is_admin: newIsAdmin } : u
+        ));
+      } else {
+        setError(data.error || 'Errore nel cambio ruolo');
+      }
+    } catch (err: any) {
+      setError(err.message || 'Errore di connessione');
+    }
+  };
+
   const formatDate = (dateString: string | null): string => {
     if (!dateString) return 'Mai';
     return new Date(dateString).toLocaleString('it-IT');
@@ -214,6 +240,7 @@ export default function AdminUserManagement() {
                   <TableCell>Email</TableCell>
                   <TableCell>Data Registrazione</TableCell>
                   <TableCell>Ultimo Login</TableCell>
+                  <TableCell>Ruolo</TableCell>
                   <TableCell>Stato</TableCell>
                   <TableCell>Azioni</TableCell>
                 </TableRow>
@@ -255,6 +282,13 @@ export default function AdminUserManagement() {
                       </TableCell>
                       <TableCell>
                         <Chip
+                          label={user.is_admin ? 'Amministratore' : 'Utente'}
+                          color={user.is_admin ? 'primary' : 'default'}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Chip
                           label={user.last_login ? 'Attivo' : 'Mai loggato'}
                           color={user.last_login ? 'success' : 'default'}
                           size="small"
@@ -262,6 +296,15 @@ export default function AdminUserManagement() {
                       </TableCell>
                       <TableCell>
                         <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Tooltip title={user.is_admin ? 'Rimuovi Admin' : 'Rendi Admin'}>
+                            <IconButton
+                              size="small"
+                              onClick={() => handleChangeRole(user)}
+                              color={user.is_admin ? 'primary' : 'default'}
+                            >
+                              {user.is_admin ? <AdminIcon /> : <UserIcon />}
+                            </IconButton>
+                          </Tooltip>
                           <Tooltip title="Reset Password">
                             <IconButton
                               size="small"
@@ -291,7 +334,7 @@ export default function AdminUserManagement() {
                 })}
                 {filteredUsers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} align="center">
+                    <TableCell colSpan={6} align="center">
                       {searchTerm ? 'Nessun utente trovato' : 'Nessun utente registrato'}
                     </TableCell>
                   </TableRow>

@@ -614,6 +614,19 @@ class ApiService {
       return { success: false, error: e?.message || 'Network error' };
     }
   }
+
+  // === Admin User Management ===
+  async changeUserRole(userId: number, isAdmin: boolean): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/users/${userId}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_admin: isAdmin })
+    });
+  }
+
+  // === Endpoint Introspection ===
+  async listEndpoints(): Promise<ApiResponse<{ count: number; endpoints: { method: string; path: string; name?: string; summary?: string }[] }>> {
+    return this.makeRequest('/admin/endpoints');
+  }
 }
 
 // Istanza singola del servizio API

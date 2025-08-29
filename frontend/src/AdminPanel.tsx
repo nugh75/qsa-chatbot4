@@ -23,6 +23,7 @@ import APIDocsPanel from './components/APIDocsPanel'
 import RagDocumentsPanel from './components/RagDocumentsPanel'
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
+import EndpointsExplorer from './components/EndpointsExplorer'
 import { authFetch, BACKEND } from './utils/authFetch'
 import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
@@ -462,6 +463,7 @@ const AdminPanel: React.FC = () => {
           </Box>
         </AccordionSummary>
         <AccordionDetails>
+          <EndpointsExplorer />
           <APIDocsPanel />
         </AccordionDetails>
       </Accordion>

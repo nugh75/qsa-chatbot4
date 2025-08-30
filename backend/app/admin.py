@@ -227,6 +227,18 @@ def get_summary_provider():
 class UiSettingsIn(BaseModel):
     arena_public: bool
     contact_email: str | None = None
+    research_project: str | None = None
+    repository_url: str | None = None
+    website_url: str | None = None
+    info_pdf_url: str | None = None
+    footer_title: str | None = None
+    footer_text: str | None = None
+    show_research_project: bool | None = True
+    show_repository_url: bool | None = True
+    show_website_url: bool | None = True
+    show_info_pdf_url: bool | None = True
+    show_contact_email: bool | None = True
+    show_footer_block: bool | None = True
 
 @router.get("/admin/ui-settings")
 async def get_ui_settings():
@@ -237,6 +249,14 @@ async def get_ui_settings():
             ui["arena_public"] = False
         if "contact_email" not in ui:
             ui["contact_email"] = None
+        # Ensure new research fields exist (even if None)
+        for k in ["research_project","repository_url","website_url","info_pdf_url"]:
+            ui.setdefault(k, None)
+        for k in ["footer_title","footer_text"]:
+            ui.setdefault(k, None)
+        # Visibility flags with default True if missing
+        for k in ["show_research_project","show_repository_url","show_website_url","show_info_pdf_url","show_contact_email","show_footer_block"]:
+            ui.setdefault(k, True)
         return {"settings": ui}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore caricamento impostazioni UI: {str(e)}")
@@ -247,10 +267,38 @@ async def update_ui_settings(payload: UiSettingsIn):
         config = load_config()
         config.setdefault("ui_settings", {})
         config["ui_settings"]["arena_public"] = bool(payload.arena_public)
+        def _norm(v: Optional[str]):
+            if v is None:
+                return None
+            v = v.strip()
+            return v or None
         if payload.contact_email is not None:
-            # Basic sanitize trim
-            ce = payload.contact_email.strip() or None
-            config["ui_settings"]["contact_email"] = ce
+            config["ui_settings"]["contact_email"] = _norm(payload.contact_email)
+        if payload.research_project is not None:
+            config["ui_settings"]["research_project"] = _norm(payload.research_project)
+        if payload.repository_url is not None:
+            config["ui_settings"]["repository_url"] = _norm(payload.repository_url)
+        if payload.website_url is not None:
+            config["ui_settings"]["website_url"] = _norm(payload.website_url)
+        if payload.info_pdf_url is not None:
+            config["ui_settings"]["info_pdf_url"] = _norm(payload.info_pdf_url)
+        if payload.footer_title is not None:
+            config["ui_settings"]["footer_title"] = _norm(payload.footer_title)
+        if payload.footer_text is not None:
+            config["ui_settings"]["footer_text"] = _norm(payload.footer_text)
+        # Visibility flags (store always if provided)
+        if payload.show_research_project is not None:
+            config["ui_settings"]["show_research_project"] = bool(payload.show_research_project)
+        if payload.show_repository_url is not None:
+            config["ui_settings"]["show_repository_url"] = bool(payload.show_repository_url)
+        if payload.show_website_url is not None:
+            config["ui_settings"]["show_website_url"] = bool(payload.show_website_url)
+        if payload.show_info_pdf_url is not None:
+            config["ui_settings"]["show_info_pdf_url"] = bool(payload.show_info_pdf_url)
+        if payload.show_contact_email is not None:
+            config["ui_settings"]["show_contact_email"] = bool(payload.show_contact_email)
+        if payload.show_footer_block is not None:
+            config["ui_settings"]["show_footer_block"] = bool(payload.show_footer_block)
         save_config(config)
         return {"success": True, "message": "Impostazioni UI aggiornate"}
     except Exception as e:

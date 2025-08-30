@@ -357,7 +357,22 @@ class ApiService {
     default_provider: string;
     default_tts: string;
     default_asr: string;
-  ui_settings?: { arena_public: boolean; contact_email?: string|null };
+    ui_settings?: {
+      arena_public: boolean;
+      contact_email?: string | null;
+      research_project?: string | null;
+      repository_url?: string | null;
+      website_url?: string | null;
+      info_pdf_url?: string | null;
+  footer_title?: string | null;
+  footer_text?: string | null;
+  show_research_project?: boolean;
+  show_repository_url?: boolean;
+  show_website_url?: boolean;
+  show_info_pdf_url?: boolean;
+  show_contact_email?: boolean;
+  show_footer_block?: boolean;
+    };
   }>> {
     return this.makeRequest('/config/public');
   }

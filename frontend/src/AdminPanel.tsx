@@ -35,6 +35,18 @@ const AdminPanel: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false)
   const [arenaPublic, setArenaPublic] = useState<boolean>(false)
   const [contactEmail, setContactEmail] = useState<string>('')
+  const [researchProject, setResearchProject] = useState<string>('')
+  const [repositoryUrl, setRepositoryUrl] = useState<string>('')
+  const [websiteUrl, setWebsiteUrl] = useState<string>('')
+  const [infoPdfUrl, setInfoPdfUrl] = useState<string>('')
+  const [footerTitle, setFooterTitle] = useState<string>('')
+  const [footerText, setFooterText] = useState<string>('')
+  const [showResearchProject, setShowResearchProject] = useState<boolean>(true)
+  const [showRepositoryUrl, setShowRepositoryUrl] = useState<boolean>(true)
+  const [showWebsiteUrl, setShowWebsiteUrl] = useState<boolean>(true)
+  const [showInfoPdfUrl, setShowInfoPdfUrl] = useState<boolean>(true)
+  const [showContactEmail, setShowContactEmail] = useState<boolean>(true)
+  const [showFooterBlock, setShowFooterBlock] = useState<boolean>(true)
   const [savingArena, setSavingArena] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -127,6 +139,18 @@ const AdminPanel: React.FC = () => {
         const data = await res.json()
   setArenaPublic(Boolean(data?.settings?.arena_public))
   if (data?.settings?.contact_email) setContactEmail(data.settings.contact_email)
+  if (data?.settings?.research_project) setResearchProject(data.settings.research_project)
+  if (data?.settings?.repository_url) setRepositoryUrl(data.settings.repository_url)
+  if (data?.settings?.website_url) setWebsiteUrl(data.settings.website_url)
+  if (data?.settings?.info_pdf_url) setInfoPdfUrl(data.settings.info_pdf_url)
+  if (data?.settings?.footer_title) setFooterTitle(data.settings.footer_title)
+  if (data?.settings?.footer_text) setFooterText(data.settings.footer_text)
+  if (typeof data?.settings?.show_research_project === 'boolean') setShowResearchProject(data.settings.show_research_project)
+  if (typeof data?.settings?.show_repository_url === 'boolean') setShowRepositoryUrl(data.settings.show_repository_url)
+  if (typeof data?.settings?.show_website_url === 'boolean') setShowWebsiteUrl(data.settings.show_website_url)
+  if (typeof data?.settings?.show_info_pdf_url === 'boolean') setShowInfoPdfUrl(data.settings.show_info_pdf_url)
+  if (typeof data?.settings?.show_contact_email === 'boolean') setShowContactEmail(data.settings.show_contact_email)
+  if (typeof data?.settings?.show_footer_block === 'boolean') setShowFooterBlock(data.settings.show_footer_block)
       }
     } catch {/* ignore */}
   }
@@ -137,17 +161,44 @@ const AdminPanel: React.FC = () => {
     loadUiSettings()
   }, [])
 
-  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string) => {
+  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean;}>) => {
     setSavingArena(true)
     try {
       const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ arena_public: nextArena ?? arenaPublic, contact_email: (nextEmail ?? contactEmail) || null })
+        body: JSON.stringify({
+          arena_public: nextArena ?? arenaPublic,
+          contact_email: (nextEmail ?? contactEmail) || null,
+          research_project: (extra?.research_project ?? researchProject) || null,
+          repository_url: (extra?.repository_url ?? repositoryUrl) || null,
+          website_url: (extra?.website_url ?? websiteUrl) || null,
+          info_pdf_url: (extra?.info_pdf_url ?? infoPdfUrl) || null,
+          footer_title: (extra?.footer_title ?? footerTitle) || null,
+          footer_text: (extra?.footer_text ?? footerText) || null,
+          show_research_project: extra?.show_research_project ?? showResearchProject,
+          show_repository_url: extra?.show_repository_url ?? showRepositoryUrl,
+          show_website_url: extra?.show_website_url ?? showWebsiteUrl,
+          show_info_pdf_url: extra?.show_info_pdf_url ?? showInfoPdfUrl,
+          show_contact_email: extra?.show_contact_email ?? showContactEmail,
+          show_footer_block: extra?.show_footer_block ?? showFooterBlock,
+        })
       })
       if (res.ok) {
         if (nextArena !== undefined) setArenaPublic(!!nextArena)
         if (nextEmail !== undefined) setContactEmail(nextEmail)
+        if (extra?.research_project !== undefined) setResearchProject(extra.research_project)
+        if (extra?.repository_url !== undefined) setRepositoryUrl(extra.repository_url)
+        if (extra?.website_url !== undefined) setWebsiteUrl(extra.website_url)
+        if (extra?.info_pdf_url !== undefined) setInfoPdfUrl(extra.info_pdf_url)
+  if (extra?.footer_title !== undefined) setFooterTitle(extra.footer_title)
+  if (extra?.footer_text !== undefined) setFooterText(extra.footer_text)
+  if (extra?.show_research_project !== undefined) setShowResearchProject(extra.show_research_project)
+  if (extra?.show_repository_url !== undefined) setShowRepositoryUrl(extra.show_repository_url)
+  if (extra?.show_website_url !== undefined) setShowWebsiteUrl(extra.show_website_url)
+  if (extra?.show_info_pdf_url !== undefined) setShowInfoPdfUrl(extra.show_info_pdf_url)
+  if (extra?.show_contact_email !== undefined) setShowContactEmail(extra.show_contact_email)
+  if (extra?.show_footer_block !== undefined) setShowFooterBlock(extra.show_footer_block)
       }
     } catch {/* noop */} finally { setSavingArena(false) }
   }
@@ -330,11 +381,45 @@ const AdminPanel: React.FC = () => {
                       </FormControl>
                     </Grid>
                     <Grid item xs={12} sm={6} md={5}>
-                      <TextField size="small" fullWidth label="Email contatto (sondaggi)" value={contactEmail} onChange={e=> setContactEmail(e.target.value)} placeholder="es. supporto@example.org" />
+                      <TextField size="small" fullWidth label="Email contatto ricerca" value={contactEmail} onChange={e=> setContactEmail(e.target.value)} placeholder="es. ricerca@example.org" />
                     </Grid>
                     <Grid item xs={12} sm={6} md={3} sx={{ display:'flex', alignItems:'center' }}>
                       <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, contactEmail)}>Salva contatto</Button>
                     </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <TextField size="small" fullWidth label="Titolo progetto ricerca" value={researchProject} onChange={e=> setResearchProject(e.target.value)} placeholder="es. Progetto QSA" />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <TextField size="small" fullWidth label="Repository URL" value={repositoryUrl} onChange={e=> setRepositoryUrl(e.target.value)} placeholder="https://github.com/..." />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <TextField size="small" fullWidth label="Sito Web" value={websiteUrl} onChange={e=> setWebsiteUrl(e.target.value)} placeholder="https://example.org" />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={6}>
+                      <TextField size="small" fullWidth label="Informativa PDF URL" value={infoPdfUrl} onChange={e=> setInfoPdfUrl(e.target.value)} placeholder="https://example.org/informativa.pdf" />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
+                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {research_project: researchProject, repository_url: repositoryUrl, website_url: websiteUrl, info_pdf_url: infoPdfUrl})}>Salva campi ricerca</Button>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}>
+                      <TextField size="small" fullWidth label="Footer titolo" value={footerTitle} onChange={e=> setFooterTitle(e.target.value)} placeholder="es. Informazioni" />
+                    </Grid>
+                    <Grid item xs={12} sm={12} md={8}>
+                      <TextField size="small" fullWidth multiline minRows={2} label="Footer testo" value={footerText} onChange={e=> setFooterText(e.target.value)} placeholder="Testo descrittivo (markdown semplice)" />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
+                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {footer_title: footerTitle, footer_text: footerText})}>Salva footer</Button>
+                    </Grid>
+                    <Grid item xs={12}>
+                      <Divider sx={{ my:1 }} />
+                      <Typography variant="subtitle2" sx={{ mb:1 }}>Visibilità sezione questionario</Typography>
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showFooterBlock} onChange={e=> saveUiSettings(undefined, undefined, {show_footer_block: e.target.checked})} />} label="Mostra blocco footer" /></Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showResearchProject} onChange={e=> saveUiSettings(undefined, undefined, {show_research_project: e.target.checked})} />} label="Mostra progetto" /></Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showRepositoryUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_repository_url: e.target.checked})} />} label="Mostra repository" /></Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showWebsiteUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_website_url: e.target.checked})} />} label="Mostra sito web" /></Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showInfoPdfUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_info_pdf_url: e.target.checked})} />} label="Mostra PDF" /></Grid>
+                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showContactEmail} onChange={e=> saveUiSettings(undefined, undefined, {show_contact_email: e.target.checked})} />} label="Mostra email contatto" /></Grid>
                   </Grid>
                   <ModelProvidersPanel config={config as any} onConfigUpdate={(next) => setConfig(prev => prev ? ({ ...prev, ...next } as any) : prev)} />
                 </>

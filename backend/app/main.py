@@ -156,7 +156,19 @@ async def get_public_config():
                 "default_asr": config.get('default_asr', 'openai'),
                 "ui_settings": {
                     "arena_public": config.get('ui_settings', {}).get('arena_public', False),
-                    "contact_email": config.get('ui_settings', {}).get('contact_email')
+                    "contact_email": config.get('ui_settings', {}).get('contact_email'),
+                    "research_project": config.get('ui_settings', {}).get('research_project'),
+                    "repository_url": config.get('ui_settings', {}).get('repository_url'),
+                    "website_url": config.get('ui_settings', {}).get('website_url'),
+                    "info_pdf_url": config.get('ui_settings', {}).get('info_pdf_url'),
+                    "footer_title": config.get('ui_settings', {}).get('footer_title'),
+                    "footer_text": config.get('ui_settings', {}).get('footer_text'),
+                    "show_research_project": config.get('ui_settings', {}).get('show_research_project', True),
+                    "show_repository_url": config.get('ui_settings', {}).get('show_repository_url', True),
+                    "show_website_url": config.get('ui_settings', {}).get('show_website_url', True),
+                    "show_info_pdf_url": config.get('ui_settings', {}).get('show_info_pdf_url', True),
+                    "show_contact_email": config.get('ui_settings', {}).get('show_contact_email', True),
+                    "show_footer_block": config.get('ui_settings', {}).get('show_footer_block', True)
                 }
             }
         else:

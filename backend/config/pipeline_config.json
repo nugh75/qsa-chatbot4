@@ -17,18 +17,16 @@
       "topic": "faq_qsa"
     },
     {
-      "pattern": "prova",
-      "topic": "prova"
-    },
-    {
-      "pattern": "proooov",
-      "topic": "prorov"
+      "pattern": "\\b(Prendere appunti attivi|Spaced repetition|Mappe concettuali|Auto-spiegazione|Pomodoro|Elaborazione personale|Testing effect|Studio distribuito|Insegnare agli altri|Parole chiave|Uso di esempi|Multimodalità|Sintesi scritta|Uso di analogie|Studio collaborativo|Domande guida|Organizzazione del tempo|Uso della memoria visiva|Gestione delle pause|Riflessione metacognitiva)\\b",
+      "topic": "strategie di apprendimento"
     }
   ],
   "files": {
     "analisi_secondo_livello": "analisi-di-secondo-livello.txt",
     "artefice_di_se_stessi": "essere-artchietto-di-sestessi.txt",
     "faq_qsa": "domane-e-risposte.txt",
-    "fattori_cognitivi_motivazionali": "fattori-cognitivi.txt"
+    "fattori_cognitivi_motivazionali": "fattori-cognitivi.txt",
+    "prva": "strategie_apprendimento.txt",
+    "strategie di apprendimento": "strategie_apprendimento.txt"
   }
 }

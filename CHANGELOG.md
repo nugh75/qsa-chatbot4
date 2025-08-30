@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.4.0 - 2025-08-30
+
+### Added
+- Admin / Pipeline:
+  - Colonna File nelle Routes con apertura diretta del contenuto associato.
+  - Editor file unificato: lista cliccabile dei file direttamente nel tab "File Editor".
+  - (Preparazione) Dialog per creazione/modifica route (pattern, topic, selezione/creazione file .md). *Se la creazione file via dialog verrà completata aggiungere qui la conferma definitiva.*
+- Admin / Usage & Feedback:
+  - Tabella dettagliata (provider, modello LLM, personalità, topic, latency ms, token usage) con filtri multipli e base per paginazione / sorting.
+
+### Changed
+- Admin / Pipeline:
+  - Rimossa sidebar editor delle routes; sostituita con approccio basato su dialog (work in progress se non già attivo completamente).
+  - Rimossi tab "Files" e componente di test debug pipeline (DebugPipelineTest).
+  - Snellito layout toolbar (filtro, test regex, refresh, bulk delete).
+- Admin / Usage:
+  - Rimosso "Riepilogo conversazione" obsoleto.
+  - Interfaccia unificata per usage e feedback (tabella filtrabile) con metadata centrale.
+
+### Fixed
+- File editor: apertura file dalla colonna non cambia più tab erroneamente.
+- Eliminato comportamento che chiudeva il box file editor quando si cliccava un file.
+
+### Removed
+- DebugPipelineTest component (box test API pipeline).
+- Vecchio tab "Files" del pannello Pipeline.
+- Riepilogo conversazioni dal pannello amministrazione.
+
+### Migration / Notes
+- Verificare che il volume montato contenga i file markdown richiesti; la creazione di nuovi file .md avverrà via dialog (se attivata completamente).
+- Aggiornare eventuali documentazioni interne che facevano riferimento al tab "Files" o al pannello di riepilogo.
+
+### Next (Ideas)
+- Ordinamento colonne usage + esportazione CSV.
+- Creazione file .md direttamente nella dialog route (se non già finalizzata).
+- Validazione regex live direttamente dentro la dialog (highlight pattern errors).
+
+### Tag & Release
+Per creare la release:
+```
+git pull origin master
+git add CHANGELOG.md
+git commit -m "chore: release v0.4.0"
+git tag -a v0.4.0 -m "Release v0.4.0"
+git push origin master --tags
+```
+
 ## v0.3.0 - 2025-08-28
 
 ### Added

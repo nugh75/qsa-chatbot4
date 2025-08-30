@@ -4,7 +4,7 @@ import {
   FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
   Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
   Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
-  Tooltip, Slider
+  Tooltip, Slider, Tabs, Tab
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
 import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon } from '@mui/icons-material'
@@ -34,8 +34,21 @@ const AdminPanel: React.FC = () => {
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
   const [arenaPublic, setArenaPublic] = useState<boolean>(false)
+  const [contactEmail, setContactEmail] = useState<string>('')
   const [savingArena, setSavingArena] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
+  const categories = [
+    { id: 'provider', label: 'Modelli & Provider', panels: ['providers', 'tts'] },
+    { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
+    { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
+    { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
+    { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
+  ] as const
+
+  const [selectedCategory, setSelectedCategory] = useState<string>('provider')
 
   // UI stato locale
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
@@ -112,7 +125,8 @@ const AdminPanel: React.FC = () => {
       const res = await authFetch(`${BACKEND}/api/admin/ui-settings`)
       if (res.ok) {
         const data = await res.json()
-        setArenaPublic(Boolean(data?.settings?.arena_public))
+  setArenaPublic(Boolean(data?.settings?.arena_public))
+  if (data?.settings?.contact_email) setContactEmail(data.settings.contact_email)
       }
     } catch {/* ignore */}
   }
@@ -123,20 +137,19 @@ const AdminPanel: React.FC = () => {
     loadUiSettings()
   }, [])
 
-  const toggleArenaPublic = async (value: boolean) => {
+  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string) => {
     setSavingArena(true)
     try {
       const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ arena_public: value })
+        body: JSON.stringify({ arena_public: nextArena ?? arenaPublic, contact_email: (nextEmail ?? contactEmail) || null })
       })
       if (res.ok) {
-        setArenaPublic(value)
+        if (nextArena !== undefined) setArenaPublic(!!nextArena)
+        if (nextEmail !== undefined) setContactEmail(nextEmail)
       }
-    } catch {/* noop */} finally {
-      setSavingArena(false)
-    }
+    } catch {/* noop */} finally { setSavingArena(false) }
   }
 
   const handlePanelExpansion = (panel: string) => (_: any, isExpanded: boolean) => {
@@ -248,6 +261,9 @@ const AdminPanel: React.FC = () => {
     } finally { setStartingDownload(false); }
   };
 
+  const activePanels = (categories.find(c => c.id === selectedCategory)?.panels ?? []) as readonly string[]
+  const panelVisible = (key: string) => (activePanels as readonly string[]).includes(key)
+
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
@@ -255,9 +271,23 @@ const AdminPanel: React.FC = () => {
         <Typography variant="h5" sx={{ mr: 2 }}>Pannello di amministrazione</Typography>
         <Button size="small" startIcon={<ChatIcon />} href="/" variant="outlined">Chat</Button>
         <Button size="small" startIcon={<ArenaIcon />} href="/arena" variant="outlined">Arena</Button>
-        <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> toggleArenaPublic(e.target.checked)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
+  <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> saveUiSettings(e.target.checked, undefined)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
         {loading && <LinearProgress sx={{ flexBasis: '100%', mt: 1 }} />}
       </Stack>
+
+      {/* Tabs categorie */}
+      <Paper variant="outlined" sx={{ mb: 2 }}>
+        <Tabs
+          value={selectedCategory}
+          onChange={(_, v) => setSelectedCategory(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+        >
+          {categories.map(cat => (
+            <Tab key={cat.id} value={cat.id} label={cat.label} />
+          ))}
+        </Tabs>
+      </Paper>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
@@ -266,7 +296,8 @@ const AdminPanel: React.FC = () => {
       )}
 
       {/* Providers */}
-  {/* Nota: quando si cambiano welcome/guides in altre sezioni (non ancora implementate qui), si potrebbe impostare: localStorage.setItem('welcome_guides_version', Date.now().toString()) per forzare il refresh lato chat. */}
+      {/* Nota: quando si cambiano welcome/guides in altre sezioni (non ancora implementate qui), si potrebbe impostare: localStorage.setItem('welcome_guides_version', Date.now().toString()) per forzare il refresh lato chat. */}
+      {panelVisible('providers') && (
       <Accordion expanded={expandedPanels.providers} onChange={handlePanelExpansion('providers')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -298,6 +329,12 @@ const AdminPanel: React.FC = () => {
                         </Select>
                       </FormControl>
                     </Grid>
+                    <Grid item xs={12} sm={6} md={5}>
+                      <TextField size="small" fullWidth label="Email contatto (sondaggi)" value={contactEmail} onChange={e=> setContactEmail(e.target.value)} placeholder="es. supporto@example.org" />
+                    </Grid>
+                    <Grid item xs={12} sm={6} md={3} sx={{ display:'flex', alignItems:'center' }}>
+                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, contactEmail)}>Salva contatto</Button>
+                    </Grid>
                   </Grid>
                   <ModelProvidersPanel config={config as any} onConfigUpdate={(next) => setConfig(prev => prev ? ({ ...prev, ...next } as any) : prev)} />
                 </>
@@ -306,9 +343,11 @@ const AdminPanel: React.FC = () => {
           </Card>
         </AccordionDetails>
       </Accordion>
+          )}
 
-      {/* TTS */}
-      <Accordion expanded={expandedPanels.tts} onChange={handlePanelExpansion('tts')}>
+  {/* TTS */}
+  {panelVisible('tts') && (
+  <Accordion expanded={expandedPanels.tts} onChange={handlePanelExpansion('tts')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <VolumeIcon fontSize="small" />
@@ -347,9 +386,11 @@ const AdminPanel: React.FC = () => {
           </Card>
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Gestione Utenti */}
-      <Accordion expanded={expandedPanels.user_management} onChange={handlePanelExpansion('user_management')}>
+  {/* Gestione Utenti */}
+  {panelVisible('user_management') && (
+  <Accordion expanded={expandedPanels.user_management} onChange={handlePanelExpansion('user_management')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <KeyIcon fontSize="small" />
@@ -360,9 +401,11 @@ const AdminPanel: React.FC = () => {
           <UserManagement />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Utilizzo & Feedback panel nuovo */}
-      <Accordion expanded={expandedPanels.usage} onChange={handlePanelExpansion('usage')}>
+  {/* Utilizzo & Feedback panel nuovo */}
+  {panelVisible('usage') && (
+  <Accordion expanded={expandedPanels.usage} onChange={handlePanelExpansion('usage')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <StatsIcon fontSize="small" />
@@ -373,10 +416,12 @@ const AdminPanel: React.FC = () => {
           <UsagePanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
 
-      {/* Memoria conversazioni */}
-      <Accordion expanded={expandedPanels.memory} onChange={handlePanelExpansion('memory')}>
+  {/* Memoria conversazioni */}
+  {panelVisible('memory') && (
+  <Accordion expanded={expandedPanels.memory} onChange={handlePanelExpansion('memory')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <StorageIcon fontSize="small" />
@@ -387,9 +432,11 @@ const AdminPanel: React.FC = () => {
           <MemoryPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Trascrizione (Whisper) */}
-      <Accordion expanded={expandedPanels.transcription} onChange={handlePanelExpansion('transcription')}>
+  {/* Trascrizione (Whisper) */}
+  {panelVisible('transcription') && (
+  <Accordion expanded={expandedPanels.transcription} onChange={handlePanelExpansion('transcription')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <MicIcon fontSize="small" />
@@ -400,9 +447,11 @@ const AdminPanel: React.FC = () => {
           <WhisperPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Whisper Health */}
-      <Accordion expanded={expandedPanels.whisper_health} onChange={handlePanelExpansion('whisper_health')}>
+  {/* Whisper Health */}
+  {panelVisible('whisper_health') && (
+  <Accordion expanded={expandedPanels.whisper_health} onChange={handlePanelExpansion('whisper_health')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <StorageIcon fontSize="small" />
@@ -413,9 +462,11 @@ const AdminPanel: React.FC = () => {
           <WhisperHealthPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Prompts (System & Summary) */}
-      <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
+  {/* Prompts (System & Summary) */}
+  {panelVisible('prompts') && (
+  <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <DescriptionIcon fontSize="small" />
@@ -429,9 +480,11 @@ const AdminPanel: React.FC = () => {
           </Stack>
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Welcome & Guides */}
-      <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
+  {/* Welcome & Guides */}
+  {panelVisible('welcome_guides') && (
+  <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <DescriptionIcon fontSize="small" />
@@ -442,9 +495,11 @@ const AdminPanel: React.FC = () => {
           <WelcomeGuidesPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Personalità */}
-      <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
+  {/* Personalità */}
+  {panelVisible('personalities') && (
+  <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <AIIcon fontSize="small" />
@@ -455,8 +510,10 @@ const AdminPanel: React.FC = () => {
           <PersonalitiesPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
   {/* FastAPI Endpoints */}
+      {panelVisible('apidocs') && (
       <Accordion expanded={expandedPanels.apidocs} onChange={handlePanelExpansion('apidocs')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -469,9 +526,11 @@ const AdminPanel: React.FC = () => {
           <APIDocsPanel />
         </AccordionDetails>
       </Accordion>
+      )}
 
-      {/* Embedding Management */}
-      <Accordion expanded={expandedPanels.embedding} onChange={handlePanelExpansion('embedding')}>
+  {/* Embedding Management */}
+  {panelVisible('embedding') && (
+  <Accordion expanded={expandedPanels.embedding} onChange={handlePanelExpansion('embedding')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <HubIcon fontSize="small" />
@@ -530,9 +589,11 @@ const AdminPanel: React.FC = () => {
           </Card>
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* RAG Documenti */}
-      <Accordion expanded={expandedPanels.ragdocs} onChange={handlePanelExpansion('ragdocs')}>
+  {/* RAG Documenti */}
+  {panelVisible('ragdocs') && (
+  <Accordion expanded={expandedPanels.ragdocs} onChange={handlePanelExpansion('ragdocs')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <DescriptionIcon fontSize="small" />
@@ -543,9 +604,11 @@ const AdminPanel: React.FC = () => {
           <RagDocumentsPanel />
         </AccordionDetails>
       </Accordion>
+  )}
 
-      {/* Pipeline / Regex Management */}
-      <Accordion expanded={expandedPanels.pipeline} onChange={handlePanelExpansion('pipeline')}>
+  {/* Pipeline / Regex Management */}
+  {panelVisible('pipeline') && (
+  <Accordion expanded={expandedPanels.pipeline} onChange={handlePanelExpansion('pipeline')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <DescriptionIcon fontSize="small" />
@@ -556,6 +619,7 @@ const AdminPanel: React.FC = () => {
           <PipelinePanel />
         </AccordionDetails>
       </Accordion>
+  )}
     </Container>
   )
 }

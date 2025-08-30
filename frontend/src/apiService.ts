@@ -357,7 +357,7 @@ class ApiService {
     default_provider: string;
     default_tts: string;
     default_asr: string;
-    ui_settings?: { arena_public: boolean };
+  ui_settings?: { arena_public: boolean; contact_email?: string|null };
   }>> {
     return this.makeRequest('/config/public');
   }

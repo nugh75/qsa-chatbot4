@@ -226,15 +226,17 @@ def get_summary_provider():
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
     arena_public: bool
+    contact_email: str | None = None
 
 @router.get("/admin/ui-settings")
 async def get_ui_settings():
     try:
         config = load_config()
-        ui = config.get("ui_settings", {"arena_public": False})
-        # ensure keys
+        ui = config.get("ui_settings", {"arena_public": False, "contact_email": None})
         if "arena_public" not in ui:
             ui["arena_public"] = False
+        if "contact_email" not in ui:
+            ui["contact_email"] = None
         return {"settings": ui}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore caricamento impostazioni UI: {str(e)}")
@@ -245,6 +247,10 @@ async def update_ui_settings(payload: UiSettingsIn):
         config = load_config()
         config.setdefault("ui_settings", {})
         config["ui_settings"]["arena_public"] = bool(payload.arena_public)
+        if payload.contact_email is not None:
+            # Basic sanitize trim
+            ce = payload.contact_email.strip() or None
+            config["ui_settings"]["contact_email"] = ce
         save_config(config)
         return {"success": True, "message": "Impostazioni UI aggiornate"}
     except Exception as e:

@@ -155,7 +155,8 @@ async def get_public_config():
                 "default_tts": config.get('default_tts', 'edge'),
                 "default_asr": config.get('default_asr', 'openai'),
                 "ui_settings": {
-                    "arena_public": config.get('ui_settings', {}).get('arena_public', False)
+                    "arena_public": config.get('ui_settings', {}).get('arena_public', False),
+                    "contact_email": config.get('ui_settings', {}).get('contact_email')
                 }
             }
         else:

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Box, Typography, TextField, Button, Alert, Divider, FormControl, InputLabel, Select, MenuItem, Slider } from '@mui/material'
+import { Box, Typography, TextField, Button, Alert, Divider, FormControl, InputLabel, Select, MenuItem, Slider, FormControlLabel, Checkbox, Link } from '@mui/material'
 
 type LikertKey = 'q_utilita'|'q_pertinenza'|'q_chiarezza'|'q_dettaglio'|'q_facilita'|'q_velocita'|'q_fiducia'|'q_riflessione'|'q_coinvolgimento'|'q_riuso'
 
@@ -30,6 +30,8 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 	const [sending, setSending] = useState(false)
 	const [done, setDone] = useState(false)
 	const [error, setError] = useState<string|undefined>()
+	const [contactEmail, setContactEmail] = useState<string | null>(null)
+	const [consent, setConsent] = useState(false)
 
 	const sessionIdKey = 'survey_session_id'
 	const existingSession = localStorage.getItem(sessionIdKey) || undefined
@@ -41,7 +43,7 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 	const filledCount = Object.values(values).filter(v=>typeof v==='number').length
 	const allLikertFilled = filledCount === Object.keys(labels).length
 	const allDemoFilled = (eta !== '' && sesso && istruzione && tipoIstituto && provenienza && area)
-	const canSubmit = allLikertFilled && allDemoFilled && !sending && !done
+	const canSubmit = allLikertFilled && allDemoFilled && consent && !sending && !done
 
 	// Deriva automaticamente l'area (STEM/Umanistiche) da istruzione+tipoIstituto
 	const deriveArea = (istr: string, tipo: string): string => {
@@ -54,6 +56,19 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 	React.useEffect(()=>{
 		setArea(deriveArea(istruzione, tipoIstituto))
 	}, [istruzione, tipoIstituto])
+
+	// Load public config for contact email
+	React.useEffect(()=>{
+		(async()=>{
+			try {
+				const resp = await fetch(`${backendUrl}/api/config/public`)
+				if(resp.ok){
+					const js = await resp.json()
+					setContactEmail(js?.ui_settings?.contact_email || null)
+				}
+			} catch {/* ignore */}
+		})()
+	}, [backendUrl])
 
 	const submit = async () => {
 		setSending(true); setError(undefined)
@@ -91,7 +106,9 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 	return (
 		<Box>
 			<Typography variant="subtitle1" sx={{ mb:1, fontWeight:600 }}>Questionario esperienza (anonimo)</Typography>
-			<Typography variant="body2" sx={{ mb:1 }}>Prima di tutto, alcune informazioni di base (obbligatorie):</Typography>
+			<Typography variant="body2" sx={{ mb:1 }}>
+          Prima di tutto, alcune informazioni di base (obbligatorie). Il questionario è anonimo: non raccogliamo dati identificativi, né indirizzi IP, né tracciamo il profilo dell'utente. I dati aggregati sono usati solo per migliorare il servizio.
+        </Typography>
 			<Box sx={{ display:'grid', gridTemplateColumns:{ xs:'1fr', sm:'1fr 1fr'}, gap:2, mb:2 }}>
 				<FormControl fullWidth>
 					<InputLabel>Età</InputLabel>
@@ -160,6 +177,15 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
               <Divider />
 				<TextField label="Riflessioni personali (facoltativo)" multiline minRows={2} value={riflessioni} onChange={e=>setRiflessioni(e.target.value)} />
 				<TextField label="Altri commenti (facoltativo)" multiline minRows={2} value={commenti} onChange={e=>setCommenti(e.target.value)} />
+					<FormControlLabel control={<Checkbox checked={consent} onChange={e=> setConsent(e.target.checked)} />} label={
+						<Typography variant="caption">
+							Dichiaro di aver letto e compreso che le risposte sono raccolte in forma anonima senza alcun tracciamento. Acconsento all'uso dei dati aggregati per finalità di miglioramento del servizio.
+							{contactEmail && (
+								<> Per qualsiasi domanda posso contattare l'amministratore via email: <Link href={`mailto:${contactEmail}`}>{contactEmail}</Link>.</>
+							)}
+						</Typography>
+					} />
+					{!consent && <Alert severity="warning" variant="outlined">Devi accettare le condizioni per inviare il questionario.</Alert>}
 				{error && <Alert severity="error">{error}</Alert>}
 				<Button variant="contained" disabled={!canSubmit} onClick={submit}>{sending? 'Invio...':'Invia'}</Button>
 			</Box>

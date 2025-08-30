@@ -8,7 +8,10 @@ import logging
 from typing import Dict, List, Optional
 
 SEED_PERSONALITIES_DIR = Path('/app/data')  # seed read-only
-RUNTIME_PERSONALITIES_DIR = Path(__file__).resolve().parent.parent / 'storage' / 'personalities'
+# Runtime storage: puntiamo alla directory montata persistente /app/storage
+# Evita il precedente mismatch (/app/backend/storage) utilizzando il path assoluto persistente.
+RUNTIME_BASE = Path('/app/storage')
+RUNTIME_PERSONALITIES_DIR = RUNTIME_BASE / 'personalities'
 PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "PERSONALITIES.json"
 
 def _bootstrap_personalities():
@@ -51,9 +54,16 @@ def upsert_personality(
     system_prompt_id: str,
     provider: str,
     model: str,
+    welcome_message: Optional[str] = None,
+    guide_id: Optional[str] = None,
+    context_window: Optional[int] = None,
+    temperature: Optional[float] = None,
     personality_id: Optional[str] = None,
     set_default: bool = False,
     avatar: Optional[str] = None,
+    tts_provider: Optional[str] = None,
+    tts_voice: Optional[str] = None,
+    active: bool = True,
 ) -> Dict:
     data = load_personalities()
     if personality_id is None:
@@ -68,6 +78,15 @@ def upsert_personality(
                 "provider": provider,
                 "model": model,
                 "avatar": avatar if avatar is not None else p.get("avatar"),
+                "tts_provider": tts_provider if tts_provider is not None else p.get("tts_provider"),
+                "tts_voice": tts_voice if tts_voice is not None else p.get("tts_voice"),
+                # welcome_message is stored as id referencing welcome_guides; keep previous value if not provided
+                "welcome_message": welcome_message if welcome_message is not None else p.get("welcome_message"),
+                # guide association (id) similar to welcome_message
+                "guide_id": guide_id if guide_id is not None else p.get("guide_id"),
+                "context_window": context_window if context_window is not None else p.get("context_window"),
+                "temperature": temperature if temperature is not None else p.get("temperature"),
+                "active": active if active is not None else p.get("active", True),
             })
             found = True
             break
@@ -79,6 +98,13 @@ def upsert_personality(
             "provider": provider,
             "model": model,
             "avatar": avatar,
+            "tts_provider": tts_provider,
+            "tts_voice": tts_voice,
+            "welcome_message": welcome_message,
+            "guide_id": guide_id,
+            "context_window": context_window,
+            "temperature": temperature,
+            "active": active,
         })
     if set_default:
         data["default_id"] = personality_id

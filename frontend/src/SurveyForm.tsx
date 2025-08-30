@@ -1,11 +1,6 @@
 import React, { useState } from 'react'
 import { Box, Typography, TextField, Button, Alert, Divider, FormControl, InputLabel, Select, MenuItem, Slider, FormControlLabel, Checkbox, Link } from '@mui/material'
-import DescriptionIcon from '@mui/icons-material/Description'
-import FolderIcon from '@mui/icons-material/Folder'
-import LanguageIcon from '@mui/icons-material/Language'
-import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf'
-import EmailIcon from '@mui/icons-material/Email'
-import WorkOutlineIcon from '@mui/icons-material/WorkOutline'
+// Footer icons removed: global footer now handles research/info links
 
 type LikertKey = 'q_utilita'|'q_pertinenza'|'q_chiarezza'|'q_dettaglio'|'q_facilita'|'q_velocita'|'q_fiducia'|'q_riflessione'|'q_coinvolgimento'|'q_riuso'
 
@@ -37,18 +32,6 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 	const [done, setDone] = useState(false)
 	const [error, setError] = useState<string|undefined>()
 	const [contactEmail, setContactEmail] = useState<string | null>(null)
-	const [researchProject, setResearchProject] = useState<string | null>(null)
-	const [repositoryUrl, setRepositoryUrl] = useState<string | null>(null)
-	const [websiteUrl, setWebsiteUrl] = useState<string | null>(null)
-	const [infoPdfUrl, setInfoPdfUrl] = useState<string | null>(null)
-	const [footerTitle, setFooterTitle] = useState<string | null>(null)
-	const [footerText, setFooterText] = useState<string | null>(null)
-	const [showResearchProject, setShowResearchProject] = useState(true)
-	const [showRepositoryUrl, setShowRepositoryUrl] = useState(true)
-	const [showWebsiteUrl, setShowWebsiteUrl] = useState(true)
-	const [showInfoPdfUrl, setShowInfoPdfUrl] = useState(true)
-	const [showContactEmail, setShowContactEmail] = useState(true)
-	const [showFooterBlock, setShowFooterBlock] = useState(true)
 	const [consent, setConsent] = useState(false)
 
 	const sessionIdKey = 'survey_session_id'
@@ -75,7 +58,7 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 		setArea(deriveArea(istruzione, tipoIstituto))
 	}, [istruzione, tipoIstituto])
 
-	// Load public config for contact email and research metadata
+	// Load public config just for contact email (footer handled globally now)
 	React.useEffect(()=>{
 		(async()=>{
 			try {
@@ -84,39 +67,12 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 					const js = await resp.json()
 					const ui = js?.ui_settings || {}
 					setContactEmail(ui.contact_email || null)
-					setResearchProject(ui.research_project || null)
-					setRepositoryUrl(ui.repository_url || null)
-					setWebsiteUrl(ui.website_url || null)
-					setInfoPdfUrl(ui.info_pdf_url || null)
-					setFooterTitle(ui.footer_title || null)
-					setFooterText(ui.footer_text || null)
-					if (typeof ui.show_research_project === 'boolean') setShowResearchProject(ui.show_research_project)
-					if (typeof ui.show_repository_url === 'boolean') setShowRepositoryUrl(ui.show_repository_url)
-					if (typeof ui.show_website_url === 'boolean') setShowWebsiteUrl(ui.show_website_url)
-					if (typeof ui.show_info_pdf_url === 'boolean') setShowInfoPdfUrl(ui.show_info_pdf_url)
-					if (typeof ui.show_contact_email === 'boolean') setShowContactEmail(ui.show_contact_email)
-					if (typeof ui.show_footer_block === 'boolean') setShowFooterBlock(ui.show_footer_block)
 				}
 			} catch {/* ignore */}
 		})()
 	}, [backendUrl])
 
-	// Simple markdown renderer for limited formatting (*italic*, **bold**, [text](url))
-	const renderMarkdown = (text: string) => {
-		if(!text) return null
-		let html = text
-		// Escape basic HTML
-		html = html.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-		// Bold
-		html = html.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
-		// Italic
-		html = html.replace(/\*(.+?)\*/g,'<em>$1</em>')
-		// Links [text](url)
-		html = html.replace(/\[(.+?)\]\((https?:[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>')
-		// Line breaks
-		html = html.replace(/\n/g,'<br/>')
-		return <span dangerouslySetInnerHTML={{ __html: html }} />
-	}
+	// Local footer renderer removed (handled globally)
 
 	const submit = async () => {
 		setSending(true); setError(undefined)
@@ -235,17 +191,7 @@ export const SurveyForm: React.FC<{ backendUrl: string; onSubmitted?: ()=>void }
 					} />
 					{!consent && <Alert severity="warning" variant="outlined">Devi accettare le condizioni per inviare il questionario.</Alert>}
 				{error && <Alert severity="error">{error}</Alert>}
-				{showFooterBlock && (researchProject || repositoryUrl || websiteUrl || infoPdfUrl || contactEmail || footerTitle || footerText) && (
-					<Box sx={{ mt:3, p:2, border:'1px dashed', borderColor:'divider', borderRadius:1 }}>
-						<Typography variant="subtitle2" sx={{ mb:1, display:'flex', alignItems:'center', gap:0.5 }}><DescriptionIcon fontSize="small" />{footerTitle || 'Informazioni'}</Typography>
-						{footerText && <Typography variant="body2" sx={{ mb:1 }}>{renderMarkdown(footerText)}</Typography>}
-						{showResearchProject && researchProject && <Typography variant="body2" sx={{ mb:0.5, display:'flex', alignItems:'center', gap:0.5 }}><WorkOutlineIcon fontSize="inherit" /> <strong>Progetto:</strong> {researchProject}</Typography>}
-						{showRepositoryUrl && repositoryUrl && <Typography variant="body2" sx={{ mb:0.5, display:'flex', alignItems:'center', gap:0.5 }}><FolderIcon fontSize="inherit" /> <strong>Repository:</strong> <Link href={repositoryUrl} target="_blank" rel="noopener">{repositoryUrl}</Link></Typography>}
-						{showWebsiteUrl && websiteUrl && <Typography variant="body2" sx={{ mb:0.5, display:'flex', alignItems:'center', gap:0.5 }}><LanguageIcon fontSize="inherit" /> <strong>Sito:</strong> <Link href={websiteUrl} target="_blank" rel="noopener">{websiteUrl}</Link></Typography>}
-						{showInfoPdfUrl && infoPdfUrl && <Typography variant="body2" sx={{ mb:0.5, display:'flex', alignItems:'center', gap:0.5 }}><PictureAsPdfIcon fontSize="inherit" /> <strong>Informativa:</strong> <Link href={infoPdfUrl} target="_blank" rel="noopener">PDF</Link></Typography>}
-						{showContactEmail && contactEmail && <Typography variant="body2" sx={{ mb:0.5, display:'flex', alignItems:'center', gap:0.5 }}><EmailIcon fontSize="inherit" /> <strong>Contatto:</strong> <Link href={`mailto:${contactEmail}`}>{contactEmail}</Link></Typography>}
-					</Box>
-				)}
+				{/* Footer info block removed: now shown globally across pages */}
 				<Button variant="contained" disabled={!canSubmit} onClick={submit}>{sending? 'Invio...':'Invia'}</Button>
 			</Box>
 		</Box>

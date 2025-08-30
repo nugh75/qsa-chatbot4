@@ -83,7 +83,10 @@ const WelcomeGuidesPanel: React.FC = () => {
                 {activeId===it.id && <Chip size="small" color="success" label="attivo" />}
               </Stack>} secondary={<Typography variant="caption" sx={{ whiteSpace:'pre-wrap' }}>{it.content.slice(0,160)}{it.content.length>160?'…':''}</Typography>} />
               <ListItemSecondaryAction>
-                <Tooltip title="Attiva"><span><IconButton size="small" onClick={()=> handleActivate(k,it.id)} disabled={activeId===it.id}><CheckIcon fontSize="small" /></IconButton></span></Tooltip>
+                {/* Rimosso pulsante attiva per welcome/guide: l'associazione avviene nella personalità */}
+                {k==='guide' && (
+                  <Tooltip title="Attiva"><span><IconButton size="small" onClick={()=> handleActivate(k,it.id)} disabled={activeId===it.id}><CheckIcon fontSize="small" /></IconButton></span></Tooltip>
+                )}
                 <Tooltip title="Modifica"><IconButton size="small" onClick={()=> openEdit(k,it)}><EditIcon fontSize="small" /></IconButton></Tooltip>
                 <Tooltip title="Elimina"><IconButton size="small" onClick={()=> handleDelete(k,it.id)}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
               </ListItemSecondaryAction>

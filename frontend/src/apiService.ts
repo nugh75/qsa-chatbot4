@@ -3,6 +3,7 @@
  */
 
 import { CredentialManager } from './crypto';
+import type { PersonalityEntry } from './types/admin';
 
 // Dynamic API base resolution to avoid hard-coded localhost in deployed/tunneled environments.
 // Priority order:
@@ -377,7 +378,7 @@ class ApiService {
     return this.makeRequest('/config/public');
   }
 
-  async getPersonalities(): Promise<ApiResponse<{ default_id: string|null; personalities: { id: string; name: string; provider: string; model: string; system_prompt_id: string; avatar_url?: string|null }[] }>> {
+  async getPersonalities(): Promise<ApiResponse<{ default_id: string|null; personalities: PersonalityEntry[] }>> {
     return this.makeRequest('/personalities');
   }
   

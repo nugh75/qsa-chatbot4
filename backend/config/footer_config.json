@@ -1,0 +1,15 @@
+{
+  "footer_title": "Informazioni",
+  "footer_text": "Questo è un testo di esempio del footer. Puoi modificarlo dal pannello di amministrazione.",
+  "research_project": null,
+  "repository_url": null,
+  "website_url": null,
+  "info_pdf_url": null,
+  "contact_email": null,
+  "show_research_project": true,
+  "show_repository_url": true,
+  "show_website_url": true,
+  "show_info_pdf_url": true,
+  "show_contact_email": true,
+  "show_footer_block": true
+}

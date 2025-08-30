@@ -112,7 +112,7 @@ async def _local_reply(messages: List[Dict], context_hint: str) -> str:
     
     return "Che interessante! Per aiutarti al meglio, mi piacerebbe conoscere prima la tua impressione generale sul QSA. Poi, se vuoi, possiamo analizzare insieme i tuoi punteggi dei fattori cognitivi (C1–C7) e successivamente quelli affettivo-motivazionali (A1–A7)."
 
-async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None) -> str:
+async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3) -> str:
     provider = (provider or 'local').lower()
     print(f"🤖 Provider selezionato: {provider}")
     
@@ -131,7 +131,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         try:
             # Combina tutti i messaggi in un singolo prompt per Gemini
             combined_prompt = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
-            payload = {"contents":[{"parts":[{"text": combined_prompt}]}]}
+            payload = {"contents":[{"parts":[{"text": combined_prompt}]}], "generationConfig": {"temperature": temperature}}
             
             print(f"📤 Chiamata a Gemini con payload: {len(combined_prompt)} caratteri")
             
@@ -182,9 +182,10 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version":"2023-06-01"},
-                json={"model": (model or "claude-3-5-sonnet-20241022"),
-                      "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
-                      "messages": claude_messages})
+            json={"model": (model or "claude-3-5-sonnet-20241022"),
+                "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
+                "messages": claude_messages,
+                "temperature": temperature})
         r.raise_for_status()
         return r.json()["content"][0]["text"]
 
@@ -213,9 +214,9 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         async with httpx.AsyncClient(timeout=60) as cx:
             r = await cx.post("https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-                json={"model": (model or "gpt-4o-mini"),
-                      "messages": openai_messages,
-                      "temperature":0.3})
+            json={"model": (model or "gpt-4o-mini"),
+                "messages": openai_messages,
+                "temperature": float(temperature)})
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
 
@@ -241,7 +242,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
                     json={
                         "model": "anthropic/claude-3.5-sonnet",  # Modello di default
                         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-                        "temperature": 0.3,
+                        "temperature": float(temperature),
                         "max_tokens": 2500  # Aumentato da 800 per risposte più dettagliate
                     })
             
@@ -288,7 +289,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
                         "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
                         "stream": False,
                         "options": {
-                            "temperature": 0.3,
+                            "temperature": float(temperature),
                             "top_p": 0.9,
                         }
                     })

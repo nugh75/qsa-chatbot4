@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import type { PersonalityEntry } from './types/admin'
 import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
@@ -46,6 +47,7 @@ import remarkGfm from 'remark-gfm'
 import { useTheme, useMediaQuery } from '@mui/material'
 import MobileChatBar from './components/MobileChatBar'
 import HeaderBar from './components/HeaderBar'
+import SiteFooter from './components/SiteFooter'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -177,11 +179,12 @@ const AppContent: React.FC = () => {
   const [activeGuide, setActiveGuide] = useState<string|undefined>()
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
-  const [personalities, setPersonalities] = useState<{id:string; name:string; provider:string; model:string; system_prompt_id:string; avatar_url?: string | null}[]>([])
+  const [personalities, setPersonalities] = useState<PersonalityEntry[]>([])
   const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
   const [error,setError] = useState<string|undefined>()
   const [loading,setLoading] = useState(false)
-  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'>('edge')
+  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'|'piper'>('edge')
+  const [ttsVoice, setTtsVoice] = useState<string | undefined>(undefined)
   const [playingMessageIndex, setPlayingMessageIndex] = useState<number | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
@@ -331,7 +334,9 @@ const AppContent: React.FC = () => {
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
   // Avatar assistente: fisso (rimuoviamo avatar legati alla personalità)
-  const assistantAvatarSrc = '/volto.png'
+  // Avatar dinamico: se personalità ha avatar_url usa quello, altrimenti fallback statico
+  const selectedPersonality = personalities.find(p=> p.id === selectedPersonalityId)
+  const assistantAvatarSrc = selectedPersonality?.avatar_url || '/volto.png'
 
   // Carica configurazione pubblica e welcome/guide attivi
   useEffect(() => {
@@ -340,23 +345,30 @@ const AppContent: React.FC = () => {
         const { apiService } = await import('./apiService')
         const response = await apiService.getPublicConfig()
         if (response.success && response.data) {
-          setEnabledProviders(response.data.enabled_providers)
-          setEnabledTtsProviders(response.data.enabled_tts_providers)
-          setEnabledAsrProviders(response.data.enabled_asr_providers)
-          setDefaultProvider(response.data.default_provider)
-          setDefaultTts(response.data.default_tts)
-          setDefaultAsr(response.data.default_asr)
+          // Coalesce undefined/null arrays to [] for safety
+          const ep = Array.isArray(response.data.enabled_providers) ? response.data.enabled_providers : []
+          const etts = Array.isArray(response.data.enabled_tts_providers) ? response.data.enabled_tts_providers : []
+          const easr = Array.isArray(response.data.enabled_asr_providers) ? response.data.enabled_asr_providers : []
+          const defProv = response.data.default_provider || ep[0] || 'local'
+          const defTts = response.data.default_tts || etts[0] || 'edge'
+          const defAsr = response.data.default_asr || easr[0] || 'openai'
+          setEnabledProviders(ep)
+          setEnabledTtsProviders(etts)
+          setEnabledAsrProviders(easr)
+            setDefaultProvider(defProv)
+          setDefaultTts(defTts)
+          setDefaultAsr(defAsr)
           setArenaPublic(Boolean(response.data.ui_settings?.arena_public))
-          
-          // Set default values if current selections are not enabled
-          if (!response.data.enabled_providers.includes(provider)) {
-            setProvider(response.data.default_provider as any)
+
+          // Adjust current selections only if they are no longer valid
+          if (!ep.includes(provider)) {
+            setProvider(defProv as any)
           }
-          if (!response.data.enabled_tts_providers.includes(ttsProvider)) {
-            setTtsProvider(response.data.default_tts as any)
+          if (!etts.includes(ttsProvider)) {
+            setTtsProvider(defTts as any)
           }
-          if (!response.data.enabled_asr_providers.includes(asrProvider)) {
-            setAsrProvider(response.data.default_asr as any)
+          if (!easr.includes(asrProvider)) {
+            setAsrProvider(defAsr as any)
           }
         }
         // Fetch welcome + guide attivi (solo se non già persistiti in localStorage o non caricati)
@@ -386,6 +398,19 @@ const AppContent: React.FC = () => {
           const def = (pers.data.personalities || []).find(p => p.id === defId)
           if (def && response?.data?.enabled_providers?.includes(def.provider)) {
             setProvider(def.provider as any)
+          }
+          if (def?.tts_provider) {
+            setTtsProvider(def.tts_provider as any)
+          }
+          if (def?.tts_voice) {
+            setTtsVoice(def.tts_voice)
+          }
+          // Se la chat è allo stato iniziale, sostituisci welcome con quello della personalità
+          if (def && messages.length <= 1 && messages[0].content === 'Caricamento messaggio di benvenuto…') {
+            const welcomeText = def.welcome_message_content || def.welcome_message
+            if (welcomeText) {
+              setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
+            }
           }
         }
       } catch (error) {
@@ -457,6 +482,17 @@ const AppContent: React.FC = () => {
       };
       if (selectedPersonalityId) {
         headers['X-Personality-Id'] = selectedPersonalityId
+      }
+      // Applica temperatura personalità come header opzionale per potenziale uso backend
+      const personality = personalities.find(p=> p.id === selectedPersonalityId)
+      if (personality?.tts_provider) {
+        setTtsProvider(personality.tts_provider as any)
+      }
+      if (personality?.tts_voice) {
+        setTtsVoice(personality.tts_voice)
+      }
+      if (personality?.temperature != null) {
+        headers['X-LLM-Temperature'] = String(personality.temperature)
       }
       
       if (accessToken) {
@@ -543,10 +579,18 @@ const AppContent: React.FC = () => {
         
         // Invia anche la cronologia recente per fornire contesto al LLM
         // Prendi gli ultimi 8 messaggi (4 scambi utente-assistente) per mantenere il contesto
-        const recentHistory = messages.slice(-8).map(msg => ({
-          role: msg.role,
-          content: msg.content
-        }));
+        // Context window: se definito nella personalità, limita il numero di messaggi precedenti
+        let historySource = messages
+        const cw = personality?.context_window
+        if (cw && cw > 0) {
+          // cw rappresenta il numero massimo di messaggi (user+assistant) da includere (escludendo il system che è lato server)
+            historySource = messages.slice(-cw)
+        }
+        // Fallback: al massimo 8 se nessun cw
+        const recentHistory = historySource.slice(- (cw ? cw : 8)).map(msg => ({
+            role: msg.role,
+            content: msg.content
+        }))
         
         requestBody.conversation_history = recentHistory;
         console.log('📝 Invio cronologia recente:', recentHistory.length, 'messaggi');
@@ -646,7 +690,7 @@ const AppContent: React.FC = () => {
         body: JSON.stringify({ 
           text: text,
           provider: ttsProvider,
-          voice: ttsProvider === 'edge' ? 'it-IT-ElsaNeural' : undefined
+          voice: selectedPersonality?.tts_voice || ttsVoice || (ttsProvider === 'edge' ? 'it-IT-ElsaNeural' : undefined)
         })
       })
 
@@ -808,19 +852,30 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Container maxWidth={isMobile ? 'sm' : 'xl'} sx={{ py: isMobile ? 1 : 3, px: isMobile ? 1 : 2, pb: isMobile ? 10 : 3 }}>
+  <Container maxWidth={isMobile ? 'sm' : 'xl'} sx={{ py: isMobile ? 1 : 3, px: isMobile ? 1 : 2, pb: isMobile ? 10 : 3 }}>
       {/* Unified responsive header bar with personality, voice and download */}
       <HeaderBar
-        personalities={personalities}
+        personalities={personalities as any}
         selectedPersonalityId={selectedPersonalityId}
         onChangePersonality={(id)=>{
           setSelectedPersonalityId(id)
           const p = personalities.find(pp=>pp.id===id)
           if (p && enabledProviders.includes(p.provider)) setProvider(p.provider as any)
+          if ((p as any)?.tts_provider) setTtsProvider((p as any).tts_provider as any)
+          if ((p as any)?.tts_voice) setTtsVoice((p as any).tts_voice)
+          // Prefer new structured welcome message content, fallback to legacy field
+          const welcomeText = p?.welcome_message_content || p?.welcome_message
+          if (welcomeText) {
+            setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
+            setCurrentConversationId(null)
+          }
+          // Optionally show guide content if available (do not auto-open help panel)
+          if (p?.guide_content) {
+            setActiveGuide(p.guide_content)
+          }
         }}
-        ttsProviders={enabledTtsProviders}
-        ttsProvider={ttsProvider}
-        onChangeTts={(p)=> setTtsProvider(p as any)}
+        onOpenSidebar={()=> setSidebarOpen(true)}
+  isAdmin={!!user?.is_admin}
         onDownloadChat={messages.length ? ()=>{
           const blob = new Blob([messages.map(m=>`[${new Date(m.ts).toLocaleString()}] ${m.role}: ${m.content}`).join('\n\n')], { type:'text/plain' })
           const url = URL.createObjectURL(blob)
@@ -833,31 +888,30 @@ const AppContent: React.FC = () => {
           URL.revokeObjectURL(url)
         } : undefined}
         onNewChat={async ()=>{
-          // Ricarica welcome attivo al momento della nuova chat
           try {
             const { apiService } = await import('./apiService')
             const wg = await apiService.getPublicWelcomeGuide()
             if (wg.success && wg.data?.welcome?.content) {
-              setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
+              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+              setMessages([{ role:'assistant', content: p?.welcome_message || wg.data.welcome.content, ts: Date.now() }])
             } else {
-              setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
             }
           } catch {
-            setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
           }
           setCurrentConversationId(null);
         }}
         onShowGuide={async ()=> {
-          // fetch guida aggiornata al momento dell'apertura
           if (!guideLoading) {
             setGuideLoading(true)
             try {
               const { apiService } = await import('./apiService')
               const wg = await apiService.getPublicWelcomeGuide()
-              if (wg.success) {
-                setActiveGuide(wg.data?.guide?.content)
-              }
-            } catch {/* ignore */} finally { setGuideLoading(false) }
+              if (wg.success) setActiveGuide(wg.data?.guide?.content)
+            } catch { /* ignore */ } finally { setGuideLoading(false) }
           }
           setShowHelp(true)
         }}
@@ -879,72 +933,7 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
       
-  {/* Legacy top bar simplified: only left chat title/menu and mobile/overflow controls; desktop actions moved to HeaderBar */}
-  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:2, flexWrap: 'nowrap' }}>
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth:0 }}>
-          <Tooltip title="Menu conversazioni">
-            <IconButton
-              size="small"
-              onClick={() => setSidebarOpen(true)}
-              sx={{ color: 'primary.main' }}
-            >
-              <MenuIcon />
-            </IconButton>
-          </Tooltip>
-          <ChatAvatar key={selectedPersonalityId || 'default'} src={assistantAvatarSrc} />
-          {!isVerySmall && <Typography variant="h6" noWrap>Counselorbot</Typography>}
-          {user?.is_admin && (
-            <Chip
-              component="a"
-              href="/admin"
-              label="Admin"
-              color="warning"
-              size="small"
-              clickable
-              sx={{ ml: 1 }}
-            />
-          )}
-        </Stack>
-  {/* Controlli principali (pruned: personality, voice now in HeaderBar) */}
-  <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap:'nowrap', overflow:'hidden' }}>
-          {/* Desktop action buttons removed (now in HeaderBar). */}
-          {/* Login/Logout */}
-          {/* Menu overflow mobile */}
-          {isMobile && (
-            <>
-              <IconButton size="small" onClick={handleOpenMore} sx={{ color:'primary.main' }}>
-                <MoreVertIcon />
-              </IconButton>
-              <Menu anchorEl={moreAnchor} open={openMore} onClose={handleCloseMore} keepMounted>
-                <MenuItem onClick={() => { handleCloseMore(); setShowHelp(true) }}>
-                  <ListItemIcon><HelpOutlineIcon fontSize="small" /></ListItemIcon>
-                  <ListItemText>Guida</ListItemText>
-                </MenuItem>
-                {(user?.is_admin || arenaPublic) && (
-                  <MenuItem component="a" href="/arena" onClick={handleCloseMore}>
-                    <ListItemText>Arena</ListItemText>
-                  </MenuItem>
-                )}
-                <MenuItem onClick={() => { handleCloseMore(); setMessages([{ role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]); setCurrentConversationId(null) }}>
-                  <ListItemText>Nuova conversazione</ListItemText>
-                </MenuItem>
-                {isAuthenticated ? (
-                  <MenuItem onClick={() => { handleCloseMore(); handleLogout() }}>
-                    <ListItemIcon><LogoutIcon fontSize="small" /></ListItemIcon>
-                    <ListItemText>Logout</ListItemText>
-                  </MenuItem>
-                ) : (
-                  <MenuItem onClick={() => { handleCloseMore(); setShowLoginDialog(true) }}>
-                    <ListItemIcon><LoginIcon fontSize="small" /></ListItemIcon>
-                    <ListItemText>Login</ListItemText>
-                  </MenuItem>
-                )}
-              </Menu>
-            </>
-          )}
-          {/* Desktop login/logout moved to HeaderBar */}
-        </Stack>
-      </Stack>
+  {/* Removed legacy top bar (menu + avatar + duplicate title) now merged into HeaderBar */}
 
       {!isAuthenticated && (
         <Alert severity="info" sx={{ mb: 2 }}>
@@ -1019,7 +1008,7 @@ const AppContent: React.FC = () => {
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' }
                       }}
-                      title={playingMessageIndex === i ? "Ferma audio" : `Ascolta (${ttsProvider})`}
+                      title={playingMessageIndex === i ? "Ferma audio" : `Ascolta (${ttsProvider}${(selectedPersonality?.tts_voice || ttsVoice) ? ' - ' + (selectedPersonality?.tts_voice || ttsVoice) : ''})`}
                     >
                       {playingMessageIndex === i ? <SmallStopIcon size={16} /> : <SpeakerIcon size={16} />}
                     </Box>
@@ -1278,7 +1267,7 @@ const AppContent: React.FC = () => {
                   <Box sx={{ color: '#1976d2', display: 'flex', alignItems: 'center' }}>
                     <SpeakerIcon size={12} />
                   </Box>
-                  Riproduzione audio ({ttsProvider})...
+                  Riproduzione audio ({ttsProvider}${(selectedPersonality?.tts_voice || ttsVoice) ? ' - ' + (selectedPersonality?.tts_voice || ttsVoice) : ''})...
                 </Typography>
               )}
             </Box>
@@ -1412,12 +1401,19 @@ const AppContent: React.FC = () => {
             const { apiService } = await import('./apiService')
             const wg = await apiService.getPublicWelcomeGuide()
             if (wg.success && wg.data?.welcome?.content) {
-              setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
+              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+              if (p?.welcome_message) {
+                setMessages([{ role:'assistant', content: p.welcome_message, ts: Date.now() }])
+              } else {
+                setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
+              }
             } else {
-              setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
             }
           } catch {
-            setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
+            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
           }
           setCurrentConversationId(null);
           setSidebarOpen(false);
@@ -1556,6 +1552,7 @@ const AppContent: React.FC = () => {
           <SurveyForm backendUrl={BACKEND} onSubmitted={()=> setTimeout(()=> setShowSurvey(false), 1500)} />
         </DialogContent>
       </Dialog>
+      <SiteFooter />
     </Container>
   );
 };

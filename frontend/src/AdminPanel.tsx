@@ -7,7 +7,7 @@ import {
   Tooltip, Slider, Tabs, Tab
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon } from '@mui/icons-material'
 
 import UserManagement from './components/UserManagement'
 import ModelProvidersPanel from './components/ModelProvidersPanel'
@@ -25,6 +25,7 @@ import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
 import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
+import FooterSettingsPanel from './components/FooterSettingsPanel'
 import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
 
@@ -57,6 +58,7 @@ const AdminPanel: React.FC = () => {
     { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
+    { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
     { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
   ] as const
 
@@ -78,6 +80,7 @@ const AdminPanel: React.FC = () => {
   whisper_health: false,
   pipeline: false,
   welcome_guides: false,
+  footer_settings: true,
   })
 
   // Token test
@@ -583,6 +586,20 @@ const AdminPanel: React.FC = () => {
   )}
 
   {/* Personalità */}
+  {/* Footer Settings */}
+  {panelVisible('footer_settings') && (
+  <Accordion expanded={expandedPanels.footer_settings} onChange={handlePanelExpansion('footer_settings')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <InfoIcon fontSize="small" />
+            <Typography variant="h6">Footer & Informazioni</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <FooterSettingsPanel />
+        </AccordionDetails>
+      </Accordion>
+  )}
   {panelVisible('personalities') && (
   <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>

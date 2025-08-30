@@ -23,6 +23,7 @@ from .rag_routes import router as rag_router
 from .survey_routes import router as survey_router
 from .welcome_guides import router as welcome_guides_router
 from .personalities import load_personalities
+from .welcome_guides import list_welcome_messages
 from .prompts import load_system_prompts, load_summary_prompt
 from .logging_utils import get_system_logger, log_system
 
@@ -120,79 +121,58 @@ app.include_router(welcome_guides_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():
-    """Get public configuration for enabled providers"""
+    """Get public configuration for enabled providers (public-safe)."""
     try:
         config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'admin_config.json')
-        if os.path.exists(config_path):
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            # Extract enabled providers
-            enabled_providers = []
-            enabled_tts_providers = []
-            enabled_asr_providers = []
-            
-            if 'ai_providers' in config:
-                for provider, settings in config['ai_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_providers.append(provider)
-            
-            if 'tts_providers' in config:
-                for provider, settings in config['tts_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_tts_providers.append(provider)
-            
-            if 'asr_providers' in config:
-                for provider, settings in config['asr_providers'].items():
-                    if settings.get('enabled', False):
-                        enabled_asr_providers.append(provider)
-            
-            return {
-                "enabled_providers": enabled_providers,
-                "enabled_tts_providers": enabled_tts_providers,
-                "enabled_asr_providers": enabled_asr_providers,
-                "default_provider": config.get('default_provider', 'local'),
-                "default_tts": config.get('default_tts', 'edge'),
-                "default_asr": config.get('default_asr', 'openai'),
-                "ui_settings": {
-                    "arena_public": config.get('ui_settings', {}).get('arena_public', False),
-                    "contact_email": config.get('ui_settings', {}).get('contact_email'),
-                    "research_project": config.get('ui_settings', {}).get('research_project'),
-                    "repository_url": config.get('ui_settings', {}).get('repository_url'),
-                    "website_url": config.get('ui_settings', {}).get('website_url'),
-                    "info_pdf_url": config.get('ui_settings', {}).get('info_pdf_url'),
-                    "footer_title": config.get('ui_settings', {}).get('footer_title'),
-                    "footer_text": config.get('ui_settings', {}).get('footer_text'),
-                    "show_research_project": config.get('ui_settings', {}).get('show_research_project', True),
-                    "show_repository_url": config.get('ui_settings', {}).get('show_repository_url', True),
-                    "show_website_url": config.get('ui_settings', {}).get('show_website_url', True),
-                    "show_info_pdf_url": config.get('ui_settings', {}).get('show_info_pdf_url', True),
-                    "show_contact_email": config.get('ui_settings', {}).get('show_contact_email', True),
-                    "show_footer_block": config.get('ui_settings', {}).get('show_footer_block', True)
-                }
-            }
-        else:
-            # Fallback configuration
-            return {
+        if not os.path.exists(config_path):
+            # Minimal defaults
+            return {"success": True, "data": {
                 "enabled_providers": ['local'],
                 "enabled_tts_providers": ['edge'],
                 "enabled_asr_providers": ['openai'],
                 "default_provider": 'local',
                 "default_tts": 'edge',
                 "default_asr": 'openai',
-                "ui_settings": { "arena_public": False }
+                "ui_settings": {"arena_public": False}
+            }}
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        enabled_providers = [p for p, s in config.get('ai_providers', {}).items() if s.get('enabled')]
+        enabled_tts_providers = [p for p, s in config.get('tts_providers', {}).items() if s.get('enabled')]
+        enabled_asr_providers = [p for p, s in config.get('asr_providers', {}).items() if s.get('enabled')]
+        ui_cfg = config.get('ui_settings', {}) or {}
+        # Normalize visibility flags defaults True
+        for k in ["show_research_project","show_repository_url","show_website_url","show_info_pdf_url","show_contact_email","show_footer_block"]:
+            if k not in ui_cfg:
+                ui_cfg[k] = True
+        payload = {
+            "enabled_providers": enabled_providers,
+            "enabled_tts_providers": enabled_tts_providers,
+            "enabled_asr_providers": enabled_asr_providers,
+            "default_provider": config.get('default_provider', 'local'),
+            "default_tts": config.get('default_tts', 'edge'),
+            "default_asr": config.get('default_asr', 'openai'),
+            "ui_settings": {
+                "arena_public": ui_cfg.get('arena_public', False),
+                "contact_email": ui_cfg.get('contact_email'),
+                "research_project": ui_cfg.get('research_project'),
+                "repository_url": ui_cfg.get('repository_url'),
+                "website_url": ui_cfg.get('website_url'),
+                "info_pdf_url": ui_cfg.get('info_pdf_url'),
+                "footer_title": ui_cfg.get('footer_title'),
+                "footer_text": ui_cfg.get('footer_text'),
+                "show_research_project": ui_cfg.get('show_research_project', True),
+                "show_repository_url": ui_cfg.get('show_repository_url', True),
+                "show_website_url": ui_cfg.get('show_website_url', True),
+                "show_info_pdf_url": ui_cfg.get('show_info_pdf_url', True),
+                "show_contact_email": ui_cfg.get('show_contact_email', True),
+                "show_footer_block": ui_cfg.get('show_footer_block', True)
             }
+        }
+        return {"success": True, "data": payload}
     except Exception as e:
         print(f"Error loading public config: {e}")
-        return {
-            "enabled_providers": ['local'],
-            "enabled_tts_providers": ['edge'],
-            "enabled_asr_providers": ['openai'],
-            "default_provider": 'local',
-            "default_tts": 'edge',
-            "default_asr": 'openai',
-            "ui_settings": { "arena_public": False }
-        }
+        return {"success": False, "error": str(e), "data": {"enabled_providers": [], "ui_settings": {"arena_public": False}}}
 
 @app.post("/api/feedback")
 async def save_feedback(feedback_data: FeedbackData):
@@ -239,6 +219,14 @@ async def save_feedback(feedback_data: FeedbackData):
 async def get_public_personalities():
     try:
         data = load_personalities()
+        # Map welcome message id -> content
+        try:
+            _welcome = {m.get('id'): m.get('content') for m in list_welcome_messages() if isinstance(m, dict)}
+            from .welcome_guides import list_guides
+            _guides = {g.get('id'): g.get('content') for g in list_guides() if isinstance(g, dict)}
+        except Exception:
+            _welcome = {}
+            _guides = {}
         # Expose only necessary fields
         return {
             "default_id": data.get("default_id"),
@@ -250,8 +238,18 @@ async def get_public_personalities():
                     "model": p.get("model"),
                     "system_prompt_id": p.get("system_prompt_id"),
                     "avatar_url": (f"/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
+                    "tts_provider": p.get("tts_provider"),
+                    # Provide both id and content for welcome + guide
+                    "welcome_message_id": p.get("welcome_message"),
+                    "welcome_message_content": _welcome.get(p.get("welcome_message")) if p.get("welcome_message") else None,
+                    # Legacy alias so existing frontend keeps working until updated
+                    "welcome_message": _welcome.get(p.get("welcome_message")) if p.get("welcome_message") else None,
+                    "guide_id": p.get("guide_id"),
+                    "guide_content": _guides.get(p.get("guide_id")) if p.get("guide_id") else None,
+                    "context_window": p.get("context_window"),
+                    "temperature": p.get("temperature"),
                 }
-                for p in data.get("personalities", [])
+                for p in data.get("personalities", []) if p.get('active', True)
             ]
         }
     except Exception as e:

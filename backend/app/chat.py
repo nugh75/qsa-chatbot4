@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 import hashlib
 import re
 from .prompts import load_system_prompt, get_system_prompt_by_id
-from .personalities import get_personality
+from .personalities import get_personality  # includes temperature & context config
 from .topic_router import detect_topic
 from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
@@ -71,6 +71,7 @@ async def chat(
     x_llm_provider: Optional[str] = Header(default="local"), 
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
+    x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -242,7 +243,22 @@ async def chat(
     
     import time, datetime
     start_time = time.perf_counter()
-    answer = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override)
+    # Determina temperatura: header ha priorità, poi personalità, poi default 0.3
+    temp_value = 0.3
+    if x_llm_temperature is not None:
+        try:
+            temp_value = float(x_llm_temperature)
+        except Exception:
+            pass
+    else:
+        try:
+            if x_personality_id:
+                _p = get_personality(x_personality_id)
+                if _p and _p.get('temperature') is not None:
+                    temp_value = float(_p.get('temperature'))
+        except Exception:
+            pass
+    answer = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -378,6 +394,7 @@ async def chat_stream(
     x_llm_provider: Optional[str] = Header(default="local"),
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
+    x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -495,6 +512,22 @@ async def chat_stream(
     answer_accum = []  # parti accumulate
     rag_results = None
 
+    # Pre-calcola temperatura effettiva
+    temp_value = 0.3
+    if x_llm_temperature is not None:
+        try:
+            temp_value = float(x_llm_temperature)
+        except Exception:
+            pass
+    else:
+        try:
+            if x_personality_id:
+                _p = get_personality(x_personality_id)
+                if _p and _p.get('temperature') is not None:
+                    temp_value = float(_p.get('temperature'))
+        except Exception:
+            pass
+
     async def event_generator():
         nonlocal answer_accum
         try:
@@ -554,7 +587,7 @@ async def chat_stream(
                             ]
                     except Exception:
                         rag_results = None
-                full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override)
+                full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
                 # Spezza per frasi o blocchi ~40 char
                 import re
                 parts = re.findall(r'.{1,60}(?:\s|$)', full)

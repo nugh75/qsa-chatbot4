@@ -559,8 +559,16 @@ class PersonalityIn(BaseModel):
     system_prompt_id: str
     provider: str
     model: str
+    tts_provider: Optional[str] = None
+    tts_voice: Optional[str] = None
     set_default: bool = False
     avatar: Optional[str] = None  # filename under storage/avatars
+    welcome_message: Optional[str] = None  # must match existing welcome message id
+    guide_id: Optional[str] = None  # must match existing guide id
+    context_window: Optional[int] = None
+    temperature: Optional[float] = None
+    remove_avatar: Optional[bool] = False
+    active: Optional[bool] = True
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -572,7 +580,42 @@ async def list_personalities_admin():
 @router.post("/admin/personalities")
 async def upsert_personality_admin(p: PersonalityIn):
     try:
-        res = upsert_personality(p.name, p.system_prompt_id, p.provider, p.model, p.id, p.set_default, p.avatar)
+        # Validate welcome_message against existing welcome messages (if provided)
+        from .welcome_guides import list_welcome_messages, list_guides
+        if p.welcome_message:
+            try:
+                existing_items = list_welcome_messages()
+            except Exception:
+                existing_items = []
+            existing_ids = {m.get('id') for m in existing_items if isinstance(m, dict) and m.get('id')}
+            if p.welcome_message not in existing_ids:
+                raise HTTPException(status_code=400, detail="welcome_message non valido: usare id di un messaggio esistente")
+        if p.guide_id:
+            try:
+                guide_items = list_guides()
+            except Exception:
+                guide_items = []
+            guide_ids = {g.get('id') for g in guide_items if isinstance(g, dict) and g.get('id')}
+            if p.guide_id not in guide_ids:
+                raise HTTPException(status_code=400, detail="guide_id non valido: usare id guida esistente")
+        # Gestione rimozione avatar: se remove_avatar true forza avatar None
+        avatar_filename = None if p.remove_avatar else p.avatar
+        res = upsert_personality(
+            p.name,
+            p.system_prompt_id,
+            p.provider,
+            p.model,
+            p.welcome_message,  # store the id
+            p.guide_id,
+            p.context_window,
+            p.temperature,
+            p.id,
+            p.set_default,
+            avatar_filename,
+            p.tts_provider,
+            p.tts_voice,
+            active=p.active if p.active is not None else True
+        )
         return {"success": True, **res}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore salvataggio personalità: {str(e)}")
@@ -592,6 +635,84 @@ async def set_default_personality_admin(personality_id: str):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore impostazione default: {str(e)}")
+
+# ---- Avatar upload per personalità ----
+@router.post("/admin/personalities/{personality_id}/avatar")
+async def upload_personality_avatar(personality_id: str, file: UploadFile = File(...)):
+    try:
+        # Valida estensione
+        allowed = {"png","jpg","jpeg","gif","webp"}
+        filename = file.filename or "avatar"
+        ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else 'png'
+        if ext not in allowed:
+            raise HTTPException(status_code=400, detail="Formato immagine non supportato")
+        # Prepara path salvataggio (usare directory persistente /app/storage/avatars)
+        avatars_dir = Path('/app/storage/avatars')
+        # Migrazione automatica: se vecchia dir esiste ed è diversa, copia file mancanti una volta
+        try:
+            old_dir = Path(__file__).parent.parent / 'storage' / 'avatars'
+            if old_dir.exists() and old_dir.resolve() != avatars_dir.resolve():
+                avatars_dir.mkdir(parents=True, exist_ok=True)
+                for p in old_dir.iterdir():
+                    if p.is_file():
+                        target = avatars_dir / p.name
+                        if not target.exists():
+                            try:
+                                target.write_bytes(p.read_bytes())
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        # Usa un filename con timestamp per forzare l'aggiornamento cache lato browser
+        import time
+        safe_name = f"{personality_id}-{int(time.time())}.{ext}"
+        data = await file.read()
+        if len(data) > 2*1024*1024:
+            raise HTTPException(status_code=400, detail="Immagine troppo grande (max 2MB)")
+        # Salva nuovo file
+        target_path = avatars_dir / safe_name
+        with open(target_path, 'wb') as f:
+            f.write(data)
+        # Rimuove vecchi avatar della stessa personalità (stesso prefisso) lasciando l'ultimo
+        try:
+            prefix = f"{personality_id}-"
+            old_files = sorted([p for p in avatars_dir.iterdir() if p.is_file() and p.name.startswith(prefix) and p.name != safe_name])
+            # Mantieni al massimo 1 vecchio (per rollback minimale), elimina gli altri
+            if len(old_files) > 1:
+                for p in old_files[:-1]:
+                    try: p.unlink()
+                    except Exception: pass
+        except Exception:
+            pass
+        # Aggiorna personalità
+        # Carica personalità esistente per non sovrascrivere campi
+        from .personalities import get_personality
+        existing = get_personality(personality_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Personalità non trovata")
+        upsert_personality(
+            name=existing.get('name', personality_id),
+            system_prompt_id=existing.get('system_prompt_id',''),
+            provider=existing.get('provider','local'),
+            model=existing.get('model',''),
+            welcome_message=existing.get('welcome_message'),
+            guide_id=existing.get('guide_id'),
+            context_window=existing.get('context_window'),
+            temperature=existing.get('temperature'),
+            personality_id=personality_id,
+            avatar=safe_name,
+            tts_provider=existing.get('tts_provider'),
+            tts_voice=existing.get('tts_voice'),
+            active=existing.get('active', True)
+        )
+        # Aggiungi query param cache-busting opzionale
+        cache_bust = int(time.time())
+        return {"success": True, "filename": safe_name, "url": f"/static/avatars/{safe_name}?v={cache_bust}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore upload avatar: {e}")
 
 # ---- Logs (system & interactions) ----
 @router.get("/admin/logs/system")

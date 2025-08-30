@@ -9,6 +9,7 @@ import { ThemeProvider, CssBaseline } from '@mui/material'
 import { appTheme } from './theme'
 import LoginDialog from './components/LoginDialog'
 import Arena from './Arena'
+import SiteFooter from './components/SiteFooter'
 
 const AdminRoute: React.FC = () => {
   const { isAuthenticated, isLoading, user, login } = useAuth()
@@ -44,8 +45,8 @@ createRoot(document.getElementById('root')!).render(
         <Routes>
           <Route path="/" element={<App />} />
           <Route path="/admin" element={<AdminRoute />} />
-          <Route path="/survey-results" element={<SurveyResults />} />
-          <Route path="/arena" element={<Arena />} />
+          <Route path="/survey-results" element={<><SurveyResults /><SiteFooter /></>} />
+          <Route path="/arena" element={<><Arena /><SiteFooter /></>} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

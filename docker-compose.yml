@@ -22,6 +22,8 @@ services:
       - ./backend/storage/personalities:/app/storage/personalities # Personalities runtime
       - ./backend/storage/summary:/app/storage/summary           # Summary prompt runtime
       - ./backend/storage/welcome-guide:/app/storage/welcome-guide # Welcome & guides runtime
+      - ./backend/storage/avatars:/app/storage/avatars           # Avatars personalità
+      - ./backend/storage/logs:/app/storage/logs                   # Log persistenti
       - ./backend/models:/app/models              # Modelli
       - ./backend/config:/app/config              # Config
       - ./backend/.env:/app/.env:ro               # Env file

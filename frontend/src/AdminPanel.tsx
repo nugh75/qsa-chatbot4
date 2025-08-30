@@ -23,6 +23,7 @@ import RagDocumentsPanel from './components/RagDocumentsPanel'
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
+import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
 import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
@@ -51,6 +52,7 @@ const AdminPanel: React.FC = () => {
   ragdocs: false,
   whisper_health: false,
   pipeline: false,
+  welcome_guides: false,
   })
 
   // Token test
@@ -264,6 +266,7 @@ const AdminPanel: React.FC = () => {
       )}
 
       {/* Providers */}
+  {/* Nota: quando si cambiano welcome/guides in altre sezioni (non ancora implementate qui), si potrebbe impostare: localStorage.setItem('welcome_guides_version', Date.now().toString()) per forzare il refresh lato chat. */}
       <Accordion expanded={expandedPanels.providers} onChange={handlePanelExpansion('providers')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -424,6 +427,19 @@ const AdminPanel: React.FC = () => {
             <SystemPromptsPanel />
             <SummaryPromptsPanel />
           </Stack>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Welcome & Guides */}
+      <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <DescriptionIcon fontSize="small" />
+            <Typography variant="h6">Welcome & Guide</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <WelcomeGuidesPanel />
         </AccordionDetails>
       </Accordion>
 

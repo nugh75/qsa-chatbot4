@@ -645,6 +645,44 @@ class ApiService {
     const qs = q.toString();
     return this.makeRequest(`/admin/logs/interactions${qs ? ('?' + qs) : ''}`);
   }
+
+  // === Welcome & Guides ===
+  async getWelcomeGuideState(): Promise<ApiResponse<{ welcome: { active_id: string|null; messages: any[] }; guides: { active_id: string|null; guides: any[] } }>> {
+    return this.makeRequest('/welcome-guides/state');
+  }
+  async listWelcomeMessages(): Promise<ApiResponse<any[]>> {
+    return this.makeRequest('/welcome-guides/welcome');
+  }
+  async listGuides(): Promise<ApiResponse<any[]>> {
+    return this.makeRequest('/welcome-guides/guides');
+  }
+  async createWelcomeMessage(payload: { title?: string|null; content: string }): Promise<ApiResponse<any>> {
+    return this.makeRequest('/welcome-guides/welcome', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  async createGuide(payload: { title?: string|null; content: string }): Promise<ApiResponse<any>> {
+    return this.makeRequest('/welcome-guides/guides', { method: 'POST', body: JSON.stringify(payload) });
+  }
+  async updateWelcomeMessage(id: string, payload: { title?: string|null; content: string }): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/welcome-guides/welcome/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+  async updateGuide(id: string, payload: { title?: string|null; content: string }): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/welcome-guides/guides/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+  }
+  async deleteWelcomeMessage(id: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/welcome-guides/welcome/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  async deleteGuide(id: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/welcome-guides/guides/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  async activateWelcome(id: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/welcome-guides/activate', { method: 'POST', body: JSON.stringify({ id, kind: 'welcome' }) });
+  }
+  async activateGuide(id: string): Promise<ApiResponse<any>> {
+    return this.makeRequest('/welcome-guides/activate', { method: 'POST', body: JSON.stringify({ id, kind: 'guide' }) });
+  }
+  async getPublicWelcomeGuide(): Promise<ApiResponse<{ welcome: any; guide: any }>> {
+    return this.makeRequest('/welcome-guides/public');
+  }
 }
 
 // Istanza singola del servizio API

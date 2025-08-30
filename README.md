@@ -693,3 +693,91 @@ Operazioni disponibili nel pannello Admin:
 - Reset dal seed (endpoint legacy `/admin/summary-prompt/reset`)
 
 Compatibilità: gli endpoint legacy `/admin/summary-prompt` continuano a funzionare restituendo il testo del profilo attivo.
+
+## 📨 Welcome & Guides Management
+
+Persistent management of multiple initial welcome messages and user guides (help/onboarding texts) is now available via the Admin panel and REST API.
+
+Storage file (seeded automatically if missing): `backend/storage/welcome-guide/welcome_guide.json`
+
+Example structure:
+```json
+{
+  "welcome": {
+    "active_id": "wm_ab12cd34",
+    "messages": [
+      { "id": "wm_ab12cd34", "title": "Default", "content": "Welcome to the platform..." }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_ef56ab78",
+    "guides": [
+      { "id": "gd_ef56ab78", "title": "Getting Started", "content": "How to use the system..." }
+    ]
+  }
+}
+```
+
+### API Endpoints (Base prefix: `/api/welcome-guides`)
+
+Public / read endpoints (no admin token required):
+- `GET /api/welcome-guides/state` – Full raw state (ids + all entries)
+- `GET /api/welcome-guides/welcome` – List welcome messages
+- `GET /api/welcome-guides/guides` – List guides
+- `GET /api/welcome-guides/welcome/active` – Active welcome message object or null
+- `GET /api/welcome-guides/guides/active` – Active guide object or null
+- `GET /api/welcome-guides/public` – Convenience combined payload `{ welcome, guide }` (only active ones)
+
+Admin-only (create / modify) endpoints:
+- `POST /api/welcome-guides/welcome` – Create welcome message `{ title?, content }`
+- `POST /api/welcome-guides/guides` – Create guide `{ title?, content }`
+- `PUT /api/welcome-guides/welcome/{id}` – Update welcome message
+- `PUT /api/welcome-guides/guides/{id}` – Update guide
+- `DELETE /api/welcome-guides/welcome/{id}` – Delete welcome message (auto reassigns active if needed)
+- `DELETE /api/welcome-guides/guides/{id}` – Delete guide (auto reassigns active if needed)
+- `POST /api/welcome-guides/activate` – Activate an entry `{ id, kind: "welcome" | "guide" }`
+
+Behavior notes:
+- First created item in each category becomes active automatically if none set.
+- Deleting the active item promotes the first remaining item (if any) or sets `active_id` to null.
+- IDs are short UUID derived (`wm_########` / `gd_########`).
+- File access is guarded by a threading lock to avoid race conditions.
+- Volume persistence ensured by Docker compose mapping: `./backend/storage/welcome-guide:/app/storage/welcome-guide`.
+
+Frontend integration: a new "Welcome" management tab in the Admin panel allows CRUD + activation without manual API calls.
+
+---
+
+## 📨 Gestione Welcome & Guide (Italiano)
+
+Gestione persistente di più messaggi iniziali (welcome) e guide di onboarding tramite pannello Admin e API REST.
+
+File di storage (creato con seed se assente): `backend/storage/welcome-guide/welcome_guide.json`
+
+Struttura di esempio (vedi sopra per dettagli): contiene due sezioni `welcome` e `guides`, ognuna con `active_id` e un array di oggetti `{ id, title?, content }`.
+
+### Endpoint API (prefisso base: `/api/welcome-guides`)
+
+Lettura pubblica (nessun token admin richiesto):
+- `GET /api/welcome-guides/state` – Stato completo
+- `GET /api/welcome-guides/welcome` – Lista messaggi welcome
+- `GET /api/welcome-guides/guides` – Lista guide
+- `GET /api/welcome-guides/welcome/active` – Messaggio welcome attivo o null
+- `GET /api/welcome-guides/guides/active` – Guida attiva o null
+- `GET /api/welcome-guides/public` – Payload combinato solo con gli attivi `{ welcome, guide }`
+
+Solo Admin (creazione / modifica):
+- `POST /api/welcome-guides/welcome` – Crea welcome `{ title?, content }`
+- `POST /api/welcome-guides/guides` – Crea guida `{ title?, content }`
+- `PUT /api/welcome-guides/welcome/{id}` – Aggiorna welcome
+- `PUT /api/welcome-guides/guides/{id}` – Aggiorna guida
+- `DELETE /api/welcome-guides/welcome/{id}` – Elimina welcome (riallinea attivo se necessario)
+- `DELETE /api/welcome-guides/guides/{id}` – Elimina guida (riallinea attivo se necessario)
+- `POST /api/welcome-guides/activate` – Attiva elemento `{ id, kind }`
+
+Note comportamento:
+- Il primo elemento creato diventa attivo se non esiste `active_id`.
+- Eliminando l'elemento attivo si promuove il primo restante o `null`.
+- Persistenza garantita in Docker tramite volume `./backend/storage/welcome-guide:/app/storage/welcome-guide`.
+
+Integrazione frontend: nuova tab "Welcome" nel pannello Admin con CRUD e attivazione.

@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Card, CardContent, Typography, Chip, Button, TextField, TableContainer, Paper, Table, TableHead, TableRow, TableCell, TableBody, LinearProgress, Alert, FormControlLabel, Switch, Tooltip, IconButton, Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material'
 import { Key as KeyIcon, Delete as DeleteIcon } from '@mui/icons-material'
 import { authFetch, BACKEND } from '../utils/authFetch'
+import { apiService } from '../apiService'
 
 const UserManagement: React.FC = () => {
   const [users, setUsers] = React.useState<any[]>([])
@@ -17,7 +18,8 @@ const UserManagement: React.FC = () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await authFetch(`${BACKEND}/api/auth/admin/users`)
+  // Backend canonical endpoint: GET /api/admin/users
+  const res = await authFetch(`${BACKEND}/api/admin/users`)
       const json = await res.json()
       if ((json as any).success && (json as any).data) {
         setUsers(((json as any).data as any).users || [])
@@ -34,7 +36,7 @@ const UserManagement: React.FC = () => {
   const handleDeleteUser = async () => {
     if (!selectedUser) return
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}`, { method: 'DELETE' })
+  const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}`, { method: 'DELETE' })
       const json = await res.json()
       if ((json as any).success !== false) {
         setUsers(prev => prev.filter(u => u.id !== selectedUser.id))
@@ -46,7 +48,7 @@ const UserManagement: React.FC = () => {
   const handleResetPassword = async () => {
     if (!selectedUser) return
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}/reset-password`, { method: 'POST' })
+  const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}/reset-password`, { method: 'POST' })
       const json = await res.json()
       if ((json as any).success !== false) {
         setPasswordResetResult((json as any).data || json)
@@ -112,10 +114,20 @@ const UserManagement: React.FC = () => {
                             size="small"
                             checked={!!(user as any).is_admin}
                             onChange={async (e)=>{
+                              const nextVal = e.target.checked
+                              const prevVal = !!(user as any).is_admin
+                              // Optimistic update
+                              setUsers(prev => prev.map(u => u.id===user.id ? { ...u, is_admin: nextVal } : u))
                               try {
-                                await authFetch(`${BACKEND}/api/auth/admin/users/${user.id}/role`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_admin: e.target.checked }) })
-                                setUsers(prev => prev.map(u => u.id===user.id ? { ...u, is_admin: e.target.checked } : u))
-                              } catch {/* ignore */}
+                                const resp = await apiService.changeUserRole(user.id, nextVal)
+                                if (!resp.success) {
+                                  throw new Error(resp.error || 'Errore cambio ruolo')
+                                }
+                              } catch (err) {
+                                // rollback
+                                setUsers(prev => prev.map(u => u.id===user.id ? { ...u, is_admin: prevVal } : u))
+                                setError((err as any)?.message || 'Errore cambio ruolo')
+                              }
                             }}
                           />
                         }

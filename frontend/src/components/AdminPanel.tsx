@@ -190,12 +190,26 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [promptLoading, setPromptLoading] = useState(false);
   const [promptMessage, setPromptMessage] = useState<string | null>(null);
 
+  // Welcome & Guides state
+  const [welcomeMessages, setWelcomeMessages] = useState<any[]>([]);
+  const [guides, setGuides] = useState<any[]>([]);
+  const [activeWelcomeId, setActiveWelcomeId] = useState<string|null>(null);
+  const [activeGuideId, setActiveGuideId] = useState<string|null>(null);
+  const [wgLoading, setWgLoading] = useState(false);
+  const [wgMessage, setWgMessage] = useState<string|null>(null);
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editKind, setEditKind] = useState<'welcome'|'guide'>('welcome');
+  const [editId, setEditId] = useState<string|null>(null);
+  const [editTitle, setEditTitle] = useState<string>('');
+  const [editContent, setEditContent] = useState<string>('');
+
   // Carica dati iniziali
   useEffect(() => {
     if (isOpen) {
       loadAdminData();
       loadPrompts();
       loadPipelineData();
+      loadWelcomeGuides();
     }
   }, [isOpen]);
 
@@ -1333,6 +1347,124 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
     );
   };
 
+  const loadWelcomeGuides = async () => {
+    setWgLoading(true); setWgMessage(null);
+    try {
+      const stateRes = await apiService.get('/welcome-guides/state');
+      if (stateRes?.data) {
+        setWelcomeMessages(stateRes.data.welcome?.messages || []);
+        setGuides(stateRes.data.guides?.guides || []);
+        setActiveWelcomeId(stateRes.data.welcome?.active_id || null);
+        setActiveGuideId(stateRes.data.guides?.active_id || null);
+      }
+    } catch (e) {
+      setWgMessage('Errore caricamento welcome/guide');
+    } finally { setWgLoading(false); }
+  };
+
+  useEffect(() => { if (isOpen) loadWelcomeGuides(); }, [isOpen]);
+
+  const openCreate = (kind: 'welcome'|'guide') => {
+    setEditKind(kind); setEditId(null); setEditTitle(''); setEditContent(''); setEditDialogOpen(true);
+  };
+  const openEdit = (kind: 'welcome'|'guide', item: any) => {
+    setEditKind(kind); setEditId(item.id); setEditTitle(item.title||''); setEditContent(item.content||''); setEditDialogOpen(true);
+  };
+  const saveItem = async () => {
+    setWgLoading(true); setWgMessage(null);
+    try {
+      const payload = { title: editTitle||null, content: editContent };
+      if (!editId) {
+        if (editKind==='welcome') await apiService.createWelcomeMessage(payload);
+        else await apiService.createGuide(payload);
+      } else {
+        if (editKind==='welcome') await apiService.updateWelcomeMessage(editId, payload);
+        else await apiService.updateGuide(editId, payload);
+      }
+      setEditDialogOpen(false);
+      await loadWelcomeGuides();
+      setWgMessage('Salvato');
+    } catch (e:any) { setWgMessage('Errore salvataggio'); } finally { setWgLoading(false); }
+  };
+  const deleteItem = async (kind: 'welcome'|'guide', id: string) => {
+    if (!confirm('Eliminare elemento?')) return;
+    setWgLoading(true); setWgMessage(null);
+    try {
+      if (kind==='welcome') await apiService.deleteWelcomeMessage(id); else await apiService.deleteGuide(id);
+      await loadWelcomeGuides();
+      setWgMessage('Eliminato');
+    } catch { setWgMessage('Errore eliminazione'); } finally { setWgLoading(false); }
+  };
+  const activateItem = async (kind: 'welcome'|'guide', id: string) => {
+    setWgLoading(true); setWgMessage(null);
+    try {
+      if (kind==='welcome') await apiService.activateWelcome(id); else await apiService.activateGuide(id);
+      await loadWelcomeGuides();
+      setWgMessage('Attivato');
+    } catch { setWgMessage('Errore attivazione'); } finally { setWgLoading(false); }
+  };
+
+  const WelcomeGuidesTab = () => (
+    <Box>
+      <Box display="flex" alignItems="center" mb={2} gap={1}><DescriptionIcon /><Typography variant="h6">Welcome & Guide</Typography></Box>
+      {wgLoading && <LinearProgress sx={{ mb:2 }} />}
+      {wgMessage && <Alert severity={wgMessage.includes('Errore')? 'error':'success'} sx={{ mb:2 }}>{wgMessage}</Alert>}
+      <Grid container spacing={3}>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="Messaggi di Benvenuto" action={<Button size="small" onClick={()=>openCreate('welcome')}>Nuovo</Button>} />
+            <CardContent>
+              <List dense>
+                {welcomeMessages.map(m => (
+                  <ListItem key={m.id} secondaryAction={<Box display="flex" gap={1}>
+                    <Button size="small" variant={m.id===activeWelcomeId? 'contained':'outlined'} onClick={()=>activateItem('welcome', m.id)}>Attiva</Button>
+                    <Button size="small" onClick={()=>openEdit('welcome', m)}>Modifica</Button>
+                    <Button size="small" color="error" onClick={()=>deleteItem('welcome', m.id)}>Del</Button>
+                  </Box>}>
+                    <ListItemText primary={(m.title||'(senza titolo)') + (m.id===activeWelcomeId ? ' (attivo)':'')} secondary={m.content.slice(0,100)+(m.content.length>100?'...':'')} />
+                  </ListItem>
+                ))}
+                {welcomeMessages.length===0 && <Typography variant="body2" color="text.secondary">Nessun messaggio</Typography>}
+              </List>
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid item xs={12} md={6}>
+          <Card>
+            <CardHeader title="Guide" action={<Button size="small" onClick={()=>openCreate('guide')}>Nuova</Button>} />
+            <CardContent>
+              <List dense>
+                {guides.map(g => (
+                  <ListItem key={g.id} secondaryAction={<Box display="flex" gap={1}>
+                    <Button size="small" variant={g.id===activeGuideId? 'contained':'outlined'} onClick={()=>activateItem('guide', g.id)}>Attiva</Button>
+                    <Button size="small" onClick={()=>openEdit('guide', g)}>Modifica</Button>
+                    <Button size="small" color="error" onClick={()=>deleteItem('guide', g.id)}>Del</Button>
+                  </Box>}>
+                    <ListItemText primary={(g.title||'(senza titolo)') + (g.id===activeGuideId ? ' (attiva)':'')} secondary={g.content.slice(0,100)+(g.content.length>100?'...':'')} />
+                  </ListItem>
+                ))}
+                {guides.length===0 && <Typography variant="body2" color="text.secondary">Nessuna guida</Typography>}
+              </List>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
+      <Dialog open={editDialogOpen} onClose={()=>setEditDialogOpen(false)} fullWidth maxWidth="md">
+        <DialogTitle>{editId? 'Modifica':'Nuovo'} {editKind==='welcome'? 'Messaggio di Benvenuto':'Guida'}</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} mt={1}>
+            <TextField label="Titolo" value={editTitle} onChange={e=>setEditTitle(e.target.value)} fullWidth />
+            <TextField label="Contenuto" value={editContent} onChange={e=>setEditContent(e.target.value)} multiline minRows={10} fullWidth />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=>setEditDialogOpen(false)}>Annulla</Button>
+          <Button variant="contained" onClick={saveItem} disabled={wgLoading || !editContent.trim()}>Salva</Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
+  );
+
   if (!isOpen) return null;
 
   return (
@@ -1361,51 +1493,22 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
 
         <Tabs value={currentTab} onChange={(_, newValue) => setCurrentTab(newValue)} sx={{ mb: 3 }}>
           <Tab label="Dashboard" icon={<DashboardIcon />} />
-            <Tab label="Utenti" icon={<PeopleIcon />} />
-            <Tab label="Dispositivi" icon={<DevicesIcon />} />
-            <Tab label="Pipeline" icon={<SettingsIcon />} />
-            <Tab label="RAG" icon={<StorageIcon />} />
-            <Tab label="Prompt" icon={<DescriptionIcon />} />
+          <Tab label="Utenti" icon={<PeopleIcon />} />
+          <Tab label="Dispositivi" icon={<DevicesIcon />} />
+          <Tab label="Pipeline" icon={<SettingsIcon />} />
+          <Tab label="RAG" icon={<StorageIcon />} />
+          <Tab label="Prompt" icon={<DescriptionIcon />} />
+          <Tab label="Welcome" icon={<DescriptionIcon />} />
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
-          <Typography variant="h4" sx={{ p: 3 }}>
-            Pannello Amministrazione - Test
-          </Typography>
-          <Typography sx={{ px: 3 }}>
-            Tab corrente: {currentTab}
-          </Typography>
-          {currentTab === 0 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Dashboard Tab</Typography>
-            </Box>
-          )}
-          {currentTab === 1 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Tab Utenti</Typography>
-              <Typography>Test del tab utenti</Typography>
-            </Box>
-          )}
-          {currentTab === 2 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Tab Dispositivi</Typography>
-            </Box>
-          )}
-          {currentTab === 3 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Tab Pipeline</Typography>
-            </Box>
-          )}
-          {currentTab === 4 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Tab RAG</Typography>
-            </Box>
-          )}
-          {currentTab === 5 && (
-            <Box sx={{ p: 3 }}>
-              <Typography variant="h6">Tab Prompt</Typography>
-            </Box>
-          )}
+          {currentTab === 0 && <DashboardTab />}
+          {currentTab === 1 && <UsersTab />}
+          {currentTab === 2 && <DevicesTab />}
+          {currentTab === 3 && <PipelineTab />}
+          {currentTab === 4 && <RAGManagement />}
+          {currentTab === 5 && <PromptsTab />}
+          {currentTab === 6 && <WelcomeGuidesTab />}
         </Box>
       </DialogContent>
 

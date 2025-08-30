@@ -170,8 +170,11 @@ const AppContent: React.FC = () => {
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-  return [{role:'assistant', content:'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', ts:Date.now()}]
+    // Placeholder provvisorio; sarà sostituito se esiste un welcome attivo
+    return [{role:'assistant', content:'Caricamento messaggio di benvenuto…', ts:Date.now()}]
   })
+  const [welcomeLoaded, setWelcomeLoaded] = useState(false)
+  const [activeGuide, setActiveGuide] = useState<string|undefined>()
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
   const [personalities, setPersonalities] = useState<{id:string; name:string; provider:string; model:string; system_prompt_id:string; avatar_url?: string | null}[]>([])
@@ -191,6 +194,7 @@ const AppContent: React.FC = () => {
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
+  const [guideLoading, setGuideLoading] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState<ProcessedFile[]>([])
   const [userAvatar, setUserAvatar] = useState<string | null>(()=>{ try { return localStorage.getItem('user_avatar') } catch { return null } })
   const [enabledProviders, setEnabledProviders] = useState<string[]>([])
@@ -329,7 +333,7 @@ const AppContent: React.FC = () => {
   // Avatar assistente: fisso (rimuoviamo avatar legati alla personalità)
   const assistantAvatarSrc = '/volto.png'
 
-  // Load public configuration
+  // Carica configurazione pubblica e welcome/guide attivi
   useEffect(() => {
     const loadConfig = async () => {
       try {
@@ -355,6 +359,23 @@ const AppContent: React.FC = () => {
             setAsrProvider(response.data.default_asr as any)
           }
         }
+        // Fetch welcome + guide attivi (solo se non già persistiti in localStorage o non caricati)
+        try {
+          const wg = await apiService.getPublicWelcomeGuide()
+          if (wg.success && wg.data) {
+            const welcomeText = wg.data.welcome?.content
+            const guideText = wg.data.guide?.content
+            setActiveGuide(guideText)
+            setMessages(prev => {
+              // Se l'utente ha già iniziato una conversazione non sovrascrivere
+              if (prev.length > 1 || (prev[0] && prev[0].content && prev[0].content !== 'Caricamento messaggio di benvenuto…')) return prev
+              if (welcomeText) {
+                return [{ role:'assistant', content: welcomeText, ts: Date.now() }]
+              }
+              return prev
+            })
+          }
+        } catch(e){ /* ignora */ }
         // Load personalities after config
         const pers = await apiService.getPersonalities()
         if (pers.success && pers.data) {
@@ -371,7 +392,7 @@ const AppContent: React.FC = () => {
         console.error('Error loading config:', error)
       }
     }
-    loadConfig()
+  loadConfig().finally(()=> setWelcomeLoaded(true))
   }, [])
 
   // Disabilitato: non aprire più il dialog di cambio password forzato
@@ -811,15 +832,35 @@ const AppContent: React.FC = () => {
           document.body.removeChild(a)
           URL.revokeObjectURL(url)
         } : undefined}
-        onNewChat={()=>{
-          setMessages([{ 
-            role: 'assistant', 
-            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
-            ts: Date.now()
-          }]);
+        onNewChat={async ()=>{
+          // Ricarica welcome attivo al momento della nuova chat
+          try {
+            const { apiService } = await import('./apiService')
+            const wg = await apiService.getPublicWelcomeGuide()
+            if (wg.success && wg.data?.welcome?.content) {
+              setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
+            } else {
+              setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+            }
+          } catch {
+            setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+          }
           setCurrentConversationId(null);
         }}
-        onShowGuide={()=> setShowHelp(true)}
+        onShowGuide={async ()=> {
+          // fetch guida aggiornata al momento dell'apertura
+          if (!guideLoading) {
+            setGuideLoading(true)
+            try {
+              const { apiService } = await import('./apiService')
+              const wg = await apiService.getPublicWelcomeGuide()
+              if (wg.success) {
+                setActiveGuide(wg.data?.guide?.content)
+              }
+            } catch {/* ignore */} finally { setGuideLoading(false) }
+          }
+          setShowHelp(true)
+        }}
         onOpenArena={()=> window.location.href = '/arena'}
         showArena={user?.is_admin || arenaPublic}
         isAuthenticated={isAuthenticated}
@@ -1366,12 +1407,18 @@ const AppContent: React.FC = () => {
           
           setSidebarOpen(false);
         }}
-        onNewConversation={() => {
-            setMessages([{
-            role: 'assistant',
-            content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?',
-            ts: Date.now()
-            }]);
+        onNewConversation={async () => {
+          try {
+            const { apiService } = await import('./apiService')
+            const wg = await apiService.getPublicWelcomeGuide()
+            if (wg.success && wg.data?.welcome?.content) {
+              setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
+            } else {
+              setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+            }
+          } catch {
+            setMessages([{ role:'assistant', content: 'Nuova conversazione iniziata.', ts: Date.now() }])
+          }
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}
@@ -1395,22 +1442,45 @@ const AppContent: React.FC = () => {
       <Dialog
         open={showHelp}
         onClose={() => setShowHelp(false)}
-        maxWidth="sm"
+        maxWidth="md"
         fullWidth
       >
-        <DialogTitle>Come usare il chatbot</DialogTitle>
-        <DialogContent>
-          <Box sx={{ display:'flex', flexDirection:'column', gap: 1 }}>
-            <Typography variant="body2">- Scrivi e invia: digita il messaggio e premi Invio (Shift+Invio va a capo).</Typography>
-            <Typography variant="body2">- Personalità: in alto puoi scegliere una personalità diversa (icona persona). Cambia lo stile della conversazione e l’avatar dell’assistente.</Typography>
-            <Typography variant="body2">- Allegati: carica PDF o immagini dalla sezione “Allegati” sotto la chat; il chatbot userà i contenuti nelle risposte.</Typography>
-            <Typography variant="body2">- Contesto documenti: attiva i contesti per risposte basate sui file selezionati.</Typography>
-            <Typography variant="body2">- Voce: ascolta le risposte (icona altoparlante) o registra un messaggio vocale (icona microfono).</Typography>
-            <Typography variant="body2">- Conversazioni: apri il menu (☰) per creare, rinominare o eliminare le chat.</Typography>
-            <Typography variant="body2">- Esporta: scarica la chat o la chat con report quando ti serve.</Typography>
-            <Typography variant="body2">- Feedback: usa pollice su/giù per dirci se la risposta è utile.</Typography>
-            <Typography variant="body2">- Privacy: evita di condividere dati personali o sensibili.</Typography>
-          </Box>
+        <DialogTitle sx={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <Typography variant="h6" sx={{ fontSize: '1rem' }}>Guida</Typography>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Button size="small" variant="outlined" disabled={guideLoading} onClick={async()=>{
+              setGuideLoading(true)
+              try {
+                const { apiService } = await import('./apiService')
+                const wg = await apiService.getPublicWelcomeGuide()
+                if (wg.success) setActiveGuide(wg.data?.guide?.content)
+              } catch {/* ignore */} finally { setGuideLoading(false) }
+            }}>Ricarica</Button>
+            <IconButton size="small" onClick={()=> setShowHelp(false)}><CloseIcon fontSize="small" /></IconButton>
+          </Stack>
+        </DialogTitle>
+        <DialogContent dividers sx={{ minHeight: 260 }}>
+          {guideLoading && (
+            <Stack alignItems="center" justifyContent="center" sx={{ py:4 }}>
+              <CircularProgress size={32} />
+              <Typography variant="body2" sx={{ mt:2 }}>Caricamento guida…</Typography>
+            </Stack>
+          )}
+          {!guideLoading && activeGuide && (
+            <Box sx={{ '& h1,h2,h3':{ mt:2 }, '& p':{ mb:1 } }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeGuide}</ReactMarkdown>
+            </Box>
+          )}
+          {!guideLoading && !activeGuide && (
+            <Box sx={{ display:'flex', flexDirection:'column', gap:1 }}>
+              <Alert severity="info">Nessuna guida attiva impostata. L'amministratore può crearne una nella sezione Welcome del pannello.</Alert>
+              <Box sx={{ display:'flex', flexDirection:'column', gap:0.5 }}>
+                <Typography variant="body2">- Scrivi e invia: digita il messaggio e premi Invio.</Typography>
+                <Typography variant="body2">- Allegati: carica PDF o immagini nella sezione allegati.</Typography>
+                <Typography variant="body2">- Feedback: usa pollice su/giù per valutare.</Typography>
+              </Box>
+            </Box>
+          )}
         </DialogContent>
       </Dialog>
 

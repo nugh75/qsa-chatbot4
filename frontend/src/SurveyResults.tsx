@@ -324,6 +324,9 @@ const SurveyResults: React.FC = () => {
           <Chip label={`Totale risposte: ${data.total}`} color="primary" variant="outlined" />
         )}
         <Button variant="contained" size="small" onClick={exportCSV} disabled={!data}>Esporta CSV</Button>
+        <Button variant="outlined" size="small" href="/" sx={{ ml: 'auto' }}>
+          Torna alla Chat
+        </Button>
       </Box>
       {loading && <CircularProgress />}
       {error && <Alert severity="error">{error}</Alert>}

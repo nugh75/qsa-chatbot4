@@ -3,7 +3,6 @@ import { Paper, IconButton, TextField, Box, Tooltip, CircularProgress } from '@m
 import SendIcon from '@mui/icons-material/Send'
 import MicIcon from '@mui/icons-material/Mic'
 import StopIcon from '@mui/icons-material/Stop'
-import AttachFileIcon from '@mui/icons-material/AttachFile'
 
 interface MobileChatBarProps {
   value: string
@@ -14,17 +13,14 @@ interface MobileChatBarProps {
   onStartRecording: ()=> void
   onStopRecording: ()=> void
   disabled?: boolean
-  onAttachClick?: ()=> void
   isLoading?: boolean
 }
 
 // Compact bottom action bar for small screens
-const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, canSend, isRecording, onStartRecording, onStopRecording, disabled, onAttachClick, isLoading }) => {
+const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, canSend, isRecording, onStartRecording, onStopRecording, disabled, isLoading }) => {
   return (
     <Paper elevation={6} sx={{ position:'fixed', bottom:0, left:0, right:0, p:1, borderRadius:0, display:'flex', alignItems:'center', gap:1, zIndex: (theme)=> theme.zIndex.appBar }}>
-      <IconButton size="small" onClick={onAttachClick} color="default" aria-label="allega" sx={{ width:44, height:44 }}>
-        <AttachFileIcon fontSize="small" />
-      </IconButton>
+  {/* Attachment icon removed for mobile UI cleanup */}
       <Box sx={{ flex:1 }}>
         <TextField
           value={value}

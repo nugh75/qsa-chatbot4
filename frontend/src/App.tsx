@@ -1250,16 +1250,11 @@ const AppContent: React.FC = () => {
           onChange={setInput}
           onSend={send}
           canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
-            isRecording={isRecording}
+          isRecording={isRecording}
           onStartRecording={startRecording}
           onStopRecording={stopRecording}
           disabled={isTranscribing}
           isLoading={loading || isTranscribing || isStreaming}
-          onAttachClick={()=> {
-            // scroll to attachments section
-            const el = document.getElementById('attachments-section')
-            if (el) el.scrollIntoView({ behavior:'smooth' })
-          }}
         />
       )}
 

@@ -15,7 +15,6 @@ import TTSProvidersPanel from './components/TTSProvidersPanel'
 import WhisperPanel from './components/WhisperPanel'
 import MemoryPanel from './components/MemoryPanel';
 import UsagePanel from './components/UsagePanel';
-import SummarySettingsPanel from './components/SummarySettingsPanel';
 import SystemPromptsPanel from './components/SystemPromptsPanel'
 import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
@@ -46,7 +45,6 @@ const AdminPanel: React.FC = () => {
     personalities: false,
     user_management: true,
   usage: false,
-  summary: false,
   memory: false,
   apidocs: false,
   embedding: false,
@@ -373,18 +371,6 @@ const AdminPanel: React.FC = () => {
         </AccordionDetails>
       </Accordion>
 
-      {/* Riepilogo conversazioni settings */}
-      <Accordion expanded={expandedPanels.summary} onChange={handlePanelExpansion('summary')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Riepilogo conversazioni</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <SummarySettingsPanel />
-        </AccordionDetails>
-      </Accordion>
 
       {/* Memoria conversazioni */}
       <Accordion expanded={expandedPanels.memory} onChange={handlePanelExpansion('memory')}>

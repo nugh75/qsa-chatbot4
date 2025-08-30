@@ -627,6 +627,24 @@ class ApiService {
   async listEndpoints(): Promise<ApiResponse<{ count: number; endpoints: { method: string; path: string; name?: string; summary?: string }[] }>> {
     return this.makeRequest('/admin/endpoints');
   }
+
+  // === Interactions Logs (detailed usage) ===
+  async getInteractionDates(): Promise<ApiResponse<{ dates: string[] }>> {
+    return this.makeRequest('/admin/logs/interactions/dates');
+  }
+  async getInteractionFilters(date?: string): Promise<ApiResponse<{ providers: string[]; events: string[]; models: string[]; topics: string[]; user_ids: any[]; conversation_ids: string[]; personalities: { id: string; name: string }[] }>> {
+    const qp = date ? `?date=${encodeURIComponent(date)}` : '';
+    return this.makeRequest(`/admin/logs/interactions/filters${qp}`);
+  }
+  async getInteractions(params: { date?: string; limit?: number; offset?: number; provider?: string; event?: string; personality_id?: string; model?: string; conversation_id?: string; user_id?: number; topic?: string; request_id?: string; group_by_request_id?: boolean; rag?: boolean; min_duration_ms?: number; max_duration_ms?: number; min_tokens?: number; max_tokens?: number }): Promise<ApiResponse<{ items: any[]; total: number; date: string; grouped?: boolean }>> {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k,v]) => {
+      if (v === undefined || v === null || v === '') return;
+      q.set(k, String(v));
+    });
+    const qs = q.toString();
+    return this.makeRequest(`/admin/logs/interactions${qs ? ('?' + qs) : ''}`);
+  }
 }
 
 // Istanza singola del servizio API

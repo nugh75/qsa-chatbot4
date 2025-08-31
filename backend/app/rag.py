@@ -90,7 +90,19 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
             selected_groups = user_selected_groups
         
         if not selected_groups:
-            return ""
+            # Auto-selezione gruppi (fallback) se utente non ha scelto nulla
+            try:
+                all_groups = rag_engine.get_groups()
+                # Prendi solo gruppi con almeno 1 documento
+                auto_groups = [g['id'] for g in all_groups if g.get('document_count')]
+                # Limita a massimo 5 gruppi per evitare contesto troppo grande
+                selected_groups = auto_groups[:5]
+                if selected_groups:
+                    print(f"[RAG][auto-select] Nessun gruppo selezionato esplicitamente, uso fallback gruppi {selected_groups}")
+                else:
+                    return ""
+            except Exception:
+                return ""
         
         # Esegui ricerca RAG
         results = rag_engine.search(
@@ -98,6 +110,8 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
             group_ids=selected_groups,
             top_k=max_results
         )
+        if not results:
+            print(f"[RAG] Nessun risultato per query='{query[:50]}' gruppi={selected_groups}")
         
         if not results:
             return ""
@@ -105,34 +119,22 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         # Formatta risultati per l'LLM
         context_parts = []
         seen_files = set()
-        
         for i, result in enumerate(results[:max_results * 2]):  # Limita risultati totali
-            # Informazioni sul chunk
             filename = result.get("original_filename", result.get("filename", "documento"))
             content = result.get("content", "")
             score = result.get("similarity_score", 0.0)
-            
-            # Evita duplicati di file (prendi solo i migliori chunks per file)
             file_key = f"{filename}_{result.get('document_id')}"
             if file_key in seen_files:
                 continue
             seen_files.add(file_key)
-            
-            # Formatta contenuto con citazione
-            context_parts.append(
-                f"[Fonte: {filename} - Rilevanza: {score:.3f}]\n{content}\n"
-            )
-        
+            context_parts.append(f"[Fonte: {filename} - Rilevanza: {score:.3f}]\n{content}\n")
         if context_parts:
             context = "\n".join(context_parts)
-            
-            # Aggiungi header informativo
             header = f"[CONTESTO RAG - {len(context_parts)} documenti rilevanti trovati]\n\n"
-            
-            # Aggiungi footer con istruzioni per citazioni
             footer = "\n[ISTRUZIONI: Quando usi informazioni da queste fonti, cita il nome del file usando il formato: [📄 nome_file.pdf](download_link) ]"
-            
-            return header + context + footer
+            assembled = header + context + footer
+            print(f"[RAG] Contesto assemblato con {len(context_parts)} fonti, lunghezza={len(assembled)}")
+            return assembled
         
     except Exception as e:
         print(f"Errore nel recupero contesto RAG: {e}")

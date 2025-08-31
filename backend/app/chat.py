@@ -346,43 +346,43 @@ async def chat(
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
     resp = {"reply": answer, "topic": topic}
-    # Aggiungi metadati pipeline e RAG group names SOLO relativi a quanto realmente usato
+    # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
-        from .personalities import load_topic_descriptions
-        _td = load_topic_descriptions()
-        # pipeline_topics: solo il topic rilevato se abilitato
-        pipeline_topics_meta = []
-        if topic and (not personality_enabled_topics or topic in personality_enabled_topics):
-            pipeline_topics_meta.append({
-                "name": topic,
-                "description": (_td.get(topic) if isinstance(_td, dict) else None)
-            })
-        # gruppi RAG effettivamente coinvolti nei chunk recuperati
-        rag_group_names = []
+        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
         if rag_results:
+            sources["rag_chunks"] = [
+                {
+                    "chunk_index": r.get("chunk_index"),
+                    "filename": r.get("filename"),
+                    "similarity": r.get("similarity"),
+                    "preview": r.get("preview"),
+                    "content": r.get("content")
+                } for r in rag_results[:10]
+            ]
+        if topic and (not personality_enabled_topics or topic in (personality_enabled_topics or [])):
             try:
-                from .rag_engine import rag_engine
-                all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
-                # risali group_id dai rag_results (se presente nel search_results originale)
-                group_ids = []
-                for r in rag_results:
-                    gid = r.get('group_id') or r.get('metadata',{}).get('group_id')
-                    if gid is not None and gid not in group_ids:
-                        group_ids.append(gid)
-                rag_group_names = [all_groups.get(gid) for gid in group_ids if all_groups.get(gid)]
+                from .personalities import load_topic_descriptions
+                _td = load_topic_descriptions()
+                descr = _td.get(topic) if isinstance(_td, dict) else None
             except Exception:
-                pass
-        resp['pipeline_topics'] = pipeline_topics_meta
-        resp['rag_group_names'] = rag_group_names
-    except Exception:
-        pass
-    # Includi sempre (se presenti) i risultati RAG grezzi per uso frontend (etichette chunk)
-    if rag_results:
+                descr = None
+            sources["pipeline_topics"].append({"name": topic, "description": descr})
         try:
-            # Limita dimensione per evitare payload enormi
-            resp["rag_results"] = rag_results[:10]
+            from .rag_routes import get_user_context
+            from .rag_engine import rag_engine
+            sel_groups = get_user_context(session_id)
+            if sel_groups:
+                all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+                for gid in sel_groups:
+                    nm = all_groups.get(gid)
+                    if nm:
+                        sources["rag_groups"].append({"id": gid, "name": nm})
         except Exception:
             pass
+        if any(sources.values()):
+            resp['source_docs'] = sources
+    except Exception:
+        pass
     
     if x_admin_password == ADMIN_PASSWORD:
         resp["tokens"] = tokens_full
@@ -669,37 +669,53 @@ async def chat_stream(
                                 pass
                     except Exception:
                         rag_results = []
-                # Invia meta iniziale per far apparire chip subito
+                # Invia meta iniziale con source_docs
                 try:
-                    # Pipeline topics e rag group names
                     from .personalities import load_topic_descriptions as _ltd
                     _td2 = _ltd()
-                    # Solo il topic rilevato
-                    pipeline_topics_meta = []
-                    if topic and (not personality_enabled_topics or topic in personality_enabled_topics):
-                        pipeline_topics_meta.append({
-                            "name": topic,
-                            "description": (_td2.get(topic) if isinstance(_td2, dict) else None)
-                        })
-                    # Solo gruppi effettivamente presenti nei risultati RAG
-                    rag_group_names = []
+                    sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
                     if rag_results:
+                        sources["rag_chunks"] = [
+                            {
+                                "chunk_index": r.get("chunk_index"),
+                                "filename": r.get("filename"),
+                                "similarity": r.get("similarity"),
+                                "preview": r.get("preview"),
+                                "content": r.get("content")
+                            } for r in rag_results[:10]
+                        ]
+                    if topic:
                         try:
-                            all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
-                            group_ids = []
-                            for r in rag_results:
-                                gid = r.get('group_id') or r.get('metadata',{}).get('group_id')
-                                if gid is not None and gid not in group_ids:
-                                    group_ids.append(gid)
-                            rag_group_names = [all_groups.get(gid) for gid in group_ids if all_groups.get(gid)]
+                            descr = _td2.get(topic) if isinstance(_td2, dict) else None
                         except Exception:
-                            pass
-                    meta_evt = {"meta": True, "topic": topic, "rag_results": rag_results[:10] if rag_results else [], "pipeline_topics": pipeline_topics_meta, "rag_group_names": rag_group_names}
+                            descr = None
+                        sources["pipeline_topics"].append({"name": topic, "description": descr})
+                    try:
+                        from .rag_routes import get_user_context
+                        all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+                        sel_groups2 = get_user_context(session_id)
+                        if sel_groups2:
+                            for gid in sel_groups2:
+                                nm = all_groups.get(gid)
+                                if nm:
+                                    sources["rag_groups"].append({"id": gid, "name": nm})
+                    except Exception:
+                        pass
+                    meta_evt = {"meta": True, "topic": topic, "source_docs": sources if any(sources.values()) else None}
                     yield f"data: {_json_local.dumps(meta_evt)}\n\n"
                 except Exception:
                     pass
                 # Ottiene risposta completa e la spezza in chunk simulati
                 full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
+                # Inserisci citazioni/links se abbiamo risultati RAG
+                if rag_results:
+                    try:
+                        from .rag import format_response_with_citations
+                        # format_response_with_citations richiede search_results stile rag_engine.search
+                        # rag_results già possiede filename, document_id, chunk_index, similarity
+                        full = format_response_with_citations(full, rag_results)
+                    except Exception as _fe:
+                        print(f"[stream][citations] fallita iniezione citazioni: {_fe}")
                 # Spezza per frasi o blocchi ~40 char
                 import re
                 parts = re.findall(r'.{1,60}(?:\s|$)', full)
@@ -794,32 +810,35 @@ async def chat_stream(
                 # Aggiungi pipeline topics e rag group names anche nell'evento finale
                 from .personalities import load_topic_descriptions as _ltd3
                 _td3 = _ltd3()
-                pipeline_topics_meta = []
-                if topic and (not personality_enabled_topics or topic in personality_enabled_topics):
-                    pipeline_topics_meta.append({
-                        "name": topic,
-                        "description": (_td3.get(topic) if isinstance(_td3, dict) else None)
-                    })
-                rag_group_names = []
+                sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
                 if rag_results:
+                    sources_final["rag_chunks"] = [
+                        {
+                            "chunk_index": r.get("chunk_index"),
+                            "filename": r.get("filename"),
+                            "similarity": r.get("similarity"),
+                            "preview": r.get("preview"),
+                            "content": r.get("content")
+                        } for r in rag_results[:10]
+                    ]
+                if topic:
                     try:
-                        all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
-                        group_ids = []
-                        for r in rag_results:
-                            gid = r.get('group_id') or r.get('metadata',{}).get('group_id')
-                            if gid is not None and gid not in group_ids:
-                                group_ids.append(gid)
-                        rag_group_names = [all_groups.get(gid) for gid in group_ids if all_groups.get(gid)]
+                        descr = _td3.get(topic) if isinstance(_td3, dict) else None
                     except Exception:
-                        pass
-                meta = {
-                    "done": True,
-                    "reply": full_answer,
-                    "topic": topic,
-                    "rag_results": (rag_results[:10] if rag_results else []),
-                    "pipeline_topics": pipeline_topics_meta,
-                    "rag_group_names": rag_group_names
-                }
+                        descr = None
+                    sources_final["pipeline_topics"].append({"name": topic, "description": descr})
+                try:
+                    from .rag_routes import get_user_context
+                    all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+                    sel_groups3 = get_user_context(session_id)
+                    if sel_groups3:
+                        for gid in sel_groups3:
+                            nm = all_groups.get(gid)
+                            if nm:
+                                sources_final["rag_groups"].append({"id": gid, "name": nm})
+                except Exception:
+                    pass
+                meta = {"done": True, "reply": full_answer, "topic": topic, "source_docs": sources_final if any(sources_final.values()) else None}
                 yield f"data: {_json_final.dumps(meta)}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"

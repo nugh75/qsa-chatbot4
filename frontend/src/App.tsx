@@ -65,14 +65,21 @@ type RAGResult = {
   content?: string
 }
 
+// Nuova struttura fonti consolidata dal backend (source_docs)
+type SourceDocs = {
+  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string }[]
+  pipeline_topics?: { name: string; description?: string | null }[]
+  rag_groups?: { id: any; name: string }[]
+}
+
 type Msg = { 
   role:'user'|'assistant'|'system', 
   content:string, 
   ts:number,
   topic?: string,
-  rag_results?: RAGResult[],
-  pipeline_topics?: { name: string; description?: string | null }[],
-  rag_group_names?: string[]
+  // Nuova chiave unificata
+  source_docs?: SourceDocs | null
+  // (Campi legacy rimossi: rag_results, pipeline_topics, rag_group_names)
 }
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
@@ -235,48 +242,154 @@ const AppContent: React.FC = () => {
   const handleOpenMore = (e: React.MouseEvent<HTMLElement>) => setMoreAnchor(e.currentTarget)
   const handleCloseMore = () => setMoreAnchor(null)
 
-  // Converte Markdown in testo semplice per TTS (rimuove tag e simboli)
+  // Preview dialog state for document links (txt, md, pdf)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewType, setPreviewType] = useState<'pdf' | 'markdown' | 'text' | null>(null)
+  const [previewTitle, setPreviewTitle] = useState<string>('')
+  const [previewContent, setPreviewContent] = useState<string>('')
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null) // object URL for pdf
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
+  const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
+
+  // Build aggregated content for a document name from rag chunks
+  const normalizeDocName = (raw: string): string => {
+    return raw
+      .toLowerCase()
+      .replace(/%20/g,' ')
+      .replace(/[\s_-]+/g,' ') // uniforma separatori
+      .replace(/\.pdf$|\.md$|\.markdown$|\.txt$/,'')
+      .trim()
+  }
+  const buildDocumentAggregate = (name: string, ragChunks?: SourceDocs['rag_chunks']): string => {
+    if (!ragChunks) return ''
+    const decoded = decodeURIComponent(name)
+    const target = normalizeDocName(decoded)
+    const related = ragChunks.filter(c => {
+      const fn = c.filename || ''
+      const base = fn.split('/').pop() || fn
+      const cleaned = normalizeDocName(base.split('_').pop() || base)
+      return cleaned && (cleaned === target || cleaned.includes(target) || target.includes(cleaned))
+    })
+    if (!related.length) return ''
+    related.sort((a,b)=> (a.chunk_index||0) - (b.chunk_index||0))
+    return related.map(c => `### Chunk ${c.chunk_index}\n${c.content || c.preview || ''}` ).join('\n\n')
+  }
+
+  // Inject links for bare [📄 filename] citations (no existing (url))
+  const injectDocLinks = (md: string, ragChunks?: SourceDocs['rag_chunks']): string => {
+    if (!md) return md
+    const normSet = new Set((ragChunks||[]).map(c => {
+      const fn = c.filename || ''
+      const base = fn.split('/').pop() || fn
+      return normalizeDocName(base.split('_').pop() || base)
+    }))
+    return md.replace(/\[📄\s+([^\]\(]+?)\](?!\()/g, (match, inner) => {
+      const raw = inner.trim()
+      const norm = normalizeDocName(raw)
+      const has = Array.from(normSet).some(f => f && (f === norm || f.includes(norm) || norm.includes(f)))
+      if (!has) return match
+      return `[📄 ${raw}](doc://${encodeURIComponent(raw)})`
+    })
+  }
+
+  const openPreviewForLink = async (href: string, title: string, ragChunksForContext?: SourceDocs['rag_chunks']) => {
+    console.debug('[preview] openPreviewForLink', { href, title, chunkCount: ragChunksForContext?.length })
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl)
+      setPreviewUrl(null)
+    }
+    setPreviewOpen(true)
+    setPreviewTitle(title || href)
+    setPreviewLoading(true)
+    setPreviewError(null)
+    setPreviewContent('')
+    try {
+      if (href.startsWith('doc://')) {
+        const name = href.slice('doc://'.length)
+        const agg = buildDocumentAggregate(name, ragChunksForContext)
+        if (!agg) {
+          // Fallback: mostra elenco chunk candidati per debug
+          const candidates = (ragChunksForContext||[]).filter(c=>{
+            const fn = c.filename || ''
+            const base = fn.split('/').pop() || fn
+            const cleaned = normalizeDocName(base.split('_').pop() || base)
+            return cleaned.includes(normalizeDocName(decodeURIComponent(name)))
+          })
+          setPreviewType('markdown')
+          setPreviewContent(`# ${decodeURIComponent(name)}\n\nNessun aggregato completo trovato.\n\nChunk candidati trovati: ${candidates.length}\n\n` + candidates.map(c=>`### Chunk ${c.chunk_index} (${c.filename})\n${c.preview || c.content || '(vuoto)'}\n`).join('\n'))
+        } else {
+          setPreviewType('markdown')
+          setPreviewContent(`# ${decodeURIComponent(name)}\n\n${agg}`)
+        }
+      } else {
+        const lower = href.toLowerCase()
+        let type: 'pdf' | 'markdown' | 'text' = 'text'
+        if (lower.endsWith('.pdf')) type = 'pdf'
+        else if (lower.endsWith('.md') || lower.endsWith('.markdown')) type = 'markdown'
+        else if (lower.endsWith('.txt')) type = 'text'
+        else if (/\/api\/rag\/download\//.test(href)) type = 'pdf'
+        setPreviewType(type)
+        const res = await fetch(href)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        if (type === 'pdf') {
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          setPreviewUrl(url)
+        } else {
+          const text = await res.text()
+          const max = 200 * 1024
+          const truncated = text.length > max ? text.slice(0, max) + '\n\n[contenuto troncato]' : text
+          setPreviewContent(truncated)
+        }
+      }
+    } catch (e: any) {
+      console.warn('[preview] error', e)
+      setPreviewError(e?.message || 'Errore caricamento documento')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const closePreview = () => {
+    setPreviewOpen(false)
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl)
+      setPreviewUrl(null)
+    }
+    setPreviewType(null)
+    setPreviewContent('')
+    setPreviewError(null)
+  }
+
+  // Helpers markdown (reinserted here so they're in scope before usage)
   const sanitizeMarkdownToPlainText = (input: string): string => {
     let text = input
-    // Rimuovi blocchi di codice ``` ```
     text = text.replace(/```[\s\S]*?```/g, ' ')
-    // Rimuovi inline code `code`
     text = text.replace(/`([^`]+)`/g, '$1')
-    // Immagini: mantieni solo alt text
     text = text.replace(/!\[([^\]]*)\]\([^\)]*\)/g, '$1')
-    // Link: mantieni solo il testo
     text = text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '$1')
-    // Header markdown # ## ### -> rimuovi i #
     text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    // Citazioni >
     text = text.replace(/^\s{0,3}>\s?/gm, '')
-    // Liste - * + e numerate
     text = text.replace(/^\s{0,3}[-*+]\s+/gm, '')
     text = text.replace(/^\s{0,3}\d+\.\s+/gm, '')
-    // Tabelle: rimuovi righe separatrici e sostituisci pipe con spazi puntati
     text = text.replace(/^\s*\|?\s*:?[-]{2,}:?\s*(\|\s*:?[-]{2,}:?\s*)+\|?\s*$/gm, '')
     text = text.replace(/^\s*[-]{3,}\s*$/gm, '')
     text = text.replace(/\|/g, ' • ')
-    // Rimuovi tag HTML
     text = text.replace(/<[^>]+>/g, '')
-    // Grassetto/corsivo
     text = text.replace(/\*\*([^*]+)\*\*/g, '$1')
     text = text.replace(/\*([^*]+)\*/g, '$1')
     text = text.replace(/__([^_]+)__/g, '$1')
     text = text.replace(/_([^_]+)_/g, '$1')
-    // Comprimi spazi
     text = text.replace(/[ \t\f\v]+/g, ' ')
-    // Normalizza nuove righe multiple
     text = text.replace(/\n{3,}/g, '\n\n')
     return text.trim()
   }
 
-  // Normalizza il Markdown per la visualizzazione: sblocca tabelle accidentalmente racchiuse in ```
   const normalizeMarkdownForDisplay = (md: string): string => {
     if (!md) return md
-    // 1) Sblocca tabelle dentro code fence
     let out = md.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
-      // Se il blocco contiene una tabella GFM (riga con '|' seguita da riga di separatori '---'), rimuovi i backtick
       const lines = inner.split('\n')
       for (let i = 0; i < lines.length - 1; i++) {
         if (lines[i].includes('|')) {
@@ -288,7 +401,6 @@ const AppContent: React.FC = () => {
       }
       return match
     })
-    // 2) Converte semplici tabelle "a trattini" senza pipe in GFM
     const lines = out.split('\n')
     const converted: string[] = []
     for (let i = 0; i < lines.length; i++) {
@@ -654,52 +766,37 @@ const AppContent: React.FC = () => {
         buffer += decoder.decode(value, {stream:true})
 
         const parts = buffer.split('\n\n')
-        // conserva l'ultima se incompleta
         buffer = parts.pop() || ''
         for(const part of parts){
           const line = part.trim()
-          if(!line.startsWith('data:')) continue
-          const jsonStr = line.slice(5).trim()
-          try {
-            const evt = JSON.parse(jsonStr)
-            if(evt.meta){
-              // Evento metadati iniziale: applica topic, rag_results, pipeline e gruppi
-              setMessages(prev => {
-                const updated = [...prev]
-                const current = updated[assistantIndex]
-                if(current){
-                  updated[assistantIndex] = { 
-                    ...current, 
-                    topic: evt.topic, 
-                    rag_results: evt.rag_results || [],
-                    pipeline_topics: evt.pipeline_topics || [],
-                    rag_group_names: evt.rag_group_names || []
+            if(!line.startsWith('data:')) continue
+            const jsonStr = line.slice(5).trim()
+            try {
+              const evt = JSON.parse(jsonStr)
+              if(evt.meta){
+                setMessages(prev => {
+                  const updated = [...prev]
+                  const current = updated[assistantIndex]
+                  if(current){
+                    updated[assistantIndex] = { ...current, topic: evt.topic, source_docs: evt.source_docs || null }
                   }
-                }
-                return updated
-              })
-            }
-            if(evt.delta){ commitDelta(evt.delta) }
-            if(evt.error){ setError(evt.error) }
-            if(evt.done){
-              if(evt.reply){ commitDelta('') /* reply già completa */ }
-              // Aggiorna metadata (topic + rag_results) sul messaggio assistente
-              setMessages(prev => {
-                const updated = [...prev]
-                const current = updated[assistantIndex]
-                if(current){
-                  updated[assistantIndex] = { 
-                    ...current, 
-                    topic: evt.topic || current.topic, 
-                    rag_results: evt.rag_results || current.rag_results,
-                    pipeline_topics: evt.pipeline_topics || current.pipeline_topics,
-                    rag_group_names: evt.rag_group_names || current.rag_group_names
+                  return updated
+                })
+              }
+              if(evt.delta){ commitDelta(evt.delta) }
+              if(evt.error){ setError(evt.error) }
+              if(evt.done){
+                if(evt.reply){ commitDelta('') }
+                setMessages(prev => {
+                  const updated = [...prev]
+                  const current = updated[assistantIndex]
+                  if(current){
+                    updated[assistantIndex] = { ...current, topic: evt.topic || current.topic, source_docs: evt.source_docs !== undefined ? evt.source_docs : current.source_docs }
                   }
-                }
-                return updated
-              })
-            }
-          } catch(e){ /* ignora parse */ }
+                  return updated
+                })
+              }
+            } catch(e){ /* ignore parse errors */ }
         }
       }
 
@@ -891,60 +988,19 @@ const AppContent: React.FC = () => {
       console.log('Feedback salvato localmente:', { messageIndex, type })
     }
   }
-
-  // Routing semplice basato sull'URL
+  // Routing semplice basato sull'URL (admin handled outside wrapper too but keep safeguard)
   if (window.location.pathname === '/admin') {
     return <AdminPanel />
   }
 
   const [selectedChunk, setSelectedChunk] = useState<RAGResult|null>(null)
 
+  // --- MAIN RENDER ---
   return (
-  <Container maxWidth={isMobile ? 'sm' : 'xl'} sx={{ py: isMobile ? 1 : 3, px: isMobile ? 1 : 2, pb: isMobile ? 10 : 3 }}>
-      {/* Dialog visualizzazione contenuto completo chunk RAG */}
-      <Dialog open={!!selectedChunk} onClose={()=> setSelectedChunk(null)} fullWidth maxWidth="md">
-        <DialogTitle sx={{ fontSize:'0.95rem', pr:6 }}>
-          {selectedChunk ? `Chunk ${selectedChunk.chunk_index} – ${selectedChunk.filename}` : 'Chunk'}
-        </DialogTitle>
-        <DialogContent dividers sx={{ bgcolor:'#fafafa' }}>
-          {selectedChunk && (
-            <>
-              <Typography variant="caption" color="text.secondary" sx={{ display:'block', mb:1 }}>
-                Similarity: {selectedChunk.similarity ? (selectedChunk.similarity*100).toFixed(1)+'%' : 'n/d'}
-              </Typography>
-              <Typography variant="body2" sx={{ whiteSpace:'pre-wrap', fontFamily:'ui-monospace, monospace', fontSize:'0.8rem', lineHeight:1.35 }}>
-                {selectedChunk.content || selectedChunk.preview || '(contenuto non disponibile)'}
-              </Typography>
-            </>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={()=> setSelectedChunk(null)} size="small">Chiudi</Button>
-        </DialogActions>
-      </Dialog>
-      {/* Unified responsive header bar with personality, voice and download */}
+    <Container maxWidth="md" sx={{ pt: isMobile ? 1 : 2, pb: 6 }}>
       <HeaderBar
-        personalities={personalities as any}
-        selectedPersonalityId={selectedPersonalityId}
-        onChangePersonality={(id)=>{
-          setSelectedPersonalityId(id)
-          const p = personalities.find(pp=>pp.id===id)
-          if (p && enabledProviders.includes(p.provider)) setProvider(p.provider as any)
-          if ((p as any)?.tts_provider) setTtsProvider((p as any).tts_provider as any)
-          if ((p as any)?.tts_voice) setTtsVoice((p as any).tts_voice)
-          // Prefer new structured welcome message content, fallback to legacy field
-          const welcomeText = p?.welcome_message_content || p?.welcome_message
-          if (welcomeText) {
-            setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
-            setCurrentConversationId(null)
-          }
-          // Optionally show guide content if available (do not auto-open help panel)
-          if (p?.guide_content) {
-            setActiveGuide(p.guide_content)
-          }
-        }}
         onOpenSidebar={()=> setSidebarOpen(true)}
-  isAdmin={!!user?.is_admin}
+        isAdmin={!!user?.is_admin}
         onDownloadChat={messages.length ? ()=>{
           const blob = new Blob([messages.map(m=>`[${new Date(m.ts).toLocaleString()}] ${m.role}: ${m.content}`).join('\n\n')], { type:'text/plain' })
           const url = URL.createObjectURL(blob)
@@ -990,6 +1046,9 @@ const AppContent: React.FC = () => {
         onLogin={()=> setShowLoginDialog(true)}
         onLogout={handleLogout}
         dense={isMobile}
+  personalities={personalities}
+  selectedPersonalityId={selectedPersonalityId}
+  onChangePersonality={(id)=> setSelectedPersonalityId(id)}
       />
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
@@ -1054,8 +1113,17 @@ const AppContent: React.FC = () => {
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
                     '& p': { m: 0 },
                   }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {normalizeMarkdownForDisplay(m.content)}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                      a: ({node, href, children, ...props}) => {
+                        const h = href || ''
+                        const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
+                        if (!isDoc) {
+                          return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                        }
+                        return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
+                      }
+                    }}>
+                      {injectDocLinks(normalizeMarkdownForDisplay(m.content), m.source_docs?.rag_chunks)}
                     </ReactMarkdown>
                   </Box>
                 
@@ -1167,58 +1235,104 @@ const AppContent: React.FC = () => {
                       <DislikeIcon size={16} />
                     </Box>
                     </Box>
-                    {(m.topic !== undefined || (m.rag_results && m.rag_results.length >= 0) || (m.pipeline_topics && m.pipeline_topics.length>0) || (m.rag_group_names && m.rag_group_names.length>0)) && (
-                      <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5, justifyContent:'flex-end' }}>
-                        {/* Pipeline topics (personalità) */}
-                        {m.pipeline_topics && m.pipeline_topics.slice(0,3).map((pt,idx)=>{
-                          const tip = pt.description ? `${pt.name}\n---\n${pt.description}` : pt.name
-                          return (
-                            <Tooltip key={`pt-${idx}`} enterDelay={300} title={<span style={{ whiteSpace:'pre-line' }}>{tip}</span>} arrow>
-                              <Chip onClick={()=> {/* future: filter by topic */}} size="small" label={pt.name} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
-                            </Tooltip>
-                          )
-                        })}
-                        {m.pipeline_topics && m.pipeline_topics.length>3 && (
-                          <Tooltip title={m.pipeline_topics.slice(3).map(pt=>pt.name).join(', ')} arrow>
-                            <Chip size="small" label={`+${m.pipeline_topics.length-3}`} sx={{ bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
-                          </Tooltip>
-                        )}
-                        {/* RAG group (collection) names */}
-                        {m.rag_group_names && m.rag_group_names.slice(0,3).map((gn,idx)=>(
-                          <Tooltip key={`gn-${idx}`} enterDelay={300} title={`Collezione RAG: ${gn}`} arrow>
-                            <Chip onClick={()=> {/* future: filter by group */}} size="small" label={gn} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
-                          </Tooltip>
-                        ))}
-                        {m.rag_group_names && m.rag_group_names.length>3 && (
-                          <Tooltip title={m.rag_group_names.slice(3).join(', ')} arrow>
-                            <Chip size="small" label={`+${m.rag_group_names.length-3}`} sx={{ bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
-                          </Tooltip>
-                        )}
-                        {/* Current detected topic */}
-                        {m.topic !== undefined && (
-                          <Tooltip enterDelay={300} title={`Pipeline topic: ${m.topic}`} arrow>
-                            <Chip onClick={()=> {/* future: filter current topic */}} size="small" label={m.topic || 'generale'} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #90caf9', fontSize:'0.65rem', height:20 }} />
-                          </Tooltip>
-                        )}
-                        {/* RAG chunk chips */}
-                        {m.rag_results && m.rag_results.slice(0,4).map((r,idx)=>{
-                          const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
-                          const simple = baseName.split('.')[0]
-                          const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
-                          const preview = (r.preview || '').replace(/\s+/g,' ').trim()
-                          const shortPrev = preview ? (preview.length>260 ? preview.slice(0,260)+"…" : preview) : ''
-                          const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarity: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`
-                          return (
-                            <Tooltip key={`rag-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
-                              <Chip onClick={()=> setSelectedChunk(r)} size="small" label={label} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
-                            </Tooltip>
-                          )
-                        })}
-                        {m.rag_results && m.rag_results.length > 4 && (
-                          <Tooltip title={m.rag_results.slice(4).map(r=>`Chunk ${r.chunk_index}${r.similarity?` (${(r.similarity*100).toFixed(1)}%)`:''}`).join(', ')} arrow>
-                            <Chip size="small" label={`+${m.rag_results.length - 4}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
-                          </Tooltip>
-                        )}
+                    {/* Sezione Fonti (nuova) */}
+                    {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length) && (
+                      <Box sx={{ mt:1.5, p:1.2, bgcolor:'#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
+                        <Typography variant="caption" sx={{ fontWeight:'bold', color:'#1976d2', display:'block', mb:0.5 }}>Topic e Fonti</Typography>
+                        {m.source_docs.rag_chunks?.length ? (
+                          <Box sx={{ mb:0.5 }}>
+                            <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
+                              {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
+                            </Link>
+                          </Box>
+                        ) : null}
+                        <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
+                          {/* Topic pipeline */}
+                          {m.source_docs.pipeline_topics && m.source_docs.pipeline_topics.map((pt,idx)=>(
+                            <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                              <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
+                            </Box>
+                          ))}
+                          {/* Gruppi RAG selezionati */}
+                          {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
+                            <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                              <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
+                            </Box>
+                          )}
+                          {/* Documenti (derivati dai chunk) */}
+                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (()=>{
+                              // Ordina chunk per similarità desc (non mutare origine)
+                              const sorted = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
+                              const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
+                              // Raggruppa per documento calcolando max similarity e numero chunk
+                              const docMap: Record<string,{name:string; chunks:number; maxSim:number}> = {}
+                              filtered.forEach(r=>{
+                                if(!r.filename) return
+                                const base = (r.filename.split('_').pop() || r.filename)
+                                if(!docMap[base]) docMap[base] = { name: base, chunks:0, maxSim: r.similarity||0 }
+                                docMap[base].chunks += 1
+                                if((r.similarity||0) > docMap[base].maxSim) docMap[base].maxSim = (r.similarity||0)
+                              })
+                              const docs = Object.values(docMap).sort((a,b)=> b.maxSim - a.maxSim)
+                              if(!docs.length) return null
+                              return (
+                                <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                  <strong style={{ color:'#1976d2' }}>Documenti ({docs.length}):</strong>{' '}
+                                  {docs.slice(0,6).map((d,idx)=> (
+                                    <React.Fragment key={d.name}>
+                                      {idx>0 && ', '}
+                                      <Tooltip arrow title={`Chunk visibili: ${d.chunks}\nMax similarità: ${(d.maxSim*100).toFixed(1)}%`}>
+                                        <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.7rem', p:0, cursor:'pointer' }} onClick={()=> openPreviewForLink(`doc://${encodeURIComponent(d.name)}`, d.name, m.source_docs?.rag_chunks)}>
+                                          {d.name}
+                                        </Link>
+                                      </Tooltip>
+                                    </React.Fragment>
+                                  ))}
+                                  {docs.length>6 && (
+                                    <Tooltip title={docs.slice(6).map(d=>`${d.name} (${(d.maxSim*100).toFixed(0)}%)`).join(', ')} arrow>
+                                      <Box component="span" sx={{ cursor:'default' }}>, +{docs.length-6}</Box>
+                                    </Tooltip>
+                                  )}
+                                </Box>
+                              )
+                          })()}
+                          {/* Chunk RAG */}
+                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (
+                            <Box>
+                                {(()=>{
+                                  const sortedChunks = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
+                                  const filteredChunks = sortedChunks.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
+                                  const total = m.source_docs.rag_chunks.length
+                                  const shown = filteredChunks.length
+                                  return (
+                                    <>
+                                      <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Chunks ({shown}/{total}) ordinati per similarità</Box>
+                                      <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5 }}>
+                                        {filteredChunks.slice(0,6).map((r,idx)=>{
+                                  const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
+                                  const simple = baseName.split('.')[0]
+                                  const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
+                                  const preview = (r.preview || '').replace(/\s+/g,' ').trim()
+                                  const shortPrev = preview ? (preview.length>180 ? preview.slice(0,180)+"…" : preview) : ''
+                                  const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarità: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`
+                                  return (
+                                    <Tooltip key={`sc-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
+                                      <Chip size="small" label={label} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                    </Tooltip>
+                                  )
+                                        })}
+                                        {filteredChunks.length>6 && (
+                                          <Tooltip title={filteredChunks.slice(6).map(r=>`Chunk ${r.chunk_index}`).join(', ')} arrow>
+                                            <Chip size="small" label={`+${filteredChunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                          </Tooltip>
+                                        )}
+                                      </Box>
+                                    </>
+                                  )
+                                })()}
+                            </Box>
+                          )}
+                        </Stack>
                       </Box>
                     )}
                   </Box>
@@ -1451,7 +1565,7 @@ const AppContent: React.FC = () => {
         </Link>
       </Box>
 
-      <ConversationSidebar
+  <ConversationSidebar
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         currentConversationId={currentConversationId || undefined}
@@ -1550,7 +1664,7 @@ const AppContent: React.FC = () => {
         }}
       />
       
-      <Dialog
+  <Dialog
         open={showHelp}
         onClose={() => setShowHelp(false)}
         maxWidth="md"
@@ -1595,7 +1709,29 @@ const AppContent: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      <Dialog
+      {/* Dialog dettagli chunk RAG */}
+  <Dialog open={!!selectedChunk} onClose={()=> setSelectedChunk(null)} fullWidth maxWidth="md">
+        <DialogTitle sx={{ pr:2 }}>
+          {selectedChunk ? `Chunk ${selectedChunk.chunk_index} – ${selectedChunk.filename}` : 'Fonte'}
+        </DialogTitle>
+        <DialogContent dividers>
+          {selectedChunk && (
+            <Stack spacing={1}>
+              <Typography variant="caption" color="text.secondary">
+                Similarità: {selectedChunk.similarity ? (selectedChunk.similarity*100).toFixed(1)+'%' : 'n/d'}
+              </Typography>
+              <Box sx={{ p:1, bgcolor:'#fafafa', border:'1px solid #eee', borderRadius:1, fontSize:'0.8rem', maxHeight:300, overflow:'auto' }}>
+                {selectedChunk.content || selectedChunk.preview || '(contenuto non disponibile)'}
+              </Box>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setSelectedChunk(null)} size="small">Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+  <Dialog
         open={showSearch}
         onClose={() => setShowSearch(false)}
         maxWidth="md"
@@ -1627,7 +1763,7 @@ const AppContent: React.FC = () => {
       </Dialog>
 
       {/* Dialog obbligatorio cambio password */}
-      <Dialog open={forcePwdOpen} onClose={() => {}} maxWidth="sm" fullWidth>
+  <Dialog open={forcePwdOpen} onClose={() => {}} maxWidth="sm" fullWidth>
         <DialogTitle>Imposta una nuova password</DialogTitle>
         <DialogContent>
           {forcePwdError && <Alert severity="error" sx={{ mb:2 }}>{forcePwdError}</Alert>}
@@ -1661,18 +1797,77 @@ const AppContent: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={showSurvey} onClose={()=> setShowSurvey(false)} maxWidth="sm" fullWidth>
+  <Dialog open={showSurvey} onClose={()=> setShowSurvey(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Valuta l'esperienza</DialogTitle>
         <DialogContent>
           <SurveyForm backendUrl={BACKEND} onSubmitted={()=> setTimeout(()=> setShowSurvey(false), 1500)} />
         </DialogContent>
       </Dialog>
+
+      {/* Document Preview Dialog */}
+      <Dialog open={previewOpen} onClose={closePreview} fullWidth maxWidth={previewType==='pdf' ? 'lg' : 'md'}>
+        <DialogTitle sx={{ pr: 6 }}>
+          {previewTitle || 'Anteprima documento'}
+          <IconButton onClick={closePreview} sx={{ position:'absolute', right:8, top:8 }} size="small">
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent dividers sx={{ minHeight: previewType==='pdf' ? 500 : 300, p:2 }}>
+          {previewLoading && (
+            <Box display="flex" alignItems="center" justifyContent="center" sx={{ height: '100%' }}>
+              <CircularProgress />
+            </Box>
+          )}
+          {!previewLoading && previewError && (
+            <Alert severity="error">{previewError}</Alert>
+          )}
+          {!previewLoading && !previewError && previewType === 'pdf' && previewUrl && (
+            <Box sx={{ width:'100%', height: '100%', '& iframe': { border: 'none' } }}>
+              <iframe src={previewUrl} style={{ width: '100%', height: 480 }} title={previewTitle} />
+            </Box>
+          )}
+          {!previewLoading && !previewError && (previewType === 'markdown' || previewType === 'text') && (
+            previewType === 'markdown' ? (
+              <Box sx={{ '& h1,& h2,& h3': { mt:2 }, '& pre': { p:1, bgcolor:'#f5f5f5', overflowX:'auto' } }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewContent}</ReactMarkdown>
+              </Box>
+            ) : (
+              <Box component="pre" sx={{ whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'monospace', fontSize:'0.85rem', m:0 }}>
+                {previewContent}
+              </Box>
+            )
+          )}
+        </DialogContent>
+        <DialogActions>
+          {previewType === 'markdown' && previewContent && previewContent.includes('### Chunk') && (
+            <Button size="small" onClick={()=>{
+              const blob = new Blob([previewContent], { type:'text/markdown' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = (previewTitle.replace(/\s+/g,'_') || 'documento') + '_aggregato.md'
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              setTimeout(()=> URL.revokeObjectURL(url), 2000)
+            }}>Scarica aggregato</Button>
+          )}
+          {previewType && (
+            <Button size="small" onClick={()=>{ if (previewType==='pdf' && previewUrl) window.open(previewUrl, '_blank'); else window.open(previewTitle, '_blank') }} disabled={previewLoading || !!previewError}>Apri originale</Button>
+          )}
+          <Button onClick={closePreview}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
       <SiteFooter />
     </Container>
   );
 };
 
 // App wrapper con AuthProvider
+
+
+
 export default function App() {
   // Routing semplice basato sull'URL
   if (window.location.pathname === '/admin') {

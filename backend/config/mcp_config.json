@@ -1,0 +1,43 @@
+{
+  "servers": [
+    {
+      "id": "email_server",
+      "name": "Email MCP Server",
+      "description": "Server per inviare email tramite MCP",
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-email"
+      ],
+      "env": {
+        "SMTP_HOST": "",
+        "SMTP_PORT": "587",
+        "SMTP_USER": "",
+        "SMTP_PASSWORD": "",
+        "SMTP_FROM": ""
+      },
+      "enabled": false,
+      "capabilities": [
+        "email",
+        "send_message"
+      ]
+    },
+    {
+      "id": "filesystem_server",
+      "name": "Filesystem MCP Server",
+      "description": "Server per operazioni su file",
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-filesystem",
+        "/tmp"
+      ],
+      "env": {},
+      "enabled": false,
+      "capabilities": [
+        "files",
+        "read_file",
+        "write_file",
+        "list_directory"
+      ]
+    }
+  ]
+}

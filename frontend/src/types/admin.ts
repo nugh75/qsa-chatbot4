@@ -51,6 +51,7 @@ export interface PersonalityEntry {
   // Pipeline e RAG configurazioni
   enabled_pipeline_topics?: string[];
   enabled_rag_groups?: number[];
+  enabled_mcp_servers?: string[];
 }
 
 export interface PipelineOption {
@@ -61,4 +62,15 @@ export interface RAGGroup {
   id: number;
   name: string;
   document_count: number;
+}
+
+export interface MCPServer {
+  id: string;
+  name: string;
+  description: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+  capabilities: string[];
 }

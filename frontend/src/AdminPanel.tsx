@@ -24,6 +24,7 @@ import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
 import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
+import MCPPanel from './components/MCPPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
 import FooterSettingsPanel from './components/FooterSettingsPanel'
 import { apiService } from './apiService'
@@ -57,6 +58,7 @@ const AdminPanel: React.FC = () => {
     { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
     { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
+    { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
     { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
@@ -81,6 +83,7 @@ const AdminPanel: React.FC = () => {
   pipeline: false,
   welcome_guides: false,
   footer_settings: true,
+  mcp_servers: true,
   })
 
   // Token test
@@ -721,6 +724,21 @@ const AdminPanel: React.FC = () => {
           <PipelinePanel />
         </AccordionDetails>
       </Accordion>
+  )}
+
+  {/* MCP Servers */}
+  {panelVisible('mcp_servers') && (
+    <Accordion expanded={expandedPanels.mcp_servers} onChange={handlePanelExpansion('mcp_servers')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <HubIcon fontSize="small" />
+          <Typography variant="h6">Server MCP</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <MCPPanel />
+      </AccordionDetails>
+    </Accordion>
   )}
     </Container>
   )

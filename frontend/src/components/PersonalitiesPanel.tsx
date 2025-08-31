@@ -6,7 +6,7 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { authFetch, BACKEND } from '../utils/authFetch'
-import { PersonalityEntry, SystemPromptEntry, RAGGroup } from '../types/admin'
+import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer } from '../types/admin'
 
 interface PersonalitiesResponse { default_id: string | null; personalities: PersonalityEntry[] }
 
@@ -43,8 +43,10 @@ const PersonalitiesPanel: React.FC = () => {
   // Pipeline e RAG
   const [pipelineTopics, setPipelineTopics] = useState<string[]>([])
   const [ragGroups, setRagGroups] = useState<RAGGroup[]>([])
+  const [mcpServers, setMcpServers] = useState<MCPServer[]>([])
   const [selectedPipelineTopics, setSelectedPipelineTopics] = useState<string[]>([])
   const [selectedRagGroups, setSelectedRagGroups] = useState<number[]>([])
+  const [selectedMcpServers, setSelectedMcpServers] = useState<string[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
 
@@ -124,6 +126,15 @@ const PersonalitiesPanel: React.FC = () => {
           setRagGroups(ragData.groups || [])
         }
       }
+      
+      // Carica server MCP
+      const mcpRes = await authFetch(`${BACKEND}/api/admin/mcp-options`)
+      if (mcpRes.ok) {
+        const mcpData = await mcpRes.json()
+        if (mcpData.success) {
+          setMcpServers(mcpData.servers || [])
+        }
+      }
     } catch {}
   })() },[])
 
@@ -145,6 +156,7 @@ const PersonalitiesPanel: React.FC = () => {
     setTtsProvider('');
     setSelectedPipelineTopics([]);
     setSelectedRagGroups([]);
+    setSelectedMcpServers([]);
     setDialogOpen(true) 
   }
   const openEdit = (p: PersonalityEntry) => {
@@ -171,6 +183,7 @@ const PersonalitiesPanel: React.FC = () => {
     // Carica configurazioni pipeline e RAG
     setSelectedPipelineTopics(p.enabled_pipeline_topics || []);
     setSelectedRagGroups(p.enabled_rag_groups || []);
+    setSelectedMcpServers(p.enabled_mcp_servers || []);
     setDialogOpen(true)
   }
 
@@ -219,7 +232,8 @@ const PersonalitiesPanel: React.FC = () => {
           remove_avatar: removeAvatar, 
           active,
           enabled_pipeline_topics: selectedPipelineTopics,
-          enabled_rag_groups: selectedRagGroups
+          enabled_rag_groups: selectedRagGroups,
+          enabled_mcp_servers: selectedMcpServers
         })
       })
       if (res.ok) {
@@ -266,6 +280,7 @@ const PersonalitiesPanel: React.FC = () => {
             p.active = active
             ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
             ;(p as any).enabled_rag_groups = selectedRagGroups
+            ;(p as any).enabled_mcp_servers = selectedMcpServers
             list[idx] = p
           } else {
             list.push({
@@ -284,7 +299,8 @@ const PersonalitiesPanel: React.FC = () => {
               max_tokens: maxTokens === '' ? null : (maxTokens as number),
               active,
               enabled_pipeline_topics: selectedPipelineTopics,
-              enabled_rag_groups: selectedRagGroups
+              enabled_rag_groups: selectedRagGroups,
+              enabled_mcp_servers: selectedMcpServers
             })
           }
           return { ...prev, personalities: list }
@@ -415,6 +431,11 @@ const PersonalitiesPanel: React.FC = () => {
                     {p.enabled_rag_groups && p.enabled_rag_groups.length > 0 && (
                       <Typography variant="caption" color="text.secondary">
                         <strong>RAG:</strong> {p.enabled_rag_groups.length} gruppi
+                      </Typography>
+                    )}
+                    {p.enabled_mcp_servers && p.enabled_mcp_servers.length > 0 && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>MCP:</strong> {p.enabled_mcp_servers.length} servers
                       </Typography>
                     )}
                   </Stack>
@@ -613,6 +634,49 @@ const PersonalitiesPanel: React.FC = () => {
                   ))}
                   {ragGroups.length === 0 && (
                     <Typography variant="caption" color="text.secondary">Nessun gruppo RAG disponibile</Typography>
+                  )}
+                </FormGroup>
+              </Paper>
+            </Box>
+
+            {/* Server MCP */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Server MCP Abilitati</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 200, overflow: 'auto' }}>
+                <FormGroup>
+                  {mcpServers.map(server => (
+                    <FormControlLabel
+                      key={server.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={selectedMcpServers.includes(server.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedMcpServers(prev => [...prev, server.id])
+                            } else {
+                              setSelectedMcpServers(prev => prev.filter(id => id !== server.id))
+                            }
+                          }}
+                        />
+                      }
+                      label={
+                        <Box>
+                          <Typography variant="body2">{server.name}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {server.description}
+                          </Typography>
+                          {server.capabilities.length > 0 && (
+                            <Typography variant="caption" color="primary" sx={{ display: 'block' }}>
+                              {server.capabilities.join(', ')}
+                            </Typography>
+                          )}
+                        </Box>
+                      }
+                    />
+                  ))}
+                  {mcpServers.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">Nessun server MCP disponibile</Typography>
                   )}
                 </FormGroup>
               </Paper>

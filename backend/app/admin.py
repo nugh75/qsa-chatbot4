@@ -572,6 +572,8 @@ class PersonalityIn(BaseModel):
     active: Optional[bool] = True
     enabled_pipeline_topics: Optional[List[str]] = None  # topics di pipeline abilitati
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
+    enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
+    enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -620,6 +622,7 @@ async def upsert_personality_admin(p: PersonalityIn):
             active=p.active if p.active is not None else True,
             enabled_pipeline_topics=p.enabled_pipeline_topics,
             enabled_rag_groups=p.enabled_rag_groups,
+            enabled_mcp_servers=p.enabled_mcp_servers,
             max_tokens=p.max_tokens
         )
         return {"success": True, **res}
@@ -768,6 +771,197 @@ async def get_rag_options():
         return {"success": True, "groups": available_groups}
     except Exception as e:
         return {"success": False, "groups": [], "error": str(e)}
+
+# ---- MCP Servers Management ----
+from .mcp_manager import mcp_manager, MCPServerConfig
+
+@router.get("/admin/mcp-servers")
+async def get_mcp_servers():
+    """Ottieni lista di tutti i server MCP configurati"""
+    try:
+        servers = mcp_manager.get_servers()
+        return {"success": True, "servers": servers}
+    except Exception as e:
+        return {"success": False, "servers": [], "error": str(e)}
+
+@router.post("/admin/mcp-servers")
+async def create_mcp_server(server_data: MCPServerConfig):
+    """Crea un nuovo server MCP"""
+    try:
+        if mcp_manager.add_server(server_data):
+            return {"success": True, "message": f"Server MCP '{server_data.name}' creato"}
+        else:
+            raise HTTPException(status_code=400, detail="Errore nella creazione del server")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore creazione server MCP: {str(e)}")
+
+@router.put("/admin/mcp-servers/{server_id}")
+async def update_mcp_server(server_id: str, server_data: MCPServerConfig):
+    """Aggiorna un server MCP esistente"""
+    try:
+        if mcp_manager.update_server(server_id, server_data):
+            return {"success": True, "message": f"Server MCP '{server_data.name}' aggiornato"}
+        else:
+            raise HTTPException(status_code=404, detail="Server non trovato")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore aggiornamento server MCP: {str(e)}")
+
+@router.delete("/admin/mcp-servers/{server_id}")
+async def delete_mcp_server(server_id: str):
+    """Elimina un server MCP"""
+    try:
+        if mcp_manager.delete_server(server_id):
+            return {"success": True, "message": "Server MCP eliminato"}
+        else:
+            raise HTTPException(status_code=404, detail="Server non trovato")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione server MCP: {str(e)}")
+
+@router.post("/admin/mcp-servers/{server_id}/test")
+async def test_mcp_server(server_id: str):
+    """Testa la connessione a un server MCP"""
+    try:
+        result = await mcp_manager.test_server_connection(server_id)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/admin/mcp-options")
+async def get_mcp_options():
+    """Ottieni server MCP abilitati per selezione nelle personalità"""
+    try:
+        enabled_servers = mcp_manager.get_enabled_servers()
+        options = [
+            {
+                "id": server.id,
+                "name": server.name,
+                "description": server.description,
+                "capabilities": server.capabilities
+            }
+            for server in enabled_servers
+        ]
+        return {"success": True, "servers": options}
+    except Exception as e:
+        return {"success": False, "servers": [], "error": str(e)}
+
+# ---- MCP Servers Management ----
+@router.get("/admin/mcp-servers")
+async def get_mcp_servers():
+    """Ottieni lista di tutti i server MCP configurati"""
+    try:
+        from .mcp_servers import mcp_manager
+        statuses = mcp_manager.get_all_servers_status()
+        configs = mcp_manager.load_configurations()
+        
+        servers = []
+        for config in configs:
+            status = next((s for s in statuses if s["id"] == config.id), None)
+            servers.append({
+                "id": config.id,
+                "name": config.name,
+                "type": config.type,
+                "description": config.description,
+                "enabled": config.enabled,
+                "auto_start": config.auto_start,
+                "status": status["status"] if status else "inactive",
+                "running": status["pid"] is not None if status else False,
+                "config": config.config
+            })
+        
+        return {"success": True, "servers": servers}
+    except Exception as e:
+        return {"success": False, "servers": [], "error": str(e)}
+
+@router.post("/admin/mcp-servers")
+async def create_update_mcp_server(server_data: dict):
+    """Crea o aggiorna un server MCP"""
+    try:
+        from .mcp_servers import mcp_manager, MCPServerConfig
+        
+        config = MCPServerConfig(**server_data)
+        mcp_manager.add_server_config(config)
+        
+        return {"success": True, "message": f"Server MCP '{config.name}' salvato"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore salvataggio server MCP: {str(e)}")
+
+@router.delete("/admin/mcp-servers/{server_id}")
+async def delete_mcp_server(server_id: str):
+    """Elimina un server MCP"""
+    try:
+        from .mcp_servers import mcp_manager
+        
+        # Ferma il server se in esecuzione
+        await mcp_manager.stop_server(server_id)
+        
+        # Rimuove la configurazione
+        mcp_manager.remove_server_config(server_id)
+        
+        return {"success": True, "message": f"Server MCP {server_id} eliminato"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione server MCP: {str(e)}")
+
+@router.post("/admin/mcp-servers/{server_id}/start")
+async def start_mcp_server(server_id: str):
+    """Avvia un server MCP"""
+    try:
+        from .mcp_servers import mcp_manager
+        
+        success = await mcp_manager.start_server(server_id)
+        if success:
+            return {"success": True, "message": f"Server MCP {server_id} avviato"}
+        else:
+            return {"success": False, "message": f"Errore avvio server MCP {server_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore avvio server MCP: {str(e)}")
+
+@router.post("/admin/mcp-servers/{server_id}/stop")
+async def stop_mcp_server(server_id: str):
+    """Ferma un server MCP"""
+    try:
+        from .mcp_servers import mcp_manager
+        
+        success = await mcp_manager.stop_server(server_id)
+        if success:
+            return {"success": True, "message": f"Server MCP {server_id} fermato"}
+        else:
+            return {"success": False, "message": f"Errore stop server MCP {server_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore stop server MCP: {str(e)}")
+
+@router.get("/admin/mcp-servers/types")
+async def get_mcp_server_types():
+    """Ottieni i tipi di server MCP disponibili"""
+    from .mcp_servers import MCPServerType
+    
+    types = [
+        {"value": MCPServerType.EMAIL, "label": "Email Server"},
+        {"value": MCPServerType.CALENDAR, "label": "Calendar Server"},
+        {"value": MCPServerType.FILE_SYSTEM, "label": "File System Server"},
+        {"value": MCPServerType.WEB_SCRAPER, "label": "Web Scraper Server"},
+        {"value": MCPServerType.DATABASE, "label": "Database Server"},
+        {"value": MCPServerType.CUSTOM, "label": "Custom Server"}
+    ]
+    
+    return {"success": True, "types": types}
+
+@router.get("/admin/mcp-options")
+async def get_mcp_options():
+    """Ottieni server MCP disponibili per le personalità"""
+    try:
+        from .mcp_servers import mcp_manager
+        configs = mcp_manager.load_configurations()
+        
+        # Filtra solo server abilitati
+        available_servers = [
+            {"id": config.id, "name": config.name, "type": config.type}
+            for config in configs 
+            if config.enabled
+        ]
+        
+        return {"success": True, "servers": available_servers}
+    except Exception as e:
+        return {"success": False, "servers": [], "error": str(e)}
 
 # ---- Logs (system & interactions) ----
 @router.get("/admin/logs/system")

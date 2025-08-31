@@ -66,6 +66,7 @@ def upsert_personality(
     active: bool = True,
     enabled_pipeline_topics: Optional[List[str]] = None,
     enabled_rag_groups: Optional[List[int]] = None,
+    enabled_mcp_servers: Optional[List[str]] = None,
     max_tokens: Optional[int] = None,
 ) -> Dict:
     data = load_personalities()
@@ -93,6 +94,7 @@ def upsert_personality(
                 "active": active if active is not None else p.get("active", True),
                 "enabled_pipeline_topics": enabled_pipeline_topics if enabled_pipeline_topics is not None else p.get("enabled_pipeline_topics", []),
                 "enabled_rag_groups": enabled_rag_groups if enabled_rag_groups is not None else p.get("enabled_rag_groups", []),
+                "enabled_mcp_servers": enabled_mcp_servers if enabled_mcp_servers is not None else p.get("enabled_mcp_servers", []),
             })
             found = True
             break
@@ -114,6 +116,7 @@ def upsert_personality(
             "active": active,
             "enabled_pipeline_topics": enabled_pipeline_topics or [],
             "enabled_rag_groups": enabled_rag_groups or [],
+            "enabled_mcp_servers": enabled_mcp_servers or [],
         })
     if set_default:
         data["default_id"] = personality_id

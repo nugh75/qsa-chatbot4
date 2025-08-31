@@ -55,10 +55,22 @@ type ExtractedData = {
   images?: { image_num: number; source: string; full_description: string }[]
 }
 
+type RAGResult = {
+  chunk_id?: any
+  document_id?: any
+  filename?: string
+  chunk_index?: number
+  similarity?: number
+}
+
 type Msg = { 
   role:'user'|'assistant'|'system', 
   content:string, 
-  ts:number
+  ts:number,
+  topic?: string,
+  rag_results?: RAGResult[],
+  pipeline_topics?: string[],
+  rag_group_names?: string[]
 }
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
@@ -648,10 +660,42 @@ const AppContent: React.FC = () => {
           const jsonStr = line.slice(5).trim()
           try {
             const evt = JSON.parse(jsonStr)
+            if(evt.meta){
+              // Evento metadati iniziale: applica topic, rag_results, pipeline e gruppi
+              setMessages(prev => {
+                const updated = [...prev]
+                const current = updated[assistantIndex]
+                if(current){
+                  updated[assistantIndex] = { 
+                    ...current, 
+                    topic: evt.topic, 
+                    rag_results: evt.rag_results || [],
+                    pipeline_topics: evt.pipeline_topics || [],
+                    rag_group_names: evt.rag_group_names || []
+                  }
+                }
+                return updated
+              })
+            }
             if(evt.delta){ commitDelta(evt.delta) }
             if(evt.error){ setError(evt.error) }
             if(evt.done){
               if(evt.reply){ commitDelta('') /* reply già completa */ }
+              // Aggiorna metadata (topic + rag_results) sul messaggio assistente
+              setMessages(prev => {
+                const updated = [...prev]
+                const current = updated[assistantIndex]
+                if(current){
+                  updated[assistantIndex] = { 
+                    ...current, 
+                    topic: evt.topic || current.topic, 
+                    rag_results: evt.rag_results || current.rag_results,
+                    pipeline_topics: evt.pipeline_topics || current.pipeline_topics,
+                    rag_group_names: evt.rag_group_names || current.rag_group_names
+                  }
+                }
+                return updated
+              })
             }
           } catch(e){ /* ignora parse */ }
         }
@@ -992,14 +1036,14 @@ const AppContent: React.FC = () => {
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
                 {m.role === 'assistant' && !(isStreaming && streamingAssistantIndex === i) && (
-                  <Box sx={{ 
-                    display: 'flex', 
-                    gap: 0.5, 
-                    mt: 1, 
-                    justifyContent: 'flex-end',
-                    opacity: 0.7,
-                    '&:hover': { opacity: 1 }
-                  }}>
+                  <Box sx={{ display:'flex', flexDirection:'column', mt:1, gap:0.5 }}>
+                    <Box sx={{ 
+                      display: 'flex', 
+                      gap: 0.5, 
+                      justifyContent: 'flex-end',
+                      opacity: 0.7,
+                      '&:hover': { opacity: 1 }
+                    }}>
                     {/* TTS */}
                     <Box 
                       component="button" 
@@ -1086,8 +1130,8 @@ const AppContent: React.FC = () => {
                         background: 'none', 
                         border: 'none', 
                         cursor: 'pointer',
-                        padding: '3px',  // Aumentato padding
-                        borderRadius: '6px',  // Angoli più arrotondati
+                        padding: '3px',
+                        borderRadius: '6px',
                         display: 'flex',
                         alignItems: 'center',
                         '&:hover': { bgcolor: 'rgba(255,255,255,0.1)' },
@@ -1097,6 +1141,56 @@ const AppContent: React.FC = () => {
                     >
                       <DislikeIcon size={16} />
                     </Box>
+                    </Box>
+                    {(m.topic !== undefined || (m.rag_results && m.rag_results.length >= 0) || (m.pipeline_topics && m.pipeline_topics.length>0) || (m.rag_group_names && m.rag_group_names.length>0)) && (
+                      <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5, justifyContent:'flex-end' }}>
+                        {/* Pipeline topics (personalità) */}
+                        {m.pipeline_topics && m.pipeline_topics.slice(0,3).map((pt,idx)=>(
+                          <Tooltip key={`pt-${idx}`} title={`Pipeline topic abilitato: ${pt}`} arrow>
+                            <Chip size="small" label={pt} sx={{ bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
+                          </Tooltip>
+                        ))}
+                        {m.pipeline_topics && m.pipeline_topics.length>3 && (
+                          <Tooltip title={m.pipeline_topics.slice(3).join(', ')} arrow>
+                            <Chip size="small" label={`+${m.pipeline_topics.length-3}`} sx={{ bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
+                          </Tooltip>
+                        )}
+                        {/* RAG group (collection) names */}
+                        {m.rag_group_names && m.rag_group_names.slice(0,3).map((gn,idx)=>(
+                          <Tooltip key={`gn-${idx}`} title={`Collezione RAG: ${gn}`} arrow>
+                            <Chip size="small" label={gn} sx={{ bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
+                          </Tooltip>
+                        ))}
+                        {m.rag_group_names && m.rag_group_names.length>3 && (
+                          <Tooltip title={m.rag_group_names.slice(3).join(', ')} arrow>
+                            <Chip size="small" label={`+${m.rag_group_names.length-3}`} sx={{ bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
+                          </Tooltip>
+                        )}
+                        {/* Current detected topic */}
+                        {m.topic !== undefined && (
+                          <Tooltip title={`Pipeline topic: ${m.topic}`} arrow>
+                            <Chip size="small" label={m.topic || 'generale'} sx={{ bgcolor:'#fff', border:'1px solid #90caf9', fontSize:'0.65rem', height:20 }} />
+                          </Tooltip>
+                        )}
+                        {/* RAG chunk chips */}
+                        {m.rag_results && m.rag_results.slice(0,4).map((r,idx)=>{
+                          const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
+                          const simple = baseName.split('.')[0]
+                          const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
+                          const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarity: ${(r.similarity*100).toFixed(1)}%` : ''}`
+                          return (
+                            <Tooltip key={`rag-${idx}`} title={<span style={{ whiteSpace:'pre-line' }}>{tip}</span>} arrow>
+                              <Chip size="small" label={label} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
+                            </Tooltip>
+                          )
+                        })}
+                        {m.rag_results && m.rag_results.length > 4 && (
+                          <Tooltip title={m.rag_results.slice(4).map(r=>`Chunk ${r.chunk_index}${r.similarity?` (${(r.similarity*100).toFixed(1)}%)`:''}`).join(', ')} arrow>
+                            <Chip size="small" label={`+${m.rag_results.length - 4}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
+                          </Tooltip>
+                        )}
+                      </Box>
+                    )}
                   </Box>
                 )}
               </Box>

@@ -344,6 +344,33 @@ async def chat(
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
     resp = {"reply": answer, "topic": topic}
+    # Aggiungi sempre metadati pipeline e RAG group names
+    try:
+        pipeline_topics_meta = personality_enabled_topics or []
+        # Recupera nomi gruppi RAG selezionati o abilitati
+        rag_group_names = []
+        try:
+            from .rag_routes import get_user_context
+            from .rag_engine import rag_engine
+            sel_groups = get_user_context(session_id)
+            all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+            if sel_groups:
+                rag_group_names = [all_groups.get(gid) for gid in sel_groups if all_groups.get(gid)]
+            elif personality_enabled_rag_groups:
+                rag_group_names = [all_groups.get(gid) for gid in personality_enabled_rag_groups if all_groups.get(gid)]
+        except Exception:
+            pass
+        resp['pipeline_topics'] = pipeline_topics_meta
+        resp['rag_group_names'] = rag_group_names
+    except Exception:
+        pass
+    # Includi sempre (se presenti) i risultati RAG grezzi per uso frontend (etichette chunk)
+    if rag_results:
+        try:
+            # Limita dimensione per evitare payload enormi
+            resp["rag_results"] = rag_results[:10]
+        except Exception:
+            pass
     
     if x_admin_password == ADMIN_PASSWORD:
         resp["tokens"] = tokens_full
@@ -492,7 +519,11 @@ async def chat_stream(
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
-    rag_context = get_rag_context(user_msg, session_id, personality_enabled_groups=personality_enabled_rag_groups)
+    if not topic:
+        topic = 'generale'
+    # Costruisci full_user_message coerente col non-stream (allegati non gestiti qui per semplicità futura estensione)
+    full_user_message = user_msg
+    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
     # Personality override
     effective_provider = provider
@@ -535,14 +566,14 @@ async def chat_stream(
 
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic or 'generale'}]\n{context[:6000]}"}
+        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"}
     ] + conversation_history
     if not any(m.get('role') == 'user' and m.get('content') == user_msg for m in conversation_history):
         messages.append({"role": "user", "content": user_msg})
 
     start_time = asyncio.get_event_loop().time()
     answer_accum = []  # parti accumulate
-    rag_results = None
+    rag_results = []
 
     # Pre-calcola temperatura effettiva
     temp_value = 0.3
@@ -561,7 +592,7 @@ async def chat_stream(
             pass
 
     async def event_generator():
-        nonlocal answer_accum
+        nonlocal answer_accum, rag_results, topic
         try:
             if provider == 'ollama':
                 # Streaming reale da Ollama
@@ -597,7 +628,7 @@ async def chat_stream(
                             if data.get('done'):
                                 break
             else:
-                # Ottiene risposta completa e la spezza in chunk simulati
+                # Pre-raccolta RAG risultati (anche se risposta poi fallisce) e invio meta iniziale
                 from .llm import chat_with_provider, compute_token_stats
                 import json as _json_local
                 # Se RAG attivo, raccogli anche i top chunk per logging
@@ -607,7 +638,7 @@ async def chat_stream(
                         from .rag_routes import get_user_context as _get_uc
                         sel_groups = _get_uc(session_id)
                         if sel_groups:
-                            _sr = rag_engine.search(query=user_msg, group_ids=sel_groups, top_k=5)
+                            _sr = rag_engine.search(query=full_user_message, group_ids=sel_groups, top_k=5)
                             rag_results = [
                                 {
                                     "chunk_id": r.get("chunk_id"),
@@ -617,8 +648,33 @@ async def chat_stream(
                                     "similarity": r.get("similarity_score")
                                 } for r in (_sr or [])
                             ]
+                            # Ordina per similarità desc se presente
+                            try:
+                                rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
+                            except Exception:
+                                pass
                     except Exception:
-                        rag_results = None
+                        rag_results = []
+                # Invia meta iniziale per far apparire chip subito
+                try:
+                    # Pipeline topics e rag group names
+                    pipeline_topics_meta = personality_enabled_topics or []
+                    rag_group_names = []
+                    try:
+                        from .rag_routes import get_user_context
+                        all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+                        sel_groups2 = get_user_context(session_id)
+                        if sel_groups2:
+                            rag_group_names = [all_groups.get(gid) for gid in sel_groups2 if all_groups.get(gid)]
+                        elif personality_enabled_rag_groups:
+                            rag_group_names = [all_groups.get(gid) for gid in personality_enabled_rag_groups if all_groups.get(gid)]
+                    except Exception:
+                        pass
+                    meta_evt = {"meta": True, "topic": topic, "rag_results": rag_results[:10] if rag_results else [], "pipeline_topics": pipeline_topics_meta, "rag_group_names": rag_group_names}
+                    yield f"data: {_json_local.dumps(meta_evt)}\n\n"
+                except Exception:
+                    pass
+                # Ottiene risposta completa e la spezza in chunk simulati
                 full = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
                 # Spezza per frasi o blocchi ~40 char
                 import re
@@ -710,7 +766,29 @@ async def chat_stream(
                     pass
             try:
                 import json as _json_final
-                yield f"data: {{\"done\":true,\"reply\":{_json_final.dumps(full_answer)} }}\n\n"
+                # Includi metadati finali (topic e rag_results) nell'evento conclusivo
+                # Aggiungi pipeline topics e rag group names anche nell'evento finale
+                pipeline_topics_meta = personality_enabled_topics or []
+                rag_group_names = []
+                try:
+                    from .rag_routes import get_user_context
+                    all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
+                    sel_groups3 = get_user_context(session_id)
+                    if sel_groups3:
+                        rag_group_names = [all_groups.get(gid) for gid in sel_groups3 if all_groups.get(gid)]
+                    elif personality_enabled_rag_groups:
+                        rag_group_names = [all_groups.get(gid) for gid in personality_enabled_rag_groups if all_groups.get(gid)]
+                except Exception:
+                    pass
+                meta = {
+                    "done": True,
+                    "reply": full_answer,
+                    "topic": topic,
+                    "rag_results": (rag_results[:10] if rag_results else []),
+                    "pipeline_topics": pipeline_topics_meta,
+                    "rag_group_names": rag_group_names
+                }
+                yield f"data: {_json_final.dumps(meta)}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"
             try:

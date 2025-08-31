@@ -34,6 +34,7 @@ const PersonalitiesPanel: React.FC = () => {
   const [err, setErr] = useState<string | null>(null)
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null)
+  const [avatarKey, setAvatarKey] = useState<number>(0) // Force re-render key
   const [removeAvatar, setRemoveAvatar] = useState(false)
   const [active, setActive] = useState<boolean>(true)
   const [welcomeOptions, setWelcomeOptions] = useState<{id:string; label:string; content:string}[]>([])
@@ -112,7 +113,17 @@ const PersonalitiesPanel: React.FC = () => {
     setGuideId(p.guide_id && gids.has(p.guide_id) ? p.guide_id : (p.guide_id || ''))
     setContextWindow(typeof p.context_window === 'number' ? p.context_window : '');
     setTemperature(typeof p.temperature === 'number' ? p.temperature : 0.7);
-  setAvatarFile(null); setAvatarPreview(p.avatar_url || null); setRemoveAvatar(false); setActive(p.active !== false); setTtsProvider(p.tts_provider || ''); setTtsVoice((p as any).tts_voice || ''); setDialogOpen(true)
+    // Normalizza avatar: alcuni endpoint admin restituiscono solo `avatar` (filename) senza avatar_url
+    const anyP: any = p as any;
+    let effectiveAvatarUrl: string | null = null;
+    if (p.avatar_url) {
+      effectiveAvatarUrl = p.avatar_url as string;
+    } else if (anyP.avatar) {
+      // Costruisci URL statico coerente con backend public, usando BACKEND per il dominio completo
+      effectiveAvatarUrl = `${BACKEND}/static/avatars/${anyP.avatar}`;
+    }
+    console.log('[PersonalitiesPanel] Opening edit for:', p.name, 'avatar_url:', p.avatar_url, 'raw avatar:', anyP.avatar, 'effective:', effectiveAvatarUrl);
+    setAvatarFile(null); setAvatarPreview(effectiveAvatarUrl); setRemoveAvatar(false); setActive(p.active !== false); setTtsProvider(p.tts_provider || ''); setTtsVoice((p as any).tts_voice || ''); setDialogOpen(true)
   }
 
   // Carica elenco voci quando cambia provider TTS selezionato (nel dialog)
@@ -156,9 +167,13 @@ const PersonalitiesPanel: React.FC = () => {
             form.append('file', avatarFile)
             const up = await authFetch(`${BACKEND}/api/admin/personalities/${personalityId}/avatar`, { method: 'POST', body: form })
             if (up.ok) {
-              try { const upJson = await up.json(); updatedAvatarUrl = upJson.url || null } catch {}
+              try { 
+                const upJson = await up.json(); 
+                updatedAvatarUrl = upJson.url || null;
+                console.log('[PersonalitiesPanel] Avatar upload success, URL:', updatedAvatarUrl);
+              } catch {}
             } else {
-              console.warn('Avatar upload failed')
+              console.warn('Avatar upload failed', up.status, up.statusText)
             }
           } catch(e){ console.warn('Avatar upload error', e) }
         } else if (removeAvatar) {
@@ -204,16 +219,26 @@ const PersonalitiesPanel: React.FC = () => {
           return { ...prev, personalities: list }
         })
         if (updatedAvatarUrl !== null || removeAvatar) {
+          // Clean up any object URLs first
+          if (avatarFile && avatarPreview) {
+            try { URL.revokeObjectURL(avatarPreview) } catch {}
+          }
+          
           // Update preview with final server URL (replacing any ObjectURL)
-            setAvatarPreview(updatedAvatarUrl)
-            if (avatarFile) {
-              try { URL.revokeObjectURL(avatarPreview || '') } catch {}
-            }
+          console.log('[PersonalitiesPanel] Updating avatar preview from:', avatarPreview, 'to:', updatedAvatarUrl);
+          setAvatarPreview(updatedAvatarUrl)
+          setAvatarKey(prev => prev + 1) // Force re-render
         }
-        setDialogOpen(false)
+        
         // Background refresh to sync any server-derived fields (system default id etc.)
         load()
         setMsg('Salvato')
+        
+        // Close dialog after a brief delay to let user see the updated avatar preview
+        setTimeout(() => {
+          setDialogOpen(false)
+        }, 1000) // 1 second delay to show the updated avatar
+        
       } else { const d=await res.json(); setErr(d.detail || 'Errore salvataggio') }
     } catch { setErr('Errore rete') } finally { setSaving(false) }
   }
@@ -285,7 +310,15 @@ const PersonalitiesPanel: React.FC = () => {
             <Box>
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Avatar</Typography>
               <Stack direction="row" spacing={2} alignItems="center">
-                <Avatar src={avatarPreview || undefined} sx={{ width:56, height:56 }}>{!avatarPreview && name ? name[0] : ''}</Avatar>
+                <Avatar 
+                  key={`avatar-${avatarKey}-${avatarPreview || 'no-avatar'}`} // Force re-render when URL changes
+                  src={avatarPreview || undefined} 
+                  sx={{ width:56, height:56 }}
+                  onError={(e) => console.log('[PersonalitiesPanel] Avatar load error:', avatarPreview, e)}
+                  onLoad={() => console.log('[PersonalitiesPanel] Avatar loaded successfully:', avatarPreview)}
+                >
+                  {!avatarPreview && name ? name[0] : ''}
+                </Avatar>
                 <Stack direction="row" spacing={1}>
                   <Button size="small" variant="outlined" component="label">Scegli
                     <input hidden type="file" accept="image/*" onChange={e=>{ const f=e.target.files?.[0]; if(f){ setAvatarFile(f); setRemoveAvatar(false); const url=URL.createObjectURL(f); setAvatarPreview(url) } }} />

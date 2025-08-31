@@ -270,8 +270,6 @@ async def get_public_personalities():
             _welcome = {}
             _guides = {}
         # Expose only necessary fields
-        # Determine backend base URL for absolute avatar URLs
-        backend_base = os.getenv('BACKEND_URL', 'http://localhost:8005')
         return {
             "default_id": data.get("default_id"),
             "personalities": [
@@ -281,7 +279,7 @@ async def get_public_personalities():
                     "provider": p.get("provider"),
                     "model": p.get("model"),
                     "system_prompt_id": p.get("system_prompt_id"),
-                    "avatar_url": (f"{backend_base}/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
+                    "avatar_url": (f"/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
                     "tts_provider": p.get("tts_provider"),
                     # Provide both id and content for welcome + guide
                     "welcome_message_id": p.get("welcome_message"),

@@ -569,6 +569,8 @@ class PersonalityIn(BaseModel):
     temperature: Optional[float] = None
     remove_avatar: Optional[bool] = False
     active: Optional[bool] = True
+    enabled_pipeline_topics: Optional[List[str]] = None  # topics di pipeline abilitati
+    enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -614,7 +616,9 @@ async def upsert_personality_admin(p: PersonalityIn):
             avatar_filename,
             p.tts_provider,
             p.tts_voice,
-            active=p.active if p.active is not None else True
+            active=p.active if p.active is not None else True,
+            enabled_pipeline_topics=p.enabled_pipeline_topics,
+            enabled_rag_groups=p.enabled_rag_groups
         )
         return {"success": True, **res}
     except Exception as e:
@@ -734,6 +738,34 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore upload avatar: {e}")
+
+# ---- Opzioni per pipeline e RAG ----
+@router.get("/admin/pipeline-options")
+async def get_pipeline_options():
+    """Ottieni topics disponibili nelle pipeline"""
+    try:
+        config = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        topics = list(set(route.get('topic', '') for route in config.get('routes', []) if route.get('topic')))
+        topics.sort()
+        return {"success": True, "topics": topics}
+    except Exception as e:
+        return {"success": False, "topics": [], "error": str(e)}
+
+@router.get("/admin/rag-options") 
+async def get_rag_options():
+    """Ottieni gruppi RAG disponibili"""
+    try:
+        from .rag_engine import rag_engine
+        groups = rag_engine.get_groups()
+        # Filtra solo gruppi con documenti
+        available_groups = [
+            {"id": g["id"], "name": g["name"], "document_count": g["document_count"]}
+            for g in groups 
+            if g["document_count"] > 0
+        ]
+        return {"success": True, "groups": available_groups}
+    except Exception as e:
+        return {"success": False, "groups": [], "error": str(e)}
 
 # ---- Logs (system & interactions) ----
 @router.get("/admin/logs/system")

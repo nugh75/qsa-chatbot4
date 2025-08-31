@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Stack, Paper, Typography, Button, TextField, IconButton, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, LinearProgress, Alert, FormControl, InputLabel, Select, MenuItem, Slider, Box, Avatar } from '@mui/material'
+import { Stack, Paper, Typography, Button, TextField, IconButton, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, LinearProgress, Alert, FormControl, InputLabel, Select, MenuItem, Slider, Box, Avatar, FormLabel, FormGroup, FormControlLabel, Checkbox } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { authFetch, BACKEND } from '../utils/authFetch'
-import { PersonalityEntry, SystemPromptEntry } from '../types/admin'
+import { PersonalityEntry, SystemPromptEntry, RAGGroup } from '../types/admin'
 
 interface PersonalitiesResponse { default_id: string | null; personalities: PersonalityEntry[] }
 
@@ -39,6 +39,11 @@ const PersonalitiesPanel: React.FC = () => {
   const [active, setActive] = useState<boolean>(true)
   const [welcomeOptions, setWelcomeOptions] = useState<{id:string; label:string; content:string}[]>([])
   const [guideOptions, setGuideOptions] = useState<{id:string; label:string; content:string}[]>([])
+  // Pipeline e RAG
+  const [pipelineTopics, setPipelineTopics] = useState<string[]>([])
+  const [ragGroups, setRagGroups] = useState<RAGGroup[]>([])
+  const [selectedPipelineTopics, setSelectedPipelineTopics] = useState<string[]>([])
+  const [selectedRagGroups, setSelectedRagGroups] = useState<number[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
 
@@ -100,10 +105,46 @@ const PersonalitiesPanel: React.FC = () => {
         const glist = gd.map((g:any)=>({ id: g.id || g.title, label: g.title || g.id, content: g.content }))
         setGuideOptions(glist)
       }
+      
+      // Carica opzioni pipeline
+      const pipelineRes = await authFetch(`${BACKEND}/api/admin/pipeline-options`)
+      if (pipelineRes.ok) {
+        const pipelineData = await pipelineRes.json()
+        if (pipelineData.success) {
+          setPipelineTopics(pipelineData.topics || [])
+        }
+      }
+      
+      // Carica gruppi RAG
+      const ragRes = await authFetch(`${BACKEND}/api/admin/rag-options`)
+      if (ragRes.ok) {
+        const ragData = await ragRes.json()
+        if (ragData.success) {
+          setRagGroups(ragData.groups || [])
+        }
+      }
     } catch {}
   })() },[])
 
-  const openNew = () => { setEditing(null); setName(''); setProvider(providers[0] || 'local'); setModel(''); setSystemPromptId(''); setWelcomeMessageId(''); setGuideId(''); setContextWindow(''); setTemperature(0.7); setAvatarFile(null); setAvatarPreview(null); setRemoveAvatar(false); setActive(true); setTtsProvider(''); setDialogOpen(true) }
+  const openNew = () => { 
+    setEditing(null); 
+    setName(''); 
+    setProvider(providers[0] || 'local'); 
+    setModel(''); 
+    setSystemPromptId(''); 
+    setWelcomeMessageId(''); 
+    setGuideId(''); 
+    setContextWindow(''); 
+    setTemperature(0.7); 
+    setAvatarFile(null); 
+    setAvatarPreview(null); 
+    setRemoveAvatar(false); 
+    setActive(true); 
+    setTtsProvider('');
+    setSelectedPipelineTopics([]);
+    setSelectedRagGroups([]);
+    setDialogOpen(true) 
+  }
   const openEdit = (p: PersonalityEntry) => {
     setEditing(p); setName(p.name); setProvider(p.provider); setModel(p.model); setSystemPromptId(p.system_prompt_id);
     const ids = new Set(welcomeOptions.map(o=>o.id))
@@ -123,7 +164,11 @@ const PersonalitiesPanel: React.FC = () => {
       effectiveAvatarUrl = `${BACKEND}/static/avatars/${anyP.avatar}`;
     }
     console.log('[PersonalitiesPanel] Opening edit for:', p.name, 'avatar_url:', p.avatar_url, 'raw avatar:', anyP.avatar, 'effective:', effectiveAvatarUrl);
-    setAvatarFile(null); setAvatarPreview(effectiveAvatarUrl); setRemoveAvatar(false); setActive(p.active !== false); setTtsProvider(p.tts_provider || ''); setTtsVoice((p as any).tts_voice || ''); setDialogOpen(true)
+    setAvatarFile(null); setAvatarPreview(effectiveAvatarUrl); setRemoveAvatar(false); setActive(p.active !== false); setTtsProvider(p.tts_provider || ''); setTtsVoice((p as any).tts_voice || '');
+    // Carica configurazioni pipeline e RAG
+    setSelectedPipelineTopics(p.enabled_pipeline_topics || []);
+    setSelectedRagGroups(p.enabled_rag_groups || []);
+    setDialogOpen(true)
   }
 
   // Carica elenco voci quando cambia provider TTS selezionato (nel dialog)
@@ -155,7 +200,23 @@ const PersonalitiesPanel: React.FC = () => {
       const res = await authFetch(`${BACKEND}/api/admin/personalities`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ id: editing?.id, name: name.trim(), provider, model, system_prompt_id: systemPromptId, tts_provider: ttsProvider || null, tts_voice: ttsVoice || null, welcome_message: welcomeMessageId || null, guide_id: guideId || null, context_window: contextWindow === '' ? null : contextWindow, temperature, remove_avatar: removeAvatar, active })
+        body: JSON.stringify({ 
+          id: editing?.id, 
+          name: name.trim(), 
+          provider, 
+          model, 
+          system_prompt_id: systemPromptId, 
+          tts_provider: ttsProvider || null, 
+          tts_voice: ttsVoice || null, 
+          welcome_message: welcomeMessageId || null, 
+          guide_id: guideId || null, 
+          context_window: contextWindow === '' ? null : contextWindow, 
+          temperature, 
+          remove_avatar: removeAvatar, 
+          active,
+          enabled_pipeline_topics: selectedPipelineTopics,
+          enabled_rag_groups: selectedRagGroups
+        })
       })
       if (res.ok) {
         let updatedAvatarUrl: string | null = null
@@ -198,6 +259,8 @@ const PersonalitiesPanel: React.FC = () => {
             p.context_window = contextWindow === '' ? null : (contextWindow as number)
             p.temperature = temperature
             p.active = active
+            ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
+            ;(p as any).enabled_rag_groups = selectedRagGroups
             list[idx] = p
           } else {
             list.push({
@@ -213,7 +276,9 @@ const PersonalitiesPanel: React.FC = () => {
               guide_id: guideId || null,
               context_window: contextWindow === '' ? null : (contextWindow as number),
               temperature,
-              active
+              active,
+              enabled_pipeline_topics: selectedPipelineTopics,
+              enabled_rag_groups: selectedRagGroups
             })
           }
           return { ...prev, personalities: list }
@@ -263,19 +328,115 @@ const PersonalitiesPanel: React.FC = () => {
       </Stack>
       {loading && <LinearProgress sx={{ my:1 }} />}
       <Stack spacing={1} sx={{ mt:1 }}>
-        {items.personalities.map(p => (
-          <Paper key={p.id} variant="outlined" sx={{ p:1 }}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="subtitle2" sx={{ flex:1 }}>{p.name}</Typography>
-              {items.default_id === p.id && <Chip size="small" color="success" label="default" />}
-              {p.active === false && <Chip size="small" color="warning" label="inattiva" />}
-              <Tooltip title="Modifica"><IconButton size="small" onClick={()=>openEdit(p)}><EditIcon fontSize="small" /></IconButton></Tooltip>
-              <Tooltip title="Imposta default"><span><IconButton size="small" disabled={items.default_id===p.id} onClick={()=>setDefault(p.id)}><CheckCircleIcon fontSize="small" /></IconButton></span></Tooltip>
-              <Tooltip title="Elimina"><IconButton size="small" onClick={()=>remove(p.id)}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
-            </Stack>
-            <Typography variant="caption" color="text.secondary">{p.provider} · {p.model}</Typography>
-          </Paper>
-        ))}
+        {items.personalities.map(p => {
+          // Normalizza avatar URL per anteprima
+          const anyP: any = p as any;
+          let avatarUrl: string | null = null;
+          if (p.avatar_url) {
+            avatarUrl = p.avatar_url as string;
+          } else if (anyP.avatar) {
+            avatarUrl = `${BACKEND}/static/avatars/${anyP.avatar}`;
+          }
+          
+          // Trova il nome del system prompt
+          const systemPrompt = systemPrompts.find(sp => sp.id === p.system_prompt_id);
+          const systemPromptName = systemPrompt?.name || p.system_prompt_id || 'Non impostato';
+          
+          return (
+            <Paper key={p.id} variant="outlined" sx={{ p:2 }}>
+              <Stack direction="row" spacing={2} alignItems="flex-start">
+                {/* Avatar */}
+                <Avatar 
+                  src={avatarUrl || undefined} 
+                  sx={{ width: 48, height: 48, flexShrink: 0 }}
+                >
+                  {!avatarUrl && p.name ? p.name[0].toUpperCase() : ''}
+                </Avatar>
+                
+                {/* Contenuto principale */}
+                <Stack sx={{ flex: 1, minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{p.name}</Typography>
+                    {items.default_id === p.id && <Chip size="small" color="success" label="default" />}
+                    {p.active === false && <Chip size="small" color="warning" label="inattiva" />}
+                  </Stack>
+                  
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    <strong>Provider:</strong> {p.provider} · <strong>Modello:</strong> {p.model}
+                  </Typography>
+                  
+                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                    <strong>System Prompt:</strong> {systemPromptName}
+                  </Typography>
+                  
+                  {/* Informazioni aggiuntive */}
+                  <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+                    {p.temperature !== undefined && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Temperatura:</strong> {p.temperature}
+                      </Typography>
+                    )}
+                    {p.context_window && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Context:</strong> {p.context_window}
+                      </Typography>
+                    )}
+                    {p.tts_provider && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>TTS:</strong> {p.tts_provider}
+                      </Typography>
+                    )}
+                    {p.welcome_message && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Welcome:</strong> ✓
+                      </Typography>
+                    )}
+                    {p.guide_id && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Guida:</strong> ✓
+                      </Typography>
+                    )}
+                    {p.enabled_pipeline_topics && p.enabled_pipeline_topics.length > 0 && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Pipeline:</strong> {p.enabled_pipeline_topics.length} topics
+                      </Typography>
+                    )}
+                    {p.enabled_rag_groups && p.enabled_rag_groups.length > 0 && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>RAG:</strong> {p.enabled_rag_groups.length} gruppi
+                      </Typography>
+                    )}
+                  </Stack>
+                </Stack>
+                
+                {/* Azioni */}
+                <Stack direction="row" spacing={0.5}>
+                  <Tooltip title="Modifica">
+                    <IconButton size="small" onClick={()=>openEdit(p)}>
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Imposta default">
+                    <span>
+                      <IconButton 
+                        size="small" 
+                        disabled={items.default_id===p.id} 
+                        onClick={()=>setDefault(p.id)}
+                      >
+                        <CheckCircleIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                  <Tooltip title="Elimina">
+                    <IconButton size="small" onClick={()=>remove(p.id)}>
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </Stack>
+              </Stack>
+            </Paper>
+          );
+        })}
         {!loading && items.personalities.length===0 && <Typography variant="body2" color="text.secondary">Nessuna personalità.</Typography>}
       </Stack>
       <Dialog open={dialogOpen} onClose={()=>setDialogOpen(false)} fullWidth maxWidth="sm">
@@ -382,6 +543,69 @@ const PersonalitiesPanel: React.FC = () => {
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Temperatura: {temperature.toFixed(2)}</Typography>
               <Slider size="small" min={0} max={1.2} step={0.05} value={temperature} onChange={(_,val)=> setTemperature(val as number)} />
             </Box>
+            
+            {/* Pipeline Topics */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Topics Pipeline Abilitati</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 200, overflow: 'auto' }}>
+                <FormGroup>
+                  {pipelineTopics.map(topic => (
+                    <FormControlLabel
+                      key={topic}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={selectedPipelineTopics.includes(topic)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedPipelineTopics(prev => [...prev, topic])
+                            } else {
+                              setSelectedPipelineTopics(prev => prev.filter(t => t !== topic))
+                            }
+                          }}
+                        />
+                      }
+                      label={topic}
+                    />
+                  ))}
+                  {pipelineTopics.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">Nessun topic pipeline disponibile</Typography>
+                  )}
+                </FormGroup>
+              </Paper>
+            </Box>
+
+            {/* Gruppi RAG */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Gruppi RAG Abilitati</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 200, overflow: 'auto' }}>
+                <FormGroup>
+                  {ragGroups.map(group => (
+                    <FormControlLabel
+                      key={group.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={selectedRagGroups.includes(group.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedRagGroups(prev => [...prev, group.id])
+                            } else {
+                              setSelectedRagGroups(prev => prev.filter(id => id !== group.id))
+                            }
+                          }}
+                        />
+                      }
+                      label={`${group.name} (${group.document_count} documenti)`}
+                    />
+                  ))}
+                  {ragGroups.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">Nessun gruppo RAG disponibile</Typography>
+                  )}
+                </FormGroup>
+              </Paper>
+            </Box>
+            
             {err && <Alert severity="error" onClose={()=>setErr(null)}>{err}</Alert>}
           </Stack>
         </DialogContent>

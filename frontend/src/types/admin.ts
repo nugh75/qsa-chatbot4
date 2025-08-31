@@ -47,4 +47,17 @@ export interface PersonalityEntry {
   guide_content?: string | null;
   context_window?: number | null;
   temperature?: number | null;
+  // Pipeline e RAG configurazioni
+  enabled_pipeline_topics?: string[];
+  enabled_rag_groups?: number[];
+}
+
+export interface PipelineOption {
+  topic: string;
+}
+
+export interface RAGGroup {
+  id: number;
+  name: string;
+  document_count: number;
 }

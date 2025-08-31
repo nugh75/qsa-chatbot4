@@ -13,6 +13,30 @@ SEED_PERSONALITIES_DIR = Path('/app/data')  # seed read-only
 RUNTIME_BASE = Path('/app/storage')
 RUNTIME_PERSONALITIES_DIR = RUNTIME_BASE / 'personalities'
 PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "PERSONALITIES.json"
+TOPIC_DESCRIPTIONS_FILE = Path('/app/data/SYSTEM_PROMPTS.json')  # riusa file esistente per descrizioni se presenti
+
+_cached_topic_descriptions = None
+
+def load_topic_descriptions() -> dict:
+    global _cached_topic_descriptions
+    if _cached_topic_descriptions is not None:
+        return _cached_topic_descriptions
+    try:
+        if TOPIC_DESCRIPTIONS_FILE.exists():
+            data = json.loads(TOPIC_DESCRIPTIONS_FILE.read_text(encoding='utf-8'))
+            # Atteso formato { "topics": { "topic_name": "descrizione" } } oppure semplice dict
+            if isinstance(data, dict):
+                if 'topics' in data and isinstance(data['topics'], dict):
+                    _cached_topic_descriptions = data['topics']
+                else:
+                    _cached_topic_descriptions = data
+            else:
+                _cached_topic_descriptions = {}
+        else:
+            _cached_topic_descriptions = {}
+    except Exception:
+        _cached_topic_descriptions = {}
+    return _cached_topic_descriptions
 
 def _bootstrap_personalities():
     RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)

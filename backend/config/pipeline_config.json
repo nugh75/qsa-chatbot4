@@ -5,11 +5,11 @@
       "topic": "analisi_secondo_livello"
     },
     {
-      "pattern": "\\b(fattori cognitivi|C[1-7]|A[1-7]|strategie|organizzatori|metacognizione)\\b",
-      "topic": "fattori_cognitivi_motivazionali"
+      "pattern": "\\b(fattori cognitivi|C[1-7]||strategie|organizzatori|metacognizione)\\b",
+      "topic": "Fattori cognitivi"
     },
     {
-      "pattern": "\\b(artefice di (me|te|se) stess[oa]|\\bautodeterminazione|autoregolazione|mindset)\\b",
+      "pattern": "\\b(artefice di (me|te|se) stess[oa]| autodeterminazione|autoregolazione|mindset)\\b",
       "topic": "artefice_di_se_stessi"
     },
     {
@@ -19,6 +19,10 @@
     {
       "pattern": "\\b(Prendere appunti attivi|Spaced repetition|Mappe concettuali|Auto-spiegazione|Pomodoro|Elaborazione personale|Testing effect|Studio distribuito|Insegnare agli altri|Parole chiave|Uso di esempi|Multimodalità|Sintesi scritta|Uso di analogie|Studio collaborativo|Domande guida|Organizzazione del tempo|Uso della memoria visiva|Gestione delle pause|Riflessione metacognitiva)\\b",
       "topic": "strategie di apprendimento"
+    },
+    {
+      "pattern": "\\b fattori affettivo-movivazionali  | A[1-7] \\b",
+      "topic": "Fattori affettivo motivazionali"
     }
   ],
   "files": {
@@ -27,6 +31,8 @@
     "faq_qsa": "domane-e-risposte.txt",
     "fattori_cognitivi_motivazionali": "fattori-cognitivi.txt",
     "prva": "strategie_apprendimento.txt",
-    "strategie di apprendimento": "strategie_apprendimento.txt"
+    "strategie di apprendimento": "strategie_apprendimento.txt",
+    "Fattori affettivo motivazionali": "Fattori affettivo-motivazionale.md",
+    "Fattori cognitivi": "fattori-cognitivi.txt"
   }
 }

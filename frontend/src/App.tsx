@@ -61,6 +61,8 @@ type RAGResult = {
   filename?: string
   chunk_index?: number
   similarity?: number
+  preview?: string
+  content?: string
 }
 
 type Msg = { 
@@ -69,7 +71,7 @@ type Msg = {
   ts:number,
   topic?: string,
   rag_results?: RAGResult[],
-  pipeline_topics?: string[],
+  pipeline_topics?: { name: string; description?: string | null }[],
   rag_group_names?: string[]
 }
 
@@ -895,8 +897,31 @@ const AppContent: React.FC = () => {
     return <AdminPanel />
   }
 
+  const [selectedChunk, setSelectedChunk] = useState<RAGResult|null>(null)
+
   return (
   <Container maxWidth={isMobile ? 'sm' : 'xl'} sx={{ py: isMobile ? 1 : 3, px: isMobile ? 1 : 2, pb: isMobile ? 10 : 3 }}>
+      {/* Dialog visualizzazione contenuto completo chunk RAG */}
+      <Dialog open={!!selectedChunk} onClose={()=> setSelectedChunk(null)} fullWidth maxWidth="md">
+        <DialogTitle sx={{ fontSize:'0.95rem', pr:6 }}>
+          {selectedChunk ? `Chunk ${selectedChunk.chunk_index} – ${selectedChunk.filename}` : 'Chunk'}
+        </DialogTitle>
+        <DialogContent dividers sx={{ bgcolor:'#fafafa' }}>
+          {selectedChunk && (
+            <>
+              <Typography variant="caption" color="text.secondary" sx={{ display:'block', mb:1 }}>
+                Similarity: {selectedChunk.similarity ? (selectedChunk.similarity*100).toFixed(1)+'%' : 'n/d'}
+              </Typography>
+              <Typography variant="body2" sx={{ whiteSpace:'pre-wrap', fontFamily:'ui-monospace, monospace', fontSize:'0.8rem', lineHeight:1.35 }}>
+                {selectedChunk.content || selectedChunk.preview || '(contenuto non disponibile)'}
+              </Typography>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setSelectedChunk(null)} size="small">Chiudi</Button>
+        </DialogActions>
+      </Dialog>
       {/* Unified responsive header bar with personality, voice and download */}
       <HeaderBar
         personalities={personalities as any}
@@ -1145,20 +1170,23 @@ const AppContent: React.FC = () => {
                     {(m.topic !== undefined || (m.rag_results && m.rag_results.length >= 0) || (m.pipeline_topics && m.pipeline_topics.length>0) || (m.rag_group_names && m.rag_group_names.length>0)) && (
                       <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5, justifyContent:'flex-end' }}>
                         {/* Pipeline topics (personalità) */}
-                        {m.pipeline_topics && m.pipeline_topics.slice(0,3).map((pt,idx)=>(
-                          <Tooltip key={`pt-${idx}`} title={`Pipeline topic abilitato: ${pt}`} arrow>
-                            <Chip size="small" label={pt} sx={{ bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
-                          </Tooltip>
-                        ))}
+                        {m.pipeline_topics && m.pipeline_topics.slice(0,3).map((pt,idx)=>{
+                          const tip = pt.description ? `${pt.name}\n---\n${pt.description}` : pt.name
+                          return (
+                            <Tooltip key={`pt-${idx}`} enterDelay={300} title={<span style={{ whiteSpace:'pre-line' }}>{tip}</span>} arrow>
+                              <Chip onClick={()=> {/* future: filter by topic */}} size="small" label={pt.name} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
+                            </Tooltip>
+                          )
+                        })}
                         {m.pipeline_topics && m.pipeline_topics.length>3 && (
-                          <Tooltip title={m.pipeline_topics.slice(3).join(', ')} arrow>
+                          <Tooltip title={m.pipeline_topics.slice(3).map(pt=>pt.name).join(', ')} arrow>
                             <Chip size="small" label={`+${m.pipeline_topics.length-3}`} sx={{ bgcolor:'#fff', border:'1px solid #ffcc80', fontSize:'0.6rem', height:20 }} />
                           </Tooltip>
                         )}
                         {/* RAG group (collection) names */}
                         {m.rag_group_names && m.rag_group_names.slice(0,3).map((gn,idx)=>(
-                          <Tooltip key={`gn-${idx}`} title={`Collezione RAG: ${gn}`} arrow>
-                            <Chip size="small" label={gn} sx={{ bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
+                          <Tooltip key={`gn-${idx}`} enterDelay={300} title={`Collezione RAG: ${gn}`} arrow>
+                            <Chip onClick={()=> {/* future: filter by group */}} size="small" label={gn} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #c5e1a5', fontSize:'0.6rem', height:20 }} />
                           </Tooltip>
                         ))}
                         {m.rag_group_names && m.rag_group_names.length>3 && (
@@ -1168,8 +1196,8 @@ const AppContent: React.FC = () => {
                         )}
                         {/* Current detected topic */}
                         {m.topic !== undefined && (
-                          <Tooltip title={`Pipeline topic: ${m.topic}`} arrow>
-                            <Chip size="small" label={m.topic || 'generale'} sx={{ bgcolor:'#fff', border:'1px solid #90caf9', fontSize:'0.65rem', height:20 }} />
+                          <Tooltip enterDelay={300} title={`Pipeline topic: ${m.topic}`} arrow>
+                            <Chip onClick={()=> {/* future: filter current topic */}} size="small" label={m.topic || 'generale'} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #90caf9', fontSize:'0.65rem', height:20 }} />
                           </Tooltip>
                         )}
                         {/* RAG chunk chips */}
@@ -1177,10 +1205,12 @@ const AppContent: React.FC = () => {
                           const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
                           const simple = baseName.split('.')[0]
                           const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
-                          const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarity: ${(r.similarity*100).toFixed(1)}%` : ''}`
+                          const preview = (r.preview || '').replace(/\s+/g,' ').trim()
+                          const shortPrev = preview ? (preview.length>260 ? preview.slice(0,260)+"…" : preview) : ''
+                          const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarity: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`
                           return (
-                            <Tooltip key={`rag-${idx}`} title={<span style={{ whiteSpace:'pre-line' }}>{tip}</span>} arrow>
-                              <Chip size="small" label={label} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
+                            <Tooltip key={`rag-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
+                              <Chip onClick={()=> setSelectedChunk(r)} size="small" label={label} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.6rem', height:20 }} />
                             </Tooltip>
                           )
                         })}
@@ -1405,23 +1435,7 @@ const AppContent: React.FC = () => {
         />
       </Box>
 
-      {/* RAG Context Selector */}
-      <Box sx={{ mt: 2 }}>
-        <Box sx={{ display:'flex', alignItems:'center', gap:1, mb: 0.5 }}>
-          <TableChartIcon sx={{ color:'text.secondary' }} fontSize="small" />
-          <Typography variant="body2" color="text.secondary">Contesto documenti</Typography>
-          <Tooltip title="Attiva uno o più contesti per risposte basate sui documenti selezionati.">
-            <HelpOutlineIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-          </Tooltip>
-        </Box>
-        <RAGContextSelector 
-          compact={true}
-          selectedPersonalityId={selectedPersonalityId}
-          onContextChange={(selectedGroups) => {
-            setRAGContextActive(selectedGroups.length > 0);
-          }}
-        />
-      </Box>
+  {/* RAG Context Selector removed per richiesta: la selezione contesti ora integrata nei metadati bubble */}
 
       {/* Survey link riposizionato: distanza maggiore e inline con stesso font */}
       <Box sx={{ mt: 4, display:'flex', flexWrap:'wrap', alignItems:'center', gap:1 }}>

@@ -567,6 +567,7 @@ class PersonalityIn(BaseModel):
     guide_id: Optional[str] = None  # must match existing guide id
     context_window: Optional[int] = None
     temperature: Optional[float] = None
+    max_tokens: Optional[int] = None  # massimo numero di token per risposta
     remove_avatar: Optional[bool] = False
     active: Optional[bool] = True
     enabled_pipeline_topics: Optional[List[str]] = None  # topics di pipeline abilitati
@@ -618,7 +619,8 @@ async def upsert_personality_admin(p: PersonalityIn):
             p.tts_voice,
             active=p.active if p.active is not None else True,
             enabled_pipeline_topics=p.enabled_pipeline_topics,
-            enabled_rag_groups=p.enabled_rag_groups
+            enabled_rag_groups=p.enabled_rag_groups,
+            max_tokens=p.max_tokens
         )
         return {"success": True, **res}
     except Exception as e:

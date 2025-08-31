@@ -30,6 +30,7 @@ const PersonalitiesPanel: React.FC = () => {
   const [guideId, setGuideId] = useState<string>('')
   const [contextWindow, setContextWindow] = useState<number | ''>('')
   const [temperature, setTemperature] = useState<number>(0.7)
+  const [maxTokens, setMaxTokens] = useState<number | ''>('')
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [avatarFile, setAvatarFile] = useState<File | null>(null)
@@ -136,6 +137,7 @@ const PersonalitiesPanel: React.FC = () => {
     setGuideId(''); 
     setContextWindow(''); 
     setTemperature(0.7); 
+    setMaxTokens('');
     setAvatarFile(null); 
     setAvatarPreview(null); 
     setRemoveAvatar(false); 
@@ -154,6 +156,7 @@ const PersonalitiesPanel: React.FC = () => {
     setGuideId(p.guide_id && gids.has(p.guide_id) ? p.guide_id : (p.guide_id || ''))
     setContextWindow(typeof p.context_window === 'number' ? p.context_window : '');
     setTemperature(typeof p.temperature === 'number' ? p.temperature : 0.7);
+    setMaxTokens(typeof p.max_tokens === 'number' ? p.max_tokens : '');
     // Normalizza avatar: alcuni endpoint admin restituiscono solo `avatar` (filename) senza avatar_url
     const anyP: any = p as any;
     let effectiveAvatarUrl: string | null = null;
@@ -212,6 +215,7 @@ const PersonalitiesPanel: React.FC = () => {
           guide_id: guideId || null, 
           context_window: contextWindow === '' ? null : contextWindow, 
           temperature, 
+          max_tokens: maxTokens === '' ? null : maxTokens,
           remove_avatar: removeAvatar, 
           active,
           enabled_pipeline_topics: selectedPipelineTopics,
@@ -258,6 +262,7 @@ const PersonalitiesPanel: React.FC = () => {
             p.guide_id = guideId || null
             p.context_window = contextWindow === '' ? null : (contextWindow as number)
             p.temperature = temperature
+            p.max_tokens = maxTokens === '' ? null : (maxTokens as number)
             p.active = active
             ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
             ;(p as any).enabled_rag_groups = selectedRagGroups
@@ -276,6 +281,7 @@ const PersonalitiesPanel: React.FC = () => {
               guide_id: guideId || null,
               context_window: contextWindow === '' ? null : (contextWindow as number),
               temperature,
+              max_tokens: maxTokens === '' ? null : (maxTokens as number),
               active,
               enabled_pipeline_topics: selectedPipelineTopics,
               enabled_rag_groups: selectedRagGroups
@@ -379,6 +385,11 @@ const PersonalitiesPanel: React.FC = () => {
                     {p.context_window && (
                       <Typography variant="caption" color="text.secondary">
                         <strong>Context:</strong> {p.context_window}
+                      </Typography>
+                    )}
+                    {p.max_tokens && (
+                      <Typography variant="caption" color="text.secondary">
+                        <strong>Max Tokens:</strong> {p.max_tokens}
                       </Typography>
                     )}
                     {p.tts_provider && (
@@ -539,6 +550,7 @@ const PersonalitiesPanel: React.FC = () => {
               </Select>
             </FormControl>
             <TextField label="Context Window" value={contextWindow} onChange={e=>{ const v = e.target.value; if(v===''){ setContextWindow(''); } else { const n = Number(v); if(!isNaN(n) && n>=0 && n<=200){ setContextWindow(n)} } }} fullWidth size="small" placeholder="Es. 8 (numero scambi recenti)" />
+            <TextField label="Max Tokens" value={maxTokens} onChange={e=>{ const v = e.target.value; if(v===''){ setMaxTokens(''); } else { const n = Number(v); if(!isNaN(n) && n>=1 && n<=50000){ setMaxTokens(n)} } }} fullWidth size="small" placeholder="Es. 2000 (massimo token per risposta)" />
             <Box>
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Temperatura: {temperature.toFixed(2)}</Typography>
               <Slider size="small" min={0} max={1.2} step={0.05} value={temperature} onChange={(_,val)=> setTemperature(val as number)} />

@@ -66,6 +66,7 @@ def upsert_personality(
     active: bool = True,
     enabled_pipeline_topics: Optional[List[str]] = None,
     enabled_rag_groups: Optional[List[int]] = None,
+    max_tokens: Optional[int] = None,
 ) -> Dict:
     data = load_personalities()
     if personality_id is None:
@@ -88,6 +89,7 @@ def upsert_personality(
                 "guide_id": guide_id if guide_id is not None else p.get("guide_id"),
                 "context_window": context_window if context_window is not None else p.get("context_window"),
                 "temperature": temperature if temperature is not None else p.get("temperature"),
+                "max_tokens": max_tokens if max_tokens is not None else p.get("max_tokens"),
                 "active": active if active is not None else p.get("active", True),
                 "enabled_pipeline_topics": enabled_pipeline_topics if enabled_pipeline_topics is not None else p.get("enabled_pipeline_topics", []),
                 "enabled_rag_groups": enabled_rag_groups if enabled_rag_groups is not None else p.get("enabled_rag_groups", []),
@@ -108,6 +110,7 @@ def upsert_personality(
             "guide_id": guide_id,
             "context_window": context_window,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "active": active,
             "enabled_pipeline_topics": enabled_pipeline_topics or [],
             "enabled_rag_groups": enabled_rag_groups or [],

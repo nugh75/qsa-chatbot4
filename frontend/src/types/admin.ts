@@ -47,6 +47,7 @@ export interface PersonalityEntry {
   guide_content?: string | null;
   context_window?: number | null;
   temperature?: number | null;
+  max_tokens?: number | null;
   // Pipeline e RAG configurazioni
   enabled_pipeline_topics?: string[];
   enabled_rag_groups?: number[];

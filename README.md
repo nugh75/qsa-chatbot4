@@ -119,6 +119,44 @@ npm run dev -- --port 5175
 docker compose up --build
 ```
 
+### Avatar Storage Persistence & Permissions (EN)
+Personality avatar uploads are saved under `./backend/storage/avatars` on the host (mapped to `/app/storage/avatars` in the container). If after an upload the avatar disappears after restart or returns 500 errors:
+
+1. Inspect backend logs for lines starting with `[storage-diag]` (printed once at startup) and any `Errore upload avatar` details.
+2. Check host directory exists and is writable:
+  ```bash
+  ls -ld backend/storage backend/storage/avatars
+  ```
+3. Fix permissions (development):
+  ```bash
+  chmod -R u+rwX backend/storage
+  ```
+4. If running as a non-root UID in future, ensure ownership matches: `chown -R <uid>:<gid> backend/storage`.
+5. SELinux (Fedora/RHEL) may require: `chcon -Rt svirt_sandbox_file_t backend/storage`.
+
+Common error messages:
+- `Directory avatars non scrivibile`: the directory exists but cannot be written; adjust mode or ownership.
+- `Permesso negato scrivendo`: host FS (e.g. NFS with root_squash) denies write; change owner to your user or configure Docker to use a matching UID.
+
+Files are served at `/static/avatars/<filename>`; cache busting uses timestamped filenames.
+
+### Persistenza e Permessi Avatar (IT)
+Gli avatar delle personalità sono salvati in `./backend/storage/avatars` (container: `/app/storage/avatars`). Se non restano dopo il riavvio o l'upload fallisce:
+
+1. Controlla i log backend: `docker compose logs backend | grep storage-diag`.
+2. Verifica permessi:
+  ```bash
+  ls -ld backend/storage backend/storage/avatars
+  ```
+3. Concedi scrittura (solo dev):
+  ```bash
+  chmod -R u+rwX backend/storage
+  ```
+4. Se usi SELinux: `chcon -Rt svirt_sandbox_file_t backend/storage`.
+5. Se vedi `Permesso negato`, verifica owner: `chown -R $(id -u):$(id -g) backend/storage`.
+
+Gli URL pubblici sono `/static/avatars/<filename>?v=<ts>`.
+
 ### Prefetch Models (Local)
 ```bash
 make models  # downloads Whisper small, Piper it_IT-riccardo-x_low, and embeddings cache
@@ -346,6 +384,9 @@ npm run dev -- --port 5175
 ```bash
 docker compose up --build
 ```
+
+### Persistenza & Permessi Avatar
+Vedi sezione inglese sopra. In breve: la directory host `backend/storage/avatars` deve essere scrivibile. Il backend logga una diagnostica `[storage-diag]` all'avvio con permessi, mode e test scrittura. Correggi i permessi se necessario e ricarica la pagina.
 
 ### Precarica Modelli (Locale)
 ```bash

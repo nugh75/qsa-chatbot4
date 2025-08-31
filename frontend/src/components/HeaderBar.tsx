@@ -75,12 +75,11 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
           <FormControl size="small" fullWidth>
             <Select value={selectedPersonalityId || ''} onChange={e=> onChangePersonality(e.target.value as string)} displayEmpty sx={{ fontSize:14 }}>
               {safePersonalities.length === 0 && <MenuItem value=""><em>Nessuna</em></MenuItem>}
-              {safePersonalities.map(p=> <MenuItem key={p.id} value={p.id}>
-                <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
-                  <Avatar src={p.avatar_url || '/volto.png'} alt={p.name} sx={{ width:24, height:24 }} />
+              {safePersonalities.map(p=> (
+                <MenuItem key={p.id} value={p.id}>
                   {p.name}
-                </Box>
-              </MenuItem>)}
+                </MenuItem>
+              ))}
             </Select>
           </FormControl>
         </Box>

@@ -82,6 +82,48 @@ try:
 except Exception as e:
     print(f"Static mount error: {e}")
 
+# ---- Runtime storage diagnostics (avatars & personalities) ----
+def _diagnose_storage():  # lightweight, runs once at import
+    from pathlib import Path as _P
+    import stat as _stat
+    targets = [
+        _P('/app/storage'),
+        _P('/app/storage/avatars'),
+        _P('/app/storage/personalities'),
+    ]
+    uid = os.getuid() if hasattr(os, 'getuid') else 'n/a'
+    gid = os.getgid() if hasattr(os, 'getgid') else 'n/a'
+    for d in targets:
+        try:
+            exists = d.exists()
+            if not exists:
+                d.mkdir(parents=True, exist_ok=True)
+            mode = oct(d.stat().st_mode & 0o777) if d.exists() else 'missing'
+            writable = os.access(d, os.W_OK)
+            test_file = d / '.perm_test'
+            test_write_ok = False
+            err_msg = None
+            try:
+                with open(test_file, 'w') as _f:
+                    _f.write('ok')
+                test_write_ok = True
+            except Exception as _e:  # pragma: no cover
+                err_msg = str(_e)
+            finally:
+                try:
+                    if test_file.exists():
+                        test_file.unlink()
+                except Exception:
+                    pass
+            print(f"[storage-diag] path={d} exists={exists} mode={mode} os.access_w={writable} test_write={test_write_ok} uid={uid} gid={gid} err={err_msg}")
+        except Exception as e:  # pragma: no cover
+            print(f"[storage-diag] error inspecting {d}: {e}")
+
+try:
+    _diagnose_storage()
+except Exception:
+    pass
+
 # Init logging
 try:
     _logger = get_system_logger()
@@ -228,6 +270,8 @@ async def get_public_personalities():
             _welcome = {}
             _guides = {}
         # Expose only necessary fields
+        # Determine backend base URL for absolute avatar URLs
+        backend_base = os.getenv('BACKEND_URL', 'http://localhost:8005')
         return {
             "default_id": data.get("default_id"),
             "personalities": [
@@ -237,7 +281,7 @@ async def get_public_personalities():
                     "provider": p.get("provider"),
                     "model": p.get("model"),
                     "system_prompt_id": p.get("system_prompt_id"),
-                    "avatar_url": (f"/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
+                    "avatar_url": (f"{backend_base}/static/avatars/{p.get('avatar')}" if p.get('avatar') else None),
                     "tts_provider": p.get("tts_provider"),
                     # Provide both id and content for welcome + guide
                     "welcome_message_id": p.get("welcome_message"),

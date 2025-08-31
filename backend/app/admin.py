@@ -648,6 +648,22 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
             raise HTTPException(status_code=400, detail="Formato immagine non supportato")
         # Prepara path salvataggio (usare directory persistente /app/storage/avatars)
         avatars_dir = Path('/app/storage/avatars')
+        # Diagnostic: ensure directory is writable
+        try:
+            avatars_dir.mkdir(parents=True, exist_ok=True)
+            if not os.access(avatars_dir, os.W_OK):
+                # Attempt to open a temp file to confirm
+                test_path = avatars_dir / '.write_test'
+                try:
+                    with open(test_path, 'w') as _tf:
+                        _tf.write('x')
+                    test_path.unlink(missing_ok=True)
+                except Exception as _e:
+                    raise HTTPException(status_code=500, detail=f"Directory avatars non scrivibile: {avatars_dir}. Permessi? {_e}")
+        except HTTPException:
+            raise
+        except Exception as _e:
+            raise HTTPException(status_code=500, detail=f"Errore preparazione directory avatars: {_e}")
         # Migrazione automatica: se vecchia dir esiste ed è diversa, copia file mancanti una volta
         try:
             old_dir = Path(__file__).parent.parent / 'storage' / 'avatars'
@@ -672,8 +688,13 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
             raise HTTPException(status_code=400, detail="Immagine troppo grande (max 2MB)")
         # Salva nuovo file
         target_path = avatars_dir / safe_name
-        with open(target_path, 'wb') as f:
-            f.write(data)
+        try:
+            with open(target_path, 'wb') as f:
+                f.write(data)
+        except PermissionError as _pe:
+            raise HTTPException(status_code=500, detail=f"Permesso negato scrivendo {target_path}: {_pe}. Controlla owner/permessi del volume host.")
+        except OSError as _oe:
+            raise HTTPException(status_code=500, detail=f"Errore scrittura file avatar: {_oe}")
         # Rimuove vecchi avatar della stessa personalità (stesso prefisso) lasciando l'ultimo
         try:
             prefix = f"{personality_id}-"
@@ -708,7 +729,8 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
         )
         # Aggiungi query param cache-busting opzionale
         cache_bust = int(time.time())
-        return {"success": True, "filename": safe_name, "url": f"/static/avatars/{safe_name}?v={cache_bust}"}
+        backend_base = os.getenv('BACKEND_URL', 'http://localhost:8005')
+        return {"success": True, "filename": safe_name, "url": f"{backend_base}/static/avatars/{safe_name}?v={cache_bust}"}
     except HTTPException:
         raise
     except Exception as e:
@@ -1101,7 +1123,8 @@ async def upload_avatar(file: UploadFile = FastFile(...)):
         target_path = target_dir / fname
         with open(target_path, "wb") as out:
             out.write(await file.read())
-        return {"success": True, "filename": fname, "url": f"/static/avatars/{fname}"}
+        backend_base = os.getenv('BACKEND_URL', 'http://localhost:8005')
+        return {"success": True, "filename": fname, "url": f"{backend_base}/static/avatars/{fname}"}
     except HTTPException:
         raise
     except Exception as e:
@@ -1115,9 +1138,10 @@ async def list_avatars():
         if not avatars_dir.exists():
             return {"avatars": []}
         items = []
+        backend_base = os.getenv('BACKEND_URL', 'http://localhost:8005')
         for p in avatars_dir.iterdir():
             if p.is_file() and p.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
-                items.append({"filename": p.name, "url": f"/static/avatars/{p.name}"})
+                items.append({"filename": p.name, "url": f"{backend_base}/static/avatars/{p.name}"})
         return {"avatars": items}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore elenco avatar: {str(e)}")

@@ -955,7 +955,13 @@ const AppContent: React.FC = () => {
                 {/* Avatar per l'assistente a sinistra */}
                 {m.role === 'assistant' && (
                   <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <ChatAvatar key={`msg-${selectedPersonalityId || 'default'}`} src={assistantAvatarSrc} />
+                    <ChatAvatar
+                      // Forza aggiornamento avatar quando cambia personalità o url
+                      key={`msg-${i}-${selectedPersonalityId}-${assistantAvatarSrc}`}
+                      src={assistantAvatarSrc}
+                      alt={selectedPersonality?.name || 'Assistente'}
+                      personalityId={selectedPersonalityId}
+                    />
                   </Box>
                 )}
                 
@@ -1117,7 +1123,7 @@ const AppContent: React.FC = () => {
           {loading && !isStreaming && (
             <Box display="flex" gap={2} justifyContent="flex-start">
               <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                <ChatAvatar key={`typing-${selectedPersonalityId || 'default'}`} src={assistantAvatarSrc} />
+                <ChatAvatar key={`typing-${selectedPersonalityId}-${assistantAvatarSrc}`} src={assistantAvatarSrc} alt={selectedPersonality?.name || 'Assistente'} personalityId={selectedPersonalityId} />
               </Box>
               <Box sx={{
                 bgcolor: '#e3f2fd',

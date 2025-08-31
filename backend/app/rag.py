@@ -25,19 +25,20 @@ def load_text(name: str) -> str:
     fp = DATA_DIR / file_map[name]
     return fp.read_text(encoding="utf-8")
 
-def get_context(topic: Optional[str], query: str = "") -> str:
+def get_context(topic: Optional[str], query: str = "", personality_enabled_groups: Optional[List[int]] = None) -> str:
     """
     Ottiene il contesto per la chat usando il sistema RAG avanzato
     
     Args:
         topic: Topic rilevato (legacy, ora usiamo RAG)
         query: Query dell'utente per ricerca semantica
+        personality_enabled_groups: Gruppi RAG abilitati per la personalità corrente
         
     Returns:
         Contesto formattato per l'LLM
     """
     # Prima prova a usare il nuovo sistema RAG
-    rag_context = get_rag_context(query)
+    rag_context = get_rag_context(query, personality_enabled_groups=personality_enabled_groups)
     if rag_context:
         return rag_context
     
@@ -59,7 +60,7 @@ def get_context(topic: Optional[str], query: str = "") -> str:
             continue
     return "\n\n".join(parts)[:6000]
 
-def get_rag_context(query: str, session_id: str = "default", max_results: int = 5) -> str:
+def get_rag_context(query: str, session_id: str = "default", max_results: int = 5, personality_enabled_groups: Optional[List[int]] = None) -> str:
     """
     Ottiene contesto usando il sistema RAG avanzato
     
@@ -67,13 +68,26 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         query: Query dell'utente
         session_id: ID sessione per ottenere contesto selezionato
         max_results: Numero massimo di risultati per gruppo
+        personality_enabled_groups: Gruppi RAG abilitati per la personalità corrente
         
     Returns:
         Contesto formattato con citazioni ai file sorgente
     """
     try:
         # Ottieni gruppi selezionati dall'utente
-        selected_groups = get_user_context(session_id)
+        user_selected_groups = get_user_context(session_id)
+        
+        # Se la personalità ha gruppi specifici abilitati, usa quelli come filtro
+        if personality_enabled_groups is not None:
+            # Interseca i gruppi selezionati dall'utente con quelli abilitati per la personalità
+            if user_selected_groups:
+                selected_groups = [g for g in user_selected_groups if g in personality_enabled_groups]
+            else:
+                # Se l'utente non ha selezionato gruppi specifici, usa tutti quelli abilitati per la personalità
+                selected_groups = personality_enabled_groups
+        else:
+            # Fallback al comportamento precedente
+            selected_groups = user_selected_groups
         
         if not selected_groups:
             return ""

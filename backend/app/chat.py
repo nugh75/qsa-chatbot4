@@ -162,12 +162,29 @@ async def chat(
         except Exception as e:
             print(f"Error saving user message: {e}")
     
-    # Ottieni il contesto RAG con ricerca semantica avanzata
-    rag_context = get_rag_context(full_user_message, session_id)
+    # Contesto & topic con filtri personalità
+    from .topic_router import detect_topic
+    from .rag import get_context, get_rag_context
+    from .personalities import get_personality
+    
+    # Ottieni informazioni sulla personalità per i filtri
+    personality_enabled_topics = None
+    personality_enabled_rag_groups = None
+    if x_personality_id:
+        try:
+            p = get_personality(x_personality_id)
+            if p:
+                personality_enabled_topics = p.get("enabled_pipeline_topics")
+                personality_enabled_rag_groups = p.get("enabled_rag_groups")
+        except Exception as e:
+            print(f"Error getting personality filters: {e}")
+    
+    topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
+    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     
     # Fallback al sistema legacy se RAG non trova nulla
     if not rag_context:
-        context = get_context(topic, user_msg)
+        context = get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
     else:
         context = rag_context
         
@@ -177,6 +194,8 @@ async def chat(
     system = load_system_prompt()
     if x_personality_id:
         try:
+            from .personalities import get_personality
+            from .prompts import get_system_prompt_by_id
             p = get_personality(x_personality_id)
             if p:
                 if p.get("system_prompt_id"):
@@ -455,19 +474,32 @@ async def chat_stream(
         except Exception as e:
             print(f"Error saving user message (stream): {e}")
 
-    # Contesto & topic
+    # Contesto & topic con filtri personalità
     from .topic_router import detect_topic
     from .rag import get_context, get_rag_context
-    topic = detect_topic(user_msg)
-    rag_context = get_rag_context(user_msg, session_id)
-    context = rag_context or get_context(topic, user_msg)
+    from .personalities import get_personality
+    
+    # Ottieni informazioni sulla personalità per i filtri
+    personality_enabled_topics = None
+    personality_enabled_rag_groups = None
+    if x_personality_id:
+        try:
+            p = get_personality(x_personality_id)
+            if p:
+                personality_enabled_topics = p.get("enabled_pipeline_topics")
+                personality_enabled_rag_groups = p.get("enabled_rag_groups")
+        except Exception as e:
+            print(f"Error getting personality filters: {e}")
+    
+    topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
+    rag_context = get_rag_context(user_msg, session_id, personality_enabled_groups=personality_enabled_rag_groups)
+    context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
     # Personality override
     effective_provider = provider
     model_override: Optional[str] = None
     system = load_system_prompt()
     if x_personality_id:
         try:
-            from .personalities import get_personality
             from .prompts import get_system_prompt_by_id
             p = get_personality(x_personality_id)
             if p:

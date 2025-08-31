@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.0 - 2025-08-31
+
+### Added - Sistema MCP (Model Context Protocol)
+- **🔌 Gestione Server MCP**: Sistema completo per l'integrazione di server MCP esterni
+  - Pannello admin dedicato per la configurazione dei server MCP
+  - Supporto per server email, calendar, filesystem, webscraper, database e custom
+  - Gestione credenziali e variabili di ambiente per ogni server
+  - Abilitazione/disabilitazione dinamica dei server
+  - Test di connessione e monitoraggio dello stato
+- **⚙️ Configurazione per Personalità**: Ogni personalità può ora abilitare specifici server MCP
+  - Selezione granulare dei server MCP per personalità
+  - Integrazione con sistema di pipeline topics e gruppi RAG esistente
+- **🛠️ Architettura MCP**: Implementazione backend completa
+  - `mcp_servers.py`: Definizione modelli e tipi MCP
+  - `mcp_manager.py`: Gestione runtime dei server MCP
+  - API endpoints per CRUD operations sui server MCP
+  - Storage persistente configurazioni in `/app/storage/mcp_servers/`
+
+### Added - Miglioramenti Personalità
+- **🎯 Configurazione Avanzata Personalità**:
+  - **Pipeline Topics**: Selezione granulare dei topic pipeline abilitati per personalità
+  - **Gruppi RAG**: Controllo fine sui gruppi RAG accessibili per personalità
+  - **Max Tokens**: Limite configurabile di token per personalità
+  - **Server MCP**: Abilitazione selettiva server MCP per personalità
+- **🖼️ Anteprima Migliorata**: Fix anteprima avatar nei form di modifica personalità
+- **📋 Display Completo**: Box personalità ora mostra anteprima avatar, prompt e configurazioni attive
+
+### Added - Funzionalità Frontend
+- **📱 Tab MCP dedicata**: Nuovo tab "MCP Servers" nel pannello admin
+- **🔧 Interfaccia Gestione MCP**: Componente `MCPPanel.tsx` per gestione completa server MCP
+  - Creazione, modifica, eliminazione server MCP
+  - Test connessione in tempo reale
+  - Gestione configurazioni complesse (command, args, env)
+  - Monitoraggio stato e capabilities
+- **⚡ Selezione Multi-opzione**: Miglioramenti UX per selezione pipeline, RAG e MCP nelle personalità
+
+### Changed
+- **📊 Modello Dati Personalità**: Esteso con nuovi campi per controllo granulare
+- **🎛️ Pannello Admin**: Riorganizzazione per includere sezione MCP dedicata
+- **🔄 API Personalità**: Aggiornamento endpoint per supportare nuovi parametri di configurazione
+
+### Technical Improvements
+- **🏗️ Architettura Modulare MCP**: Sistema estensibile per nuovi tipi di server MCP
+- **💾 Storage Persistente**: Configurazioni MCP persistenti tramite Docker volumes
+- **🔒 Gestione Sicurezza**: Handling sicuro di credenziali e variabili di ambiente MCP
+- **📡 API RESTful**: Endpoint completi per gestione CRUD server MCP
+- **🧪 Testing System**: Sistema di test integrato per validazione connessioni MCP
+
+### Notes
+- I server MCP sono in fase di implementazione e verranno attivati nella prossima release
+- La configurazione MCP è già disponibile nel pannello admin per preparazione
+- I server Gmail, Calendar e altri provider saranno aggiunti gradualmente
+
 ## v0.4.0 - 2025-08-30
 
 ### Added

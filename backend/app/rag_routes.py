@@ -2,7 +2,7 @@
 API Routes per il sistema RAG
 Gestisce gruppi, documenti, upload e ricerca
 """
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status, Header
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -201,12 +201,27 @@ async def search_documents(search_request: SearchRequest):
         raise HTTPException(status_code=500, detail=f"Errore nella ricerca: {str(e)}")
 
 @router.get("/rag/context-options")
-async def get_context_options():
+async def get_context_options(x_personality_id: Optional[str] = Header(default=None)):
     """Ottieni opzioni disponibili per la selezione del contesto"""
     try:
         groups = rag_engine.get_groups()
         # Filtra solo gruppi con documenti
         available_groups = [g for g in groups if g["document_count"] > 0]
+        
+        # Se c'è una personalità selezionata, filtra in base ai gruppi abilitati
+        if x_personality_id:
+            try:
+                from .personalities import get_personality
+                personality = get_personality(x_personality_id)
+                if personality and "enabled_rag_groups" in personality:
+                    enabled_groups = set(personality["enabled_rag_groups"])
+                    # Filtra solo i gruppi abilitati per questa personalità
+                    available_groups = [g for g in available_groups if g["id"] in enabled_groups]
+            except Exception as e:
+                print(f"Error filtering RAG groups by personality: {e}")
+                # In caso di errore, restituisce tutti i gruppi
+                pass
+        
         return {"success": True, "available_groups": available_groups}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel recupero opzioni: {str(e)}")

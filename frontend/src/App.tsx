@@ -945,7 +945,7 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
 
-  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 230px)' : 600, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflow:'hidden' }}>
+  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflow:'hidden' }}>
         {/* messages stack */}
         <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 6 : 0 }}>
           {messages.map((m,i)=>(
@@ -1322,6 +1322,7 @@ const AppContent: React.FC = () => {
         </Box>
         <RAGContextSelector 
           compact={true}
+          selectedPersonalityId={selectedPersonalityId}
           onContextChange={(selectedGroups) => {
             setRAGContextActive(selectedGroups.length > 0);
           }}

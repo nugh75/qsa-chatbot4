@@ -61,7 +61,7 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
   const safePersonalities = Array.isArray(personalities) ? personalities : []
   // TTS selector rimosso; voce impostata dalla personalità
   return (
-    <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid', borderColor: 'divider', background:'#fff' }}>
+    <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: '1px solid', borderColor: 'divider', background:'#fff', borderRadius: 2, mb: 2 }}>
       <Toolbar variant={dense ? 'dense' : 'regular'} sx={{ display:'flex', gap:1, alignItems:'center', minHeight: dense ? 44 : undefined, px: 1 }}>
   {/* Hamburger rimosso: accesso conversazioni solo tramite menu overflow */}
   {/* Titolo rimosso: presenza personalità già indicata dal selettore */}

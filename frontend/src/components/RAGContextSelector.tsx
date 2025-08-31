@@ -47,11 +47,13 @@ interface RAGGroup {
 interface RAGContextSelectorProps {
   onContextChange?: (selectedGroups: number[]) => void;
   compact?: boolean;
+  selectedPersonalityId?: string;
 }
 
 const RAGContextSelector: React.FC<RAGContextSelectorProps> = ({ 
   onContextChange, 
-  compact = false 
+  compact = false,
+  selectedPersonalityId
 }) => {
   const [availableGroups, setAvailableGroups] = useState<RAGGroup[]>([]);
   const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
@@ -62,12 +64,16 @@ const RAGContextSelector: React.FC<RAGContextSelectorProps> = ({
   useEffect(() => {
     loadAvailableGroups();
     loadCurrentContext();
-  }, []);
+  }, [selectedPersonalityId]);
 
   const loadAvailableGroups = async () => {
     setLoading(true);
     try {
-      const res = await apiService.get('/rag/context-options');
+      const headers: Record<string, string> = {};
+      if (selectedPersonalityId) {
+        headers['X-Personality-Id'] = selectedPersonalityId;
+      }
+      const res = await apiService.get('/rag/context-options', { headers });
       if (res?.data?.available_groups) {
         setAvailableGroups(res.data.available_groups);
       }
@@ -132,7 +138,7 @@ const RAGContextSelector: React.FC<RAGContextSelectorProps> = ({
       <Box>
         <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
           <Typography variant="subtitle2">
-            Contesto RAG 
+            Contesto 
             {selectedGroups.length > 0 && (
               <Chip 
                 size="small" 
@@ -205,7 +211,7 @@ const RAGContextSelector: React.FC<RAGContextSelectorProps> = ({
       <CardContent>
         <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
           <Typography variant="h6">
-            Selezione Contesto RAG
+            Selezione Contesto
           </Typography>
           <IconButton onClick={loadAvailableGroups} disabled={loading}>
             <RefreshIcon />

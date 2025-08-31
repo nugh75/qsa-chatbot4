@@ -17,11 +17,23 @@ def load_routes() -> List[Tuple[str, str]]:
   except Exception:
     return []
 
-def detect_topic(user_text: str) -> Optional[str]:
+def detect_topic(user_text: str, enabled_topics: Optional[List[str]] = None) -> Optional[str]:
+  """Rileva il topic dal testo dell'utente
+  
+  Args:
+      user_text: Testo dell'utente
+      enabled_topics: Lista dei topic abilitati per la personalità corrente
+      
+  Returns:
+      Topic rilevato se abilitato, altrimenti None
+  """
   t = user_text.lower()
   for pat, topic in load_routes():
     try:
       if re.search(pat, t):
+        # Se sono specificati topic abilitati, controlla che il topic sia nella lista
+        if enabled_topics is not None and topic not in enabled_topics:
+          continue
         return topic
     except re.error:
       # ignora pattern invalidi

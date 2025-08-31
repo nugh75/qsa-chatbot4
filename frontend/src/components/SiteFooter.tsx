@@ -107,7 +107,7 @@ export const SiteFooter: React.FC = () => {
 
   // Layout desktop: elementi su una singola riga (wrap solo se necessario) con piccoli separatori
   return (
-    <Box component="footer" sx={{ mt: 6, mb: 2, px: 2, py: 3, borderTop: '1px solid', borderColor: 'divider', bgcolor: 'background.paper' }}>
+    <Box component="footer" sx={{ mt: 6, mb: 2, px: 2, py: 3, borderTop: '1px solid', borderColor: 'divider', bgcolor: 'background.paper', borderRadius: 2 }}>
       <Box sx={{ maxWidth: 1200, mx: 'auto', display:'flex', flexDirection:'column', gap:1 }}>
         {(s.footer_title || s.footer_text) && (
           <Box sx={(theme)=>({

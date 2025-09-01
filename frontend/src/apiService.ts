@@ -467,59 +467,59 @@ class ApiService {
 
   // === RAG Embedding Management ===
   async getEmbeddingConfig(): Promise<ApiResponse<any>> {
-    return this.makeRequest('/admin/rag/embedding/config');
+  // Backend path: /api/rag/embedding/config
+  return this.makeRequest('/rag/embedding/config');
   }
   async listLocalEmbeddingModels(): Promise<ApiResponse<{ models: string[] }>> {
-    return this.makeRequest('/admin/rag/embedding/local-models');
+  // Backend exposes /embedding/models
+  return this.makeRequest('/rag/embedding/models');
   }
   async setEmbeddingProvider(provider_type: string, model_name: string): Promise<ApiResponse<any>> {
-    return this.makeRequest('/admin/rag/embedding/set', {
-      method: 'POST',
-      body: JSON.stringify({ provider_type, model_name })
-    });
+  // Backend endpoint: POST /rag/embedding/select
+  return this.makeRequest('/rag/embedding/select', { method: 'POST', body: JSON.stringify({ provider_type, model_name }) });
   }
   async startEmbeddingDownload(model_name: string): Promise<ApiResponse<{ task_id: string }>> {
-    return this.makeRequest('/admin/rag/embedding/download/start', {
-      method: 'POST',
-      body: JSON.stringify({ model_name })
-    });
+  // Backend endpoint: POST /rag/embedding/download
+  return this.makeRequest('/rag/embedding/download', { method: 'POST', body: JSON.stringify({ model_name }) });
   }
   async getEmbeddingDownloadStatus(task_id: string): Promise<ApiResponse<any>> {
-    const q = encodeURIComponent(task_id);
-    return this.makeRequest(`/admin/rag/embedding/download/status?task_id=${q}`);
+  // Backend endpoint: GET /rag/embedding/download/status/{task_id}
+  return this.makeRequest(`/rag/embedding/download/status/${encodeURIComponent(task_id)}`);
   }
   async listEmbeddingDownloadTasks(): Promise<ApiResponse<{ tasks: any[] }>> {
-    return this.makeRequest('/admin/rag/embedding/download/tasks');
+  return this.makeRequest('/rag/embedding/download/tasks');
   }
 
   // === RAG Groups & Documents ===
   async getRagStats(): Promise<ApiResponse<any>> {
-    return this.makeRequest('/admin/rag/stats');
+  return this.makeRequest('/rag/stats');
   }
   async listRagGroups(): Promise<ApiResponse<{ groups: any[] }>> {
-    return this.makeRequest('/admin/rag/groups');
+  return this.makeRequest('/rag/groups');
   }
   async createRagGroup(name: string, description: string): Promise<ApiResponse<any>> {
-    return this.makeRequest('/admin/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
+  return this.makeRequest('/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
   }
   async updateRagGroup(id: number, payload: { name?: string; description?: string }): Promise<ApiResponse<any>> {
-    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+  return this.makeRequest(`/rag/groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
   }
   async deleteRagGroup(id: number): Promise<ApiResponse<any>> {
-    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'DELETE' });
+  return this.makeRequest(`/rag/groups/${id}`, { method: 'DELETE' });
   }
   async listRagDocuments(groupId: number): Promise<ApiResponse<{ documents: any[] }>> {
-    return this.makeRequest(`/admin/rag/groups/${groupId}/documents`);
+  return this.makeRequest(`/rag/groups/${groupId}/documents`);
   }
   async deleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
-    return this.makeRequest(`/admin/rag/documents/${documentId}`, { method: 'DELETE' });
+  // NOTE: Verify backend provides this route; adjust if different
+  return this.makeRequest(`/rag/documents/${documentId}`, { method: 'DELETE' });
   }
   async uploadRagDocument(groupId: number, file: File): Promise<ApiResponse<any>> {
     const form = new FormData();
     form.append('group_id', String(groupId));
     form.append('file', file);
     const accessToken = CredentialManager.getAccessToken();
-    const resp = await fetch(`${API_BASE_URL}/admin/rag/upload`, {
+  // Backend route: POST /api/rag/upload-multi (multipart form with group_id & files[])
+  const resp = await fetch(`${API_BASE_URL}/rag/upload-multi`, {
       method: 'POST',
       headers: accessToken ? { 'Authorization': `Bearer ${accessToken}` } : undefined,
       body: form

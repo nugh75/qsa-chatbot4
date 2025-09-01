@@ -20,6 +20,7 @@ from .search_routes import router as search_router
 from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
+from .rag_admin import router as rag_admin_router
 from .survey_routes import router as survey_router
 from .welcome_guides import router as welcome_guides_router
 from .personalities import load_personalities
@@ -158,6 +159,7 @@ app.include_router(search_router, prefix="/api")
 app.include_router(admin_panel_router, prefix="/api")
 app.include_router(file_processing_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
+app.include_router(rag_admin_router)  # already prefixed with /api/rag
 app.include_router(survey_router, prefix="/api")
 app.include_router(welcome_guides_router, prefix="/api")
 

@@ -246,54 +246,63 @@ class RAGEngine:
         conn.close()
         logger.info(f"Gruppo {group_id} aggiornato")
     
-    def add_document(self, group_id: int, filename: str, content: str, original_filename: str = None) -> int:
-        """
-        Aggiunge un documento a un gruppo
-        
-        Args:
-            group_id: ID del gruppo
-            filename: Nome del file
-            content: Contenuto del documento
-            original_filename: Nome originale del file
-            
-        Returns:
-            ID del documento creato
+    def add_document(self, group_id: int, filename: str, content: str, original_filename: str = None,
+                     original_file_bytes: Optional[bytes] = None) -> Tuple[int, Dict[str, Any]]:
+        """Aggiunge un documento e (opzionalmente) salva il file originale su disco.
+
+        Ritorna (document_id, metrics)
         """
         if original_filename is None:
             original_filename = filename
-            
-        # Calcola hash del contenuto
+
+        start_time = datetime.utcnow()
         file_hash = hashlib.sha256(content.encode()).hexdigest()
-        
-        # Crea preview del contenuto
         content_preview = content[:500] + "..." if len(content) > 500 else content
-        
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         try:
-            cursor.execute("""
-                INSERT INTO rag_documents 
+            # Usa un filename interno provvisorio; verrà aggiornato dopo il salvataggio
+            internal_name = filename
+            cursor.execute(
+                """INSERT INTO rag_documents 
                 (group_id, filename, original_filename, file_hash, file_size, content_preview)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (group_id, filename, original_filename, file_hash, len(content), content_preview))
-            
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (group_id, internal_name, original_filename, file_hash, len(content), content_preview)
+            )
             document_id = cursor.lastrowid
             conn.commit()
-            
-            # Processa il documento in chunks ed embedding
+
+            # Salva file originale se fornito
+            if original_file_bytes:
+                files_dir = self.data_dir / "files"
+                files_dir.mkdir(parents=True, exist_ok=True)
+                safe_name = f"{document_id}_{original_filename}"
+                file_path = files_dir / safe_name
+                with open(file_path, 'wb') as f:
+                    f.write(original_file_bytes)
+                # Aggiorna filename interno con il nome sicuro (per referenziare file salvato)
+                cursor.execute("UPDATE rag_documents SET filename = ? WHERE id = ?", (safe_name, document_id))
+                conn.commit()
+
+            # Processa chunking + embedding
+            chunk_start = datetime.utcnow()
             chunk_count = self._process_document(document_id, group_id, content)
-            
-            # Aggiorna contatore chunks
-            cursor.execute(
-                "UPDATE rag_documents SET chunk_count = ? WHERE id = ?",
-                (chunk_count, document_id)
-            )
+            chunk_end = datetime.utcnow()
+
+            cursor.execute("UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (chunk_count, document_id))
             conn.commit()
-            
-            logger.info(f"Documento aggiunto: {filename} (ID: {document_id}, Chunks: {chunk_count})")
-            return document_id
-            
+            end_time = datetime.utcnow()
+
+            metrics = {
+                "chunk_count": chunk_count,
+                "timings": {
+                    "total_ms": int((end_time - start_time).total_seconds() * 1000),
+                    "chunking_ms": int((chunk_end - chunk_start).total_seconds() * 1000)
+                }
+            }
+            logger.info(f"Documento aggiunto: {original_filename} (ID: {document_id}, Chunks: {chunk_count})")
+            return document_id, metrics
         except sqlite3.IntegrityError:
             raise ValueError(f"Documento con hash '{file_hash}' già esistente")
         finally:
@@ -541,32 +550,314 @@ class RAGEngine:
         conn.close()
     
     def get_stats(self) -> Dict[str, Any]:
-        """Restituisce statistiche del sistema RAG"""
+        """Restituisce statistiche estese del sistema RAG"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT COUNT(*) FROM rag_groups")
         total_groups = cursor.fetchone()[0]
-        
         cursor.execute("SELECT COUNT(*) FROM rag_documents")
         total_documents = cursor.fetchone()[0]
-        
         cursor.execute("SELECT COUNT(*) FROM rag_chunks")
         total_chunks = cursor.fetchone()[0]
-        
         cursor.execute("SELECT SUM(file_size) FROM rag_documents")
         total_size = cursor.fetchone()[0] or 0
-        
+
+        # Average chunk size (approx) & distribution
+        avg_chunk_size = 0
+        chunk_distribution = []
+        if total_chunks:
+            cursor.execute("SELECT AVG(LENGTH(content)) FROM rag_chunks")
+            avg_chunk_size = int(cursor.fetchone()[0] or 0)
+            # distribution of chunks per document
+            cursor.execute("SELECT chunk_count, COUNT(*) FROM rag_documents GROUP BY chunk_count LIMIT 100")
+            for row in cursor.fetchall():
+                chunk_distribution.append({"chunks_per_doc": row[0], "document_count": row[1]})
+
+        # group breakdown
+        cursor.execute("""
+            SELECT g.name, COUNT(DISTINCT d.id) as docs, COUNT(c.id) as chunks
+            FROM rag_groups g
+            LEFT JOIN rag_documents d ON g.id = d.group_id
+            LEFT JOIN rag_chunks c ON g.id = c.group_id
+            GROUP BY g.id
+        """)
+        group_breakdown = []
+        for row in cursor.fetchall():
+            group_breakdown.append({"group_name": row[0], "documents": row[1], "chunks": row[2]})
+
         conn.close()
-        
+
+        storage_eff = {
+            "avg_chunks_per_document": round(total_chunks / total_documents, 2) if total_documents else 0,
+            "avg_document_size": int(total_size / total_documents) if total_documents else 0,
+            "storage_per_chunk": int(total_size / total_chunks) if total_chunks else 0
+        }
+
         return {
             "total_groups": total_groups,
             "total_documents": total_documents,
             "total_chunks": total_chunks,
             "total_size_bytes": total_size,
             "embedding_model": self.model_name,
-            "embedding_dimension": self.dimension
+            "embedding_dimension": self.dimension,
+            "average_chunk_size": avg_chunk_size,
+            "group_breakdown": group_breakdown,
+            "chunk_distribution": chunk_distribution,
+            "storage_efficiency": storage_eff
         }
+
+    # ===== Chunk CRUD & Search =====
+    def get_all_chunks(self, group_id: int, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM rag_chunks WHERE group_id = ?", (group_id,))
+        total = cursor.fetchone()[0]
+        cursor.execute(
+            """SELECT c.id, c.document_id, c.chunk_index, c.content, c.created_at, d.filename, d.original_filename, g.name
+                FROM rag_chunks c
+                JOIN rag_documents d ON c.document_id = d.id
+                JOIN rag_groups g ON c.group_id = g.id
+                WHERE c.group_id = ?
+                ORDER BY c.id
+                LIMIT ? OFFSET ?""", (group_id, limit, offset)
+        )
+        chunks = []
+        for row in cursor.fetchall():
+            content = row[3]
+            chunks.append({
+                "id": row[0],
+                "group_id": group_id,
+                "document_id": row[1],
+                "chunk_index": row[2],
+                "content": content,
+                "content_preview": content[:160] + ("..." if len(content) > 160 else ""),
+                "content_length": len(content),
+                "created_at": row[4],
+                "filename": row[5],
+                "original_filename": row[6],
+                "group_name": row[7]
+            })
+        conn.close()
+        return {"chunks": chunks, "total": total}
+
+    def search_chunks_content(self, search_term: str, group_id: Optional[int] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        if group_id:
+            cursor.execute(
+                """SELECT c.id, c.document_id, c.chunk_index, c.content, d.filename, d.original_filename, g.name, c.group_id
+                    FROM rag_chunks c
+                    JOIN rag_documents d ON c.document_id = d.id
+                    JOIN rag_groups g ON c.group_id = g.id
+                    WHERE c.group_id = ? AND c.content LIKE ?
+                    LIMIT ?""", (group_id, f"%{search_term}%", limit)
+            )
+        else:
+            cursor.execute(
+                """SELECT c.id, c.document_id, c.chunk_index, c.content, d.filename, d.original_filename, g.name, c.group_id
+                    FROM rag_chunks c
+                    JOIN rag_documents d ON c.document_id = d.id
+                    JOIN rag_groups g ON c.group_id = g.id
+                    WHERE c.content LIKE ?
+                    LIMIT ?""", (f"%{search_term}%", limit)
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        results = []
+        for r in rows:
+            content = r[3]
+            results.append({
+                "id": r[0],
+                "document_id": r[1],
+                "chunk_index": r[2],
+                "content": content,
+                "content_preview": content[:160] + ("..." if len(content) > 160 else ""),
+                "filename": r[4],
+                "original_filename": r[5],
+                "group_name": r[6],
+                "group_id": r[7]
+            })
+        return results
+
+    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT c.id, c.group_id, c.document_id, c.chunk_index, c.content, c.created_at, d.filename, d.original_filename, g.name
+                FROM rag_chunks c
+                JOIN rag_documents d ON c.document_id = d.id
+                JOIN rag_groups g ON c.group_id = g.id
+                WHERE c.id = ?""", (chunk_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "group_id": row[1],
+            "document_id": row[2],
+            "chunk_index": row[3],
+            "content": row[4],
+            "content_length": len(row[4]),
+            "created_at": row[5],
+            "filename": row[6],
+            "original_filename": row[7],
+            "group_name": row[8]
+        }
+
+    def update_chunk_content(self, chunk_id: int, new_content: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE rag_chunks SET content = ? WHERE id = ?", (new_content, chunk_id))
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        if changed:
+            # Rebuild index for group
+            chunk = self.get_chunk_by_id(chunk_id)
+            if chunk:
+                self._rebuild_group_index(chunk['group_id'])
+        return changed
+
+    def delete_chunk(self, chunk_id: int) -> bool:
+        # need group id to rebuild
+        chunk = self.get_chunk_by_id(chunk_id)
+        if not chunk:
+            return False
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM rag_chunks WHERE id = ?", (chunk_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        if deleted:
+            self._rebuild_group_index(chunk['group_id'])
+        return deleted
+
+    def bulk_delete_chunks(self, chunk_ids: List[int]) -> Dict[str, Any]:
+        if not chunk_ids:
+            return {"deleted": 0}
+        # determine groups impacted
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        placeholders = ",".join("?" for _ in chunk_ids)
+        cursor.execute(f"SELECT DISTINCT group_id FROM rag_chunks WHERE id IN ({placeholders})", chunk_ids)
+        groups = [r[0] for r in cursor.fetchall()]
+        cursor.execute(f"DELETE FROM rag_chunks WHERE id IN ({placeholders})", chunk_ids)
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        for g in groups:
+            self._rebuild_group_index(g)
+        return {"deleted": deleted}
+
+    def cleanup_orphan_chunks(self) -> Dict[str, Any]:
+        """Rimuove i chunks orfani (document_id non esistente) e ricostruisce gli indici dei gruppi impattati.
+
+        Returns:
+            Dict con numero di chunks rimossi e gruppi aggiornati.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        # Trova chunks con document_id che non esiste più
+        cursor.execute("""
+            SELECT c.id, c.group_id FROM rag_chunks c
+            LEFT JOIN rag_documents d ON c.document_id = d.id
+            WHERE d.id IS NULL
+        """)
+        rows = cursor.fetchall()
+        if not rows:
+            conn.close()
+            return {"removed": 0, "groups_reindexed": []}
+        chunk_ids = [r[0] for r in rows]
+        groups = sorted({r[1] for r in rows if r[1] is not None})
+        placeholders = ",".join("?" for _ in chunk_ids)
+        cursor.execute(f"DELETE FROM rag_chunks WHERE id IN ({placeholders})", chunk_ids)
+        removed = cursor.rowcount
+        conn.commit()
+        conn.close()
+        for g in groups:
+            self._rebuild_group_index(g)
+        return {"removed": removed, "groups_reindexed": groups}
+
+    # ===== Storage & Files =====
+    def get_document_file(self, document_id: int) -> Optional[Dict[str, Any]]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename, original_filename FROM rag_documents WHERE id = ?", (document_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        files_dir = self.data_dir / "files"
+        file_path = files_dir / row[0]
+        if not file_path.exists():
+            return None
+        mime_type = "application/octet-stream"
+        try:
+            import mimetypes
+            mime_type = mimetypes.guess_type(row[1])[0] or mime_type
+        except Exception:
+            pass
+        return {"filename": row[1], "file_bytes": file_path.read_bytes(), "mime_type": mime_type}
+
+    def get_document_file_url(self, document_id: int) -> str:
+        return f"/api/rag/download/{document_id}"
+
+    def get_storage_stats(self) -> Dict[str, Any]:
+        files_dir = self.data_dir / "files"
+        stats = {
+            "total_files": 0,
+            "total_size_bytes": 0,
+            "largest_files": [],
+            "storage_by_type": {},
+            "orphaned_files": []
+        }
+        if not files_dir.exists():
+            return stats
+        for p in files_dir.iterdir():
+            if p.is_file():
+                size = p.stat().st_size
+                stats["total_files"] += 1
+                stats["total_size_bytes"] += size
+                ext = p.suffix.lower() or "none"
+                stats["storage_by_type"].setdefault(ext, {"count": 0, "size": 0})
+                stats["storage_by_type"][ext]["count"] += 1
+                stats["storage_by_type"][ext]["size"] += size
+                stats["largest_files"].append({"filename": p.name, "size": size})
+        stats["largest_files"].sort(key=lambda x: x["size"], reverse=True)
+        stats["largest_files"] = stats["largest_files"][:10]
+        # orphan detection: files without document reference
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename FROM rag_documents")
+        valid = {r[0] for r in cursor.fetchall()}
+        conn.close()
+        for p in files_dir.iterdir():
+            if p.is_file() and p.name not in valid:
+                stats["orphaned_files"].append({"filename": p.name, "size": p.stat().st_size})
+        return stats
+
+    def cleanup_orphaned_files(self) -> Dict[str, Any]:
+        files_dir = self.data_dir / "files"
+        if not files_dir.exists():
+            return {"removed": 0}
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename FROM rag_documents")
+        valid = {r[0] for r in cursor.fetchall()}
+        conn.close()
+        removed = 0
+        for p in files_dir.iterdir():
+            if p.is_file() and p.name not in valid:
+                try:
+                    p.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+        return {"removed": removed}
 
 # Istanza globale
 rag_engine = RAGEngine()

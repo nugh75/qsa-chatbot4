@@ -35,7 +35,6 @@ from .transcribe import whisper_service
 from .auth import AuthManager, get_current_admin_user
 from pathlib import Path
 import re
-import sqlite3
 import bcrypt
 import secrets
 import string
@@ -2164,202 +2163,6 @@ async def set_whisper_model(request: WhisperSetModelRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore impostazione modello: {str(e)}")
 
-# ==== ADMIN RAG ENDPOINTS ====
-from .rag_engine import rag_engine
-from . import embedding_manager
-
-class RAGGroupRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-class RAGGroupUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-
-# ==== EMBEDDING CONFIG ENDPOINTS ====
-class EmbeddingSetRequest(BaseModel):
-    provider_type: str
-    model_name: str
-
-class EmbeddingDownloadRequest(BaseModel):
-    model_name: str
-
-@router.get("/admin/rag/embedding/config")
-async def get_embedding_config():
-    try:
-        cfg = embedding_manager.get_config()
-        # Augment with runtime provider info
-        try:
-            prov = embedding_manager.get_provider()
-            cfg["runtime"] = prov.info()
-        except Exception as e:  # provider non caricato
-            cfg["runtime_error"] = str(e)
-        return {"success": True, "config": cfg}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore caricamento embedding config: {e}")
-
-@router.get("/admin/rag/embedding/local-models")
-async def list_local_embedding_models():
-    try:
-        return {"success": True, "models": embedding_manager.list_local_models()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore elenco modelli: {e}")
-
-@router.post("/admin/rag/embedding/set")
-async def set_embedding_provider(req: EmbeddingSetRequest):
-    try:
-        embedding_manager.set_provider(req.provider_type, req.model_name)
-        info = embedding_manager.get_config()
-        # Nota: cambiamento di dimensione potrebbe richiedere reindicizzazione manuale
-        return {"success": True, "message": "Provider embedding aggiornato", "config": info}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore set provider: {e}")
-
-@router.post("/admin/rag/embedding/download/start")
-async def start_embedding_download(req: EmbeddingDownloadRequest):
-    try:
-        task_id = embedding_manager.start_model_download(req.model_name)
-        return {"success": True, "task_id": task_id}
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore avvio download: {e}")
-
-@router.get("/admin/rag/embedding/download/status")
-async def get_embedding_download_status(task_id: str):
-    try:
-        status = embedding_manager.download_status(task_id)
-        if not status:
-            raise HTTPException(status_code=404, detail="Task non trovato")
-        return {"success": True, "status": status}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore status download: {e}")
-
-@router.get("/admin/rag/embedding/download/tasks")
-async def list_embedding_download_tasks():
-    try:
-        tasks = embedding_manager.download_tasks()
-        return {"success": True, "tasks": tasks}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore elenco tasks: {e}")
-
-@router.get("/admin/rag/stats")
-async def admin_get_rag_stats():
-    """Get RAG statistics for admin panel"""
-    try:
-        stats = rag_engine.get_stats()
-        return {"success": True, "stats": stats}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/admin/rag/groups")
-async def admin_get_rag_groups():
-    """Get all RAG groups for admin panel"""
-    try:
-        groups = rag_engine.get_groups()
-        return {"success": True, "groups": groups}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/admin/rag/groups")
-async def admin_create_rag_group(request: RAGGroupRequest):
-    """Create new RAG group for admin panel"""
-    try:
-        group_id = rag_engine.create_group(request.name, request.description)
-        return {"success": True, "group_id": group_id, "message": f"Gruppo '{request.name}' creato con successo"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/admin/rag/groups/{group_id}")
-async def admin_delete_rag_group(group_id: int):
-    """Delete RAG group for admin panel"""
-    try:
-        rag_engine.delete_group(group_id)
-        return {"success": True, "message": "Gruppo eliminato con successo"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.put("/admin/rag/groups/{group_id}")
-async def admin_update_rag_group(group_id: int, request: RAGGroupUpdateRequest):
-    """Update RAG group for admin panel"""
-    try:
-        rag_engine.update_group(group_id, request.name, request.description)
-        return {"success": True, "message": "Gruppo aggiornato con successo"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.post("/admin/rag/upload")
-async def admin_upload_rag_document(
-    group_id: int = Form(...),
-    file: UploadFile = File(...)
-):
-    """Upload document to RAG group for admin panel"""
-    import tempfile
-    import os
-    
-    try:
-        # Check if file is PDF
-        if not file.filename.lower().endswith('.pdf'):
-            raise HTTPException(status_code=400, detail="Solo file PDF sono supportati")
-        
-        # Save file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            content_bytes = await file.read()
-            temp_file.write(content_bytes)
-            temp_file_path = temp_file.name
-        
-        try:
-            # Extract text from PDF
-            from .file_processing import extract_text_from_pdf
-            text_content = extract_text_from_pdf(temp_file_path)
-            
-            if not text_content.strip():
-                raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
-            
-            # Add document to group
-            document_id = rag_engine.add_document(
-                group_id=group_id,
-                filename=file.filename,
-                content=text_content,
-                original_filename=file.filename
-            )
-            
-            return {
-                "success": True, 
-                "document_id": document_id,
-                "message": f"Documento '{file.filename}' caricato con successo"
-            }
-            
-        finally:
-            # Clean up temporary file
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)
-                
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/admin/rag/groups/{group_id}/documents")
-async def admin_get_rag_documents(group_id: int):
-    """Get documents in RAG group for admin panel"""
-    try:
-        documents = rag_engine.get_group_documents(group_id)
-        return {"success": True, "documents": documents}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.delete("/admin/rag/documents/{document_id}")
-async def admin_delete_rag_document(document_id: int):
-    """Delete RAG document for admin panel"""
-    try:
-        rag_engine.delete_document(document_id)
-        return {"success": True, "message": "Documento eliminato con successo"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ==== ADMIN USER MANAGEMENT ENDPOINTS ====
 import bcrypt
 import secrets
@@ -2368,6 +2171,7 @@ import string
 class UserResetPasswordRequest(BaseModel):
     user_id: int
 
+import sqlite3
 @router.get("/admin/users")
 async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""

@@ -169,20 +169,23 @@ def format_response_with_citations(response: str, search_results: List[Dict]) ->
     # Cerca pattern di citazioni nel response e aggiungi link
     import re
     
-    # Pattern per citazioni: [📄 filename]
-    citation_pattern = r'\[📄\s+([^\]]+)\]'
+    # Pattern per citazioni: [ filename]
+    # Pattern più flessibile per citazioni come [filename.pdf] o [ filename.pdf ]
+    citation_pattern = r'\[\s*([^\]]+?)\s*\]'
     
     def replace_citation(match):
         filename = match.group(1).strip()
         if filename in file_links:
-            return f"[📄 {filename}]({file_links[filename]})"
+            # Restituisce un link markdown. Usa il nome file originale per il testo del link.
+            return f"[{filename}]({file_links[filename]})"
         return match.group(0)  # Return original if no link found
     
     response_with_links = re.sub(citation_pattern, replace_citation, response)
     
     # Se non ci sono citazioni esplicite ma abbiamo risultati, aggiungi sezione fonti
-    if citation_pattern not in response_with_links and file_links:
-        sources_section = "\n\n**📚 Fonti consultate:**\n"
+    # Controlla se sono stati effettivamente creati dei link. Se no, aggiungi la sezione.
+    if not re.search(r'\(.*/api/rag/download/.*\)', response_with_links) and file_links:
+        sources_section = "\n\n**Fonti consultate:**\n"
         for filename, link in file_links.items():
             sources_section += f"- [{filename}]({link})\n"
         response_with_links += sources_section

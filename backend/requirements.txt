@@ -27,3 +27,6 @@ numpy
 scikit-learn
 langchain-text-splitters
 tiktoken
+openpyxl
+beautifulsoup4
+striprtf

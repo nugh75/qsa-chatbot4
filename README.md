@@ -19,6 +19,11 @@ An advanced AI chatbot with comprehensive RAG (Retrieval-Augmented Generation) s
 - **💾 Chat Export**: JSON conversation export
 - **🔒 Security**: JWT authentication, encrypted conversations
 
+### Recent Improvements
+- **Collapsible Sources**: The "Topics and Sources" section in the chat is now collapsible for a cleaner interface.
+- **Clearer Document References**: The sources list now displays document IDs for better clarity.
+- **Controlled Source Display**: The backend no longer automatically appends a list of consulted sources, giving more control over the chat output.
+
 ### RAG System
 - **📄 PDF Processing**: Automatic text extraction and intelligent chunking
 - **🧠 Semantic Search**: HuggingFace sentence-transformers with FAISS vector indexing
@@ -507,6 +512,11 @@ Un chatbot AI avanzato con sistema RAG (Retrieval-Augmented Generation) completo
 - **🎨 Interfaccia Moderna**: Design pulito con icone SVG professionali
 - **💾 Esportazione Chat**: Esportazione conversazioni in JSON
 - **🔒 Sicurezza**: Autenticazione JWT, conversazioni crittografate
+
+### Miglioramenti Recenti
+- **Fonti Comprimibili**: La sezione "Topic e Fonti" nella chat è ora comprimibile per un'interfaccia più pulita.
+- **Riferimenti ai Documenti più Chiari**: L'elenco delle fonti ora mostra gli ID dei documenti per una maggiore chiarezza.
+- **Visualizzazione Controllata delle Fonti**: Il backend non aggiunge più automaticamente un elenco di fonti consultate, offrendo un maggiore controllo sulla risposta del chat.
 
 ### Sistema RAG
 - **📄 Processamento PDF**: Estrazione automatica testo e chunking intelligente

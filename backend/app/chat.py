@@ -349,14 +349,22 @@ async def chat(
     # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
         sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+        # Import rag_engine early so we can compute file URLs for each chunk
+        try:
+            from .rag_engine import rag_engine as _rag_engine_for_urls
+        except Exception:
+            _rag_engine_for_urls = None
         if rag_results:
             sources["rag_chunks"] = [
                 {
+                    "chunk_id": r.get("chunk_id"),
+                    "document_id": r.get("document_id"),
                     "chunk_index": r.get("chunk_index"),
                     "filename": r.get("filename"),
                     "similarity": r.get("similarity"),
                     "preview": r.get("preview"),
-                    "content": r.get("content")
+                    "content": r.get("content"),
+                    "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
                 } for r in rag_results[:10]
             ]
         if topic and (not personality_enabled_topics or topic in (personality_enabled_topics or [])):
@@ -674,14 +682,21 @@ async def chat_stream(
                     from .personalities import load_topic_descriptions as _ltd
                     _td2 = _ltd()
                     sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+                    try:
+                        from .rag_engine import rag_engine as _rag_engine_for_urls
+                    except Exception:
+                        _rag_engine_for_urls = None
                     if rag_results:
                         sources["rag_chunks"] = [
                             {
+                                "chunk_id": r.get("chunk_id"),
+                                "document_id": r.get("document_id"),
                                 "chunk_index": r.get("chunk_index"),
                                 "filename": r.get("filename"),
                                 "similarity": r.get("similarity"),
                                 "preview": r.get("preview"),
-                                "content": r.get("content")
+                                "content": r.get("content"),
+                                "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
                             } for r in rag_results[:10]
                         ]
                     if topic:
@@ -811,14 +826,21 @@ async def chat_stream(
                 from .personalities import load_topic_descriptions as _ltd3
                 _td3 = _ltd3()
                 sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+                try:
+                    from .rag_engine import rag_engine as _rag_engine_for_urls
+                except Exception:
+                    _rag_engine_for_urls = None
                 if rag_results:
                     sources_final["rag_chunks"] = [
                         {
+                            "chunk_id": r.get("chunk_id"),
+                            "document_id": r.get("document_id"),
                             "chunk_index": r.get("chunk_index"),
                             "filename": r.get("filename"),
                             "similarity": r.get("similarity"),
                             "preview": r.get("preview"),
-                            "content": r.get("content")
+                            "content": r.get("content"),
+                            "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
                         } for r in rag_results[:10]
                     ]
                 if topic:

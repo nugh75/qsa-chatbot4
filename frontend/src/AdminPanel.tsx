@@ -25,6 +25,7 @@ import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
 import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
 import MCPPanel from './components/MCPPanel'
+import NewRAGAdminPanel from './components/NewRAGAdminPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
 import FooterSettingsPanel from './components/FooterSettingsPanel'
 import { apiService } from './apiService'
@@ -58,6 +59,7 @@ const AdminPanel: React.FC = () => {
     { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
     { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
+    { id: 'new_rag', label: 'Nuovo RAG Admin', panels: ['new_rag_admin'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
@@ -79,6 +81,7 @@ const AdminPanel: React.FC = () => {
   apidocs: false,
   embedding: false,
   ragdocs: false,
+  new_rag_admin: true,
   whisper_health: false,
   pipeline: false,
   welcome_guides: false,
@@ -737,6 +740,21 @@ const AdminPanel: React.FC = () => {
       </AccordionSummary>
       <AccordionDetails>
         <MCPPanel />
+      </AccordionDetails>
+    </Accordion>
+  )}
+
+  {/* Nuovo RAG Admin */}
+  {panelVisible('new_rag_admin') && (
+    <Accordion expanded={expandedPanels.new_rag_admin} onChange={handlePanelExpansion('new_rag_admin')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <StorageIcon fontSize="small" />
+          <Typography variant="h6">Nuovo RAG Administration</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails sx={{ p: 0 }}>
+        <NewRAGAdminPanel />
       </AccordionDetails>
     </Accordion>
   )}

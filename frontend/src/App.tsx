@@ -34,7 +34,7 @@ import ChatToolbar from './components/ChatToolbar'
 import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
-import AdminPanel from './AdminPanel'
+import NewRAGAdminPanel from './components/NewRAGAdminPanel'
 import { ThemeProvider } from '@mui/material/styles'
 import { appTheme } from './theme'
 import RAGContextSelector from './components/RAGContextSelector'
@@ -63,11 +63,12 @@ type RAGResult = {
   similarity?: number
   preview?: string
   content?: string
+  file_url?: string | null
 }
 
 // Nuova struttura fonti consolidata dal backend (source_docs)
 type SourceDocs = {
-  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string }[]
+  rag_chunks?: { chunk_id?: any; document_id?: any; chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; file_url?: string | null }[]
   pipeline_topics?: { name: string; description?: string | null }[]
   rag_groups?: { id: any; name: string }[]
 }
@@ -990,7 +991,7 @@ const AppContent: React.FC = () => {
   }
   // Routing semplice basato sull'URL (admin handled outside wrapper too but keep safeguard)
   if (window.location.pathname === '/admin') {
-    return <AdminPanel />
+    return <NewRAGAdminPanel />
   }
 
   const [selectedChunk, setSelectedChunk] = useState<RAGResult|null>(null)
@@ -1314,10 +1315,14 @@ const AppContent: React.FC = () => {
                                   const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
                                   const preview = (r.preview || '').replace(/\s+/g,' ').trim()
                                   const shortPrev = preview ? (preview.length>180 ? preview.slice(0,180)+"…" : preview) : ''
-                                  const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarità: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`
+                                  const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarità: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}${r.file_url?`\nURL: ${r.file_url}`:''}`
                                   return (
                                     <Tooltip key={`sc-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
-                                      <Chip size="small" label={label} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                      <Chip size="small" label={label} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18, display:'flex', alignItems:'center', gap:0.3 }}
+                                        icon={r.file_url ? <DownloadIcon sx={{ fontSize:10 }} /> : undefined}
+                                        onDelete={r.file_url ? (e)=>{ e.stopPropagation(); window.open(r.file_url!, '_blank'); } : undefined}
+                                        deleteIcon={r.file_url ? <DownloadIcon sx={{ fontSize:12 }} /> : undefined}
+                                      />
                                     </Tooltip>
                                   )
                                         })}
@@ -1871,7 +1876,7 @@ const AppContent: React.FC = () => {
 export default function App() {
   // Routing semplice basato sull'URL
   if (window.location.pathname === '/admin') {
-    return <AdminPanel />
+    return <NewRAGAdminPanel />
   }
   if (window.location.pathname === '/survey-results') {
     return (

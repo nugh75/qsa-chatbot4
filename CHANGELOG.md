@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.1 - 2025-09-01
+
+### Changed
+- **Frontend**: The "Topic e Fonti" (Topics and Sources) section in the chat is now collapsible to improve user experience.
+- **Frontend**: The "Topic e Fonti" section now displays document IDs instead of filenames, providing a clearer reference to the source documents.
+- **Backend**: Removed the automatic "Fonti consultate" (Sources consulted) section that was appended to the chatbot's response when no explicit citations were found. This gives more control over the output.
+
+### Fixed
+- **Frontend**: The list of sources now correctly displays unique document IDs, sorted by relevance, and no longer shows individual data chunks.
+
 ## v0.5.0 - 2025-08-31
 
 ### Added - Sistema MCP (Model Context Protocol)

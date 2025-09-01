@@ -39,17 +39,17 @@ class RAGEngine:
         self.embedding_model = None
         self.dimension = 384  # aggiornato dal provider quando disponibile
         
-        # Percorsi file
+        # Percorsi file (indentazione corretta)
         self.base_dir = Path(__file__).parent.parent
         self.data_dir = self.base_dir / "storage" / "rag_data"
         self.embeddings_dir = self.data_dir / "embeddings"
+        # Directory per i file originali caricati (per download successivo)
+        self.originals_dir = self.data_dir / "originals"
         self.db_path = self.base_dir / "storage" / "databases" / "rag.db"
-        
+
         # Crea directory se non esistono
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.embeddings_dir.mkdir(parents=True, exist_ok=True)
-        # Assicurati che esista anche la directory per il database
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        for d in (self.data_dir, self.embeddings_dir, self.originals_dir, self.db_path.parent):
+            d.mkdir(parents=True, exist_ok=True)
         
         # Text splitter per chunking
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -653,6 +653,8 @@ class RAGEngine:
         results = []
         for row in cursor.fetchall():
             metadata = json.loads(row[3]) if row[3] else {}
+            # Etichetta chunk per UI / tracking
+            chunk_label = f"{row[6] or row[5]}#chunk_{row[2]}" if (row[5] or row[6]) else f"chunk_{row[2]}"
             results.append({
                 "chunk_id": row[0],
                 "content": row[1],
@@ -661,7 +663,9 @@ class RAGEngine:
                 "document_id": row[4],
                 "filename": row[5],
                 "original_filename": row[6],
-                "stored_filename": row[7]
+                "stored_filename": row[7],
+                "chunk_label": chunk_label,
+                "download_url": f"/api/rag/download/{row[4]}"
             })
         
         conn.close()

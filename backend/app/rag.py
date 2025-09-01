@@ -182,7 +182,7 @@ def format_response_with_citations(response: str, search_results: List[Dict]) ->
     
     # Se non ci sono citazioni esplicite ma abbiamo risultati, aggiungi sezione fonti
     if citation_pattern not in response_with_links and file_links:
-        sources_section = "\n\n**📚 Fonti consultate:**\n"
+        sources_section = "\n\n**Fonti consultate:**\n"
         for filename, link in file_links.items():
             sources_section += f"- [{filename}]({link})\n"
         response_with_links += sources_section

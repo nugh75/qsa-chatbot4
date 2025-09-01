@@ -331,13 +331,13 @@ export default function NewRAGAdminPanel() {
             <Card>
               <CardHeader title="Gruppi" />
               <CardContent>
-                {ragStats.stats.group_breakdown.map((group, index) => (
+                {(ragStats.stats?.group_breakdown || []).map((group: any, index: number) => (
                   <Box key={index} mb={1}>
                     <Typography variant="subtitle2">{group.group_name}</Typography>
                     <Typography variant="body2" color="textSecondary">
                       {group.documents} documenti, {group.chunks} chunks
                     </Typography>
-                    {index < ragStats.stats!.group_breakdown.length - 1 && <Divider sx={{ my: 1 }} />}
+                    {index < ((ragStats.stats?.group_breakdown?.length) || 0) - 1 && <Divider sx={{ my: 1 }} />}
                   </Box>
                 ))}
               </CardContent>
@@ -424,15 +424,7 @@ export default function NewRAGAdminPanel() {
                 />
                 <CardContent>
                   <RAGDocumentsPanel
-                    groupName={ragGroups.selectedGroup.name}
                     documents={ragDocuments.documents}
-                    selectedDocuments={new Set()}
-                    onToggleSelect={() => {}}
-                    onToggleSelectAll={() => {}}
-                    formatBytes={(bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)} MB`}
-                    formatDate={(date: string) => new Date(date).toLocaleDateString('it-IT')}
-                    onUploadClick={() => setUploadDialog(true)}
-                    onDeleteDocument={() => {}}
                   />
                 </CardContent>
               </Card>
@@ -474,22 +466,7 @@ export default function NewRAGAdminPanel() {
                 />
                 <CardContent>
                   <RAGChunksPanel
-                    groupName={ragGroups.selectedGroup.name}
                     chunks={ragChunks.chunks}
-                    loading={ragChunks.loading}
-                    searchTerm={ragChunks.searchTerm}
-                    onSearchTermChange={ragChunks.setSearchTerm}
-                    onSearch={() => ragChunks.search(ragGroups.selectedGroup?.id)}
-                    selected={ragChunks.selected}
-                    onToggleSelect={ragChunks.toggleSelect}
-                    onToggleSelectAll={ragChunks.toggleSelectAll}
-                    onView={() => {}}
-                    onEdit={() => {}}
-                    onDelete={ragChunks.deleteOne}
-                    pagination={ragChunks.pagination}
-                    onPageChange={ragChunks.setPage}
-                    onQualityAnalysis={() => {}}
-                    onCleanupOrphans={() => setCleanupDialog(true)}
                   />
                 </CardContent>
               </Card>

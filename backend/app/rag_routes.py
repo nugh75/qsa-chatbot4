@@ -124,6 +124,16 @@ async def upload_documents(
                 temp_file.write(content)
                 temp_file_path = temp_file.name
             
+            # Salva file originale per download futuro
+            stored_filename = f"{uuid.uuid4().hex}_{filename}"
+            try:
+                # Copia contenuto binario nella directory originals del rag_engine
+                originals_path = rag_engine.originals_dir / stored_filename
+                with open(originals_path, 'wb') as of:
+                    of.write(content)
+            except Exception as e:
+                print(f"[RAG][upload] Impossibile salvare file originale: {e}")
+
             # Estrai testo
             try:
                 if file_ext == 'pdf':
@@ -145,7 +155,8 @@ async def upload_documents(
                     group_id=group_id,
                     filename=f"{uuid.uuid4().hex}_{filename}",
                     content=text_content,
-                    original_filename=filename
+                    original_filename=filename,
+                    stored_filename=stored_filename
                 )
                 
                 processed_files.append({
@@ -266,9 +277,26 @@ def get_user_context(session_id: str = "default") -> List[int]:
 
 @router.get("/rag/download/{document_id}")
 async def download_document(document_id: int):
-    """Download del documento originale (placeholder - implementazione futura)"""
-    # Questa funzionalità richiederebbe storage dei file originali
-    raise HTTPException(status_code=501, detail="Download non ancora implementato")
+    """Download del documento originale se presente, altrimenti fallback testo ricostruito."""
+    from .rag_engine import rag_engine as _re
+    doc = _re.get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento non trovato")
+    stored = doc.get('stored_filename')
+    if stored:
+        file_path = _re.originals_dir / stored
+        if file_path.exists():
+            media_type, _ = mimetypes.guess_type(str(file_path))
+            return FileResponse(path=str(file_path), filename=doc.get('original_filename') or stored, media_type=media_type or 'application/octet-stream')
+    # Fallback ricostruzione testo
+    try:
+        export = _re.export_document(document_id)
+        chunks = export.get('chunks', [])
+        text = "\n".join(c.get('content','') for c in chunks)
+        import io
+        return FileResponse(path_or_file=io.BytesIO(text.encode('utf-8')), filename=(doc.get('original_filename') or f'document_{document_id}.txt'), media_type='text/plain')
+    except Exception:
+        raise HTTPException(status_code=500, detail="Impossibile ricostruire il documento")
 
 # Route per testing e debugging
 @router.get("/rag/debug/groups/{group_id}/chunks")

@@ -287,24 +287,41 @@ async def chat(
             
             selected_groups = get_user_context(session_id)
             if selected_groups:
-                search_results = rag_engine.search(
-                    query=full_user_message,
-                    group_ids=selected_groups,
-                    top_k=5
-                )
-                # Conserva per logging
-                rag_results = [
-                    {
+                # Se l'utente non ha selezionato gruppi ma il contesto RAG è stato creato, effettua fallback auto-select
+                if not selected_groups:
+                    try:
+                        all_groups = rag_engine.get_groups()
+                        auto_groups = [g['id'] for g in all_groups if g.get('document_count')]
+                        selected_groups = auto_groups[:5]
+                        if selected_groups:
+                            print(f"[RAG][fallback][non-stream] uso gruppi {selected_groups} per costruire rag_results")
+                    except Exception as _ae:
+                        print(f"[RAG][fallback][non-stream] errore selezione gruppi: {_ae}")
+
+                search_results = []
+                if selected_groups:
+                    search_results = rag_engine.search(
+                        query=full_user_message,
+                        group_ids=selected_groups,
+                        top_k=5
+                    ) or []
+                # Conserva per logging (propaga tutti i campi utili inclusi chunk_label / download_url se presenti)
+                rag_results = []
+                for r in search_results:
+                    rag_results.append({
                         "chunk_id": r.get("chunk_id"),
                         "document_id": r.get("document_id"),
                         "filename": r.get("filename"),
+                        "original_filename": r.get("original_filename"),
                         "stored_filename": r.get("stored_filename"),
                         "chunk_index": r.get("chunk_index"),
                         "similarity": r.get("similarity_score"),
                         "preview": (r.get("content") or "")[:200],
-                        "content": r.get("content")
-                    } for r in (search_results or [])
-                ]
+                        "content": r.get("content"),
+                        "chunk_label": r.get("chunk_label"),
+                        "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None)
+                    })
+                print(f"[RAG][non-stream] rag_results={len(rag_results)}")
                 answer = format_response_with_citations(answer, search_results)
         except Exception as e:
             print(f"Errore nell'aggiunta citazioni: {e}")
@@ -356,7 +373,9 @@ async def chat(
                     "stored_filename": r.get("stored_filename"),
                     "similarity": r.get("similarity"),
                     "preview": r.get("preview"),
-                    "content": r.get("content")
+                    "content": r.get("content"),
+                    "chunk_label": r.get("chunk_label"),
+                    "download_url": f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None
                 } for r in rag_results[:10]
             ]
         if topic and (not personality_enabled_topics or topic in (personality_enabled_topics or [])):
@@ -646,25 +665,40 @@ async def chat_stream(
                         from .rag_engine import rag_engine
                         from .rag_routes import get_user_context as _get_uc
                         sel_groups = _get_uc(session_id)
-                        if sel_groups:
-                            _sr = rag_engine.search(query=full_user_message, group_ids=sel_groups, top_k=5)
-                            rag_results = [
-                                {
-                                    "chunk_id": r.get("chunk_id"),
-                                    "document_id": r.get("document_id"),
-                                    "filename": r.get("filename"),
-                                    "chunk_index": r.get("chunk_index"),
-                                    "similarity": r.get("similarity_score"),
-                                    "preview": (r.get("content") or "")[:200],
-                                    "content": r.get("content")
-                                } for r in (_sr or [])
-                            ]
-                            # Ordina per similarità desc se presente
+                        # Fallback auto-select se vuoto
+                        if not sel_groups:
                             try:
-                                rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
-                            except Exception:
-                                pass
-                    except Exception:
+                                all_groups = rag_engine.get_groups()
+                                sel_groups = [g['id'] for g in all_groups if g.get('document_count')][:5]
+                                if sel_groups:
+                                    print(f"[RAG][fallback][stream] uso gruppi {sel_groups}")
+                            except Exception as _se:
+                                print(f"[RAG][fallback][stream] errore selezione gruppi: {_se}")
+                        _sr = []
+                        if sel_groups:
+                            _sr = rag_engine.search(query=full_user_message, group_ids=sel_groups, top_k=5) or []
+                        rag_results = []
+                        for r in _sr:
+                            rag_results.append({
+                                "chunk_id": r.get("chunk_id"),
+                                "document_id": r.get("document_id"),
+                                "filename": r.get("filename"),
+                                "original_filename": r.get("original_filename"),
+                                "stored_filename": r.get("stored_filename"),
+                                "chunk_index": r.get("chunk_index"),
+                                "similarity": r.get("similarity_score"),
+                                "preview": (r.get("content") or "")[:200],
+                                "content": r.get("content"),
+                                "chunk_label": r.get("chunk_label"),
+                                "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None)
+                            })
+                        try:
+                            rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
+                        except Exception:
+                            pass
+                        print(f"[RAG][stream] rag_results={len(rag_results)}")
+                    except Exception as _re:
+                        print(f"[RAG][stream] errore recupero rag_results: {_re}")
                         rag_results = []
                 # Invia meta iniziale con source_docs
                 try:
@@ -674,11 +708,16 @@ async def chat_stream(
                     if rag_results:
                         sources["rag_chunks"] = [
                             {
+                                "chunk_id": r.get("chunk_id"),
+                                "document_id": r.get("document_id"),
                                 "chunk_index": r.get("chunk_index"),
-                                "filename": r.get("filename"),
+                                "filename": r.get("original_filename") or r.get("filename"),
+                                "stored_filename": r.get("stored_filename"),
                                 "similarity": r.get("similarity"),
                                 "preview": r.get("preview"),
-                                "content": r.get("content")
+                                "content": r.get("content"),
+                                "chunk_label": r.get("chunk_label"),
+                                "download_url": r.get("download_url")
                             } for r in rag_results[:10]
                         ]
                     if topic:
@@ -811,11 +850,16 @@ async def chat_stream(
                 if rag_results:
                     sources_final["rag_chunks"] = [
                         {
+                            "chunk_id": r.get("chunk_id"),
+                            "document_id": r.get("document_id"),
                             "chunk_index": r.get("chunk_index"),
-                            "filename": r.get("filename"),
+                            "filename": r.get("original_filename") or r.get("filename"),
+                            "stored_filename": r.get("stored_filename"),
                             "similarity": r.get("similarity"),
                             "preview": r.get("preview"),
-                            "content": r.get("content")
+                            "content": r.get("content"),
+                            "chunk_label": r.get("chunk_label"),
+                            "download_url": r.get("download_url")
                         } for r in rag_results[:10]
                     ]
                 if topic:

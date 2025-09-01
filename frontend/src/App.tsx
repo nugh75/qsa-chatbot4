@@ -67,7 +67,7 @@ type RAGResult = {
 
 // Nuova struttura fonti consolidata dal backend (source_docs)
 type SourceDocs = {
-  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string }[]
+  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string; chunk_label?: string; download_url?: string }[]
   pipeline_topics?: { name: string; description?: string | null }[]
   rag_groups?: { id: any; name: string }[]
 }
@@ -1292,21 +1292,29 @@ const AppContent: React.FC = () => {
                                           return (
                                             <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
                                               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:0.3 }}>
-                                                <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}>
-                                                  {baseName}
-                                                  {d.maxSim ? <Box component="span" sx={{ ml:1, fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
+                                                <Box sx={{ display:'flex', alignItems:'center', gap:0.8 }}>
+                                                  <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', display:'flex', alignItems:'center', gap:0.6 }}>
+                                                    {d.stored_filename && d.document_id ? (
+                                                      <Link href={d.chunks?.[0]?.download_url || `/api/rag/download/${d.document_id}`} target="_blank" rel="noopener" underline="hover" sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}>
+                                                        {baseName}
+                                                      </Link>
+                                                    ) : (
+                                                      baseName
+                                                    )}
+                                                    {d.maxSim ? <Box component="span" sx={{ fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
+                                                  </Box>
+                                                  {d.stored_filename && d.document_id && (
+                                                    <Tooltip title="Scarica file originale"><IconButton size="small" onClick={()=> window.open(d.chunks?.[0]?.download_url || `/api/rag/download/${d.document_id}`,'_blank')} sx={{ p:0.3 }}>
+                                                      <SmallDownloadIcon size={14} />
+                                                    </IconButton></Tooltip>
+                                                  )}
                                                 </Box>
-                                                {d.stored_filename && d.document_id && (
-                                                  <Tooltip title="Scarica PDF originale"><IconButton size="small" onClick={()=> window.open(`/admin/rag/documents/${d.document_id}/download`, '_blank')} sx={{ p:0.3 }}>
-                                                    <SmallDownloadIcon size={14} />
-                                                  </IconButton></Tooltip>
-                                                )}
                                               </Stack>
                                               <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.4 }}>
                                                 {d.chunks.slice(0,6).map((r,ci)=>{
                                                   const preview = (r.preview || '').replace(/\s+/g,' ').trim();
                                                   const shortPrev = preview ? (preview.length>160 ? preview.slice(0,160)+'…' : preview) : '';
-                                                  const tip = `Chunk ${r.chunk_index}${r.similarity? `\nSim: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`;
+                                                  const tip = `${r.chunk_label || ('Chunk '+r.chunk_index)}${r.similarity? `\nSim: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`;
                                                   return (
                                                     <Tooltip key={ci} title={<span style={{ whiteSpace:'pre-line', maxWidth:260, display:'block' }}>{tip}</span>} arrow>
                                                       <Chip size="small" label={`#${r.chunk_index}`} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
@@ -1318,6 +1326,12 @@ const AppContent: React.FC = () => {
                                                     <Chip size="small" label={`+${d.chunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
                                                   </Tooltip>
                                                 )}
+                                              </Box>
+                                              {/* Etichette chunk retrieval textual summary */}
+                                              <Box sx={{ mt:0.5 }}>
+                                                <Typography component="div" sx={{ fontSize:'0.55rem', color:'#666' }}>
+                                                  {d.chunks.slice(0,6).map((c,i)=> c.chunk_label || `chunk_${c.chunk_index}`).join(' | ')}{d.chunks.length>6? ' | ...':''}
+                                                </Typography>
                                               </Box>
                                             </Paper>
                                           );

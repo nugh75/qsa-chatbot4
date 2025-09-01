@@ -89,7 +89,7 @@ class ApiService {
     try {
       // Aggiungi header di autenticazione se disponibile
       const accessToken = CredentialManager.getAccessToken();
-      console.log('🔑 makeRequest - Access token from storage:', accessToken?.substring(0, 20) + '...');
+  console.log('makeRequest - Access token from storage:', accessToken?.substring(0, 20) + '...');
       
       if (accessToken) {
         options.headers = {
@@ -97,15 +97,15 @@ class ApiService {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         };
-        console.log('🔑 makeRequest - Added Authorization header');
+  console.log('makeRequest - Added Authorization header');
       } else if (!options.headers) {
         options.headers = {
           'Content-Type': 'application/json'
         };
-        console.log('🔑 makeRequest - No token found, only Content-Type header');
+  console.log('makeRequest - No token found, only Content-Type header');
       }
 
-      console.log('📡 makeRequest - Making request to:', `${API_BASE_URL}${endpoint}`);
+  console.log('makeRequest - Making request to:', `${API_BASE_URL}${endpoint}`);
       const response = await fetch(url, options);
       
       // Se token scaduto, prova refresh

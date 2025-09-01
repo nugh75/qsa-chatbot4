@@ -90,12 +90,12 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const loadConversations = useCallback(async () => {
     try {
       setLoading(true);
-      console.log('🔄 Caricamento conversazioni...');
-      console.log('🔑 UserCrypto disponibile:', !!userCrypto);
-      console.log('🔐 UserCrypto inizializzato:', userCrypto?.isKeyInitialized());
+  console.log('Caricamento conversazioni...');
+  console.log('UserCrypto disponibile:', !!userCrypto);
+  console.log('UserCrypto inizializzato:', userCrypto?.isKeyInitialized());
       
       const response = await apiService.getConversations();
-      console.log('📥 Risposta API conversazioni:', response);
+  console.log('Risposta API conversazioni:', response);
       
       if (response.success && response.data) {
         // Decripta i titoli delle conversazioni
@@ -138,7 +138,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
         setError(response.error || 'Errore nel caricamento conversazioni');
       }
     } catch (error) {
-      console.error('💥 Errore nel caricamento conversazioni:', error);
+  console.error('Errore nel caricamento conversazioni:', error);
       setError('Errore di connessione');
     } finally {
       setLoading(false);

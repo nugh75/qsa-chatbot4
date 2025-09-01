@@ -43,6 +43,7 @@ import SurveyForm from './SurveyForm'
 import SurveyResults from './SurveyResults'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
+import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { useTheme, useMediaQuery } from '@mui/material'
 import MobileChatBar from './components/MobileChatBar'
@@ -159,7 +160,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
             {extractedData.images && extractedData.images.length > 0 && (
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#9c27b0' }}>
-                  🖼️ Descrizioni Immagini
+                  Descrizioni Immagini
                 </Typography>
                 {extractedData.images.map((img: { image_num: number; source: string; full_description: string }, idx: number) => (
                   <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
@@ -278,7 +279,7 @@ const AppContent: React.FC = () => {
     return related.map(c => `### Chunk ${c.chunk_index}\n${c.content || c.preview || ''}` ).join('\n\n')
   }
 
-  // Inject links for bare [📄 filename] citations (no existing (url))
+  // Inject links for bare [DOC filename] citations (no existing (url))
   const injectDocLinks = (md: string, ragChunks?: SourceDocs['rag_chunks']): string => {
     if (!md) return md
     const normSet = new Set((ragChunks||[]).map(c => {
@@ -286,12 +287,12 @@ const AppContent: React.FC = () => {
       const base = fn.split('/').pop() || fn
       return normalizeDocName(base.split('_').pop() || base)
     }))
-    return md.replace(/\[📄\s+([^\]\(]+?)\](?!\()/g, (match, inner) => {
+  return md.replace(/\[DOC\s+([^\]\(]+?)\](?!\()/g, (match, inner) => {
       const raw = inner.trim()
       const norm = normalizeDocName(raw)
       const has = Array.from(normSet).some(f => f && (f === norm || f.includes(norm) || norm.includes(f)))
       if (!has) return match
-      return `[📄 ${raw}](doc://${encodeURIComponent(raw)})`
+  return `[DOC ${raw}](doc://${encodeURIComponent(raw)})`
     })
   }
 
@@ -390,7 +391,14 @@ const AppContent: React.FC = () => {
 
   const normalizeMarkdownForDisplay = (md: string): string => {
     if (!md) return md
-    let out = md.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
+  // 1. Converte sequenze letterali \n in newline reali (arrivano a volte escaped dal backend / provider)
+  let out = md.replace(/\\n/g, '\n')
+  // 2. Normalizza CRLF
+  out = out.replace(/\r\n?/g, '\n')
+  // 3. Garantisce che blocco "**Fonti consultate:**" inizi su linea propria
+  out = out.replace(/\n?\s*\*\*Fonti consultate:\*\*\s*/i, (m)=> `\n\n**Fonti consultate:**\n`)
+  // 4. Protegge i fenced code block senza toccare il contenuto tabellare
+  out = out.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
       const lines = inner.split('\n')
       for (let i = 0; i < lines.length - 1; i++) {
         if (lines[i].includes('|')) {
@@ -433,8 +441,11 @@ const AppContent: React.FC = () => {
       }
       converted.push(cur)
     }
-    out = converted.join('\n')
-    return out
+  out = converted.join('\n')
+  // 5. Collassa più di 2 newline in doppio newline per creare paragrafi puliti
+  out = out.replace(/\n{3,}/g, '\n\n')
+  // 6. Soft-break: mantieni singolo newline (ReactMarkdown + remark-breaks lo gestirà se plugin attivo)
+  return out
   }
 
   // Provider mappings
@@ -660,7 +671,7 @@ const AppContent: React.FC = () => {
           // Continua senza conversation_id per mantenere funzionalità
         }
       } else if (conversationId) {
-        console.log('🔄 Continuo conversazione esistente:', conversationId);
+  console.log('Continuo conversazione esistente:', conversationId);
       }
 
       // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
@@ -720,7 +731,7 @@ const AppContent: React.FC = () => {
         }))
         
         requestBody.conversation_history = recentHistory;
-        console.log('📝 Invio cronologia recente:', recentHistory.length, 'messaggi');
+  console.log('Invio cronologia recente:', recentHistory.length, 'messaggi');
       }
       
   // Streaming: crea placeholder messaggio assistant (unica bolla) con testo iniziale
@@ -1114,7 +1125,7 @@ const AppContent: React.FC = () => {
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
                     '& p': { m: 0 },
                   }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{
                       a: ({node, href, children, ...props}) => {
                         const h = href || ''
                         const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
@@ -1704,7 +1715,7 @@ const AppContent: React.FC = () => {
           )}
           {!guideLoading && activeGuide && (
             <Box sx={{ '& h1,h2,h3':{ mt:2 }, '& p':{ mb:1 } }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeGuide}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{activeGuide}</ReactMarkdown>
             </Box>
           )}
           {!guideLoading && !activeGuide && (
@@ -1840,7 +1851,7 @@ const AppContent: React.FC = () => {
           {!previewLoading && !previewError && (previewType === 'markdown' || previewType === 'text') && (
             previewType === 'markdown' ? (
               <Box sx={{ '& h1,& h2,& h3': { mt:2 }, '& pre': { p:1, bgcolor:'#f5f5f5', overflowX:'auto' } }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{previewContent}</ReactMarkdown>
               </Box>
             ) : (
               <Box component="pre" sx={{ whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'monospace', fontSize:'0.85rem', m:0 }}>

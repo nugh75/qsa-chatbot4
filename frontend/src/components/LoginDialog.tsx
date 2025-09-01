@@ -220,7 +220,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
 
     try {
       // Chiama API di registrazione
-      console.log('📡 Attempting registration with:', {
+  console.log('Attempting registration with:', {
         email: registerForm.email,
         password: registerForm.password.substring(0, 3) + '***'
       });
@@ -230,7 +230,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         password: registerForm.password,
       });
       
-      console.log('📡 Registration response:', response);
+  console.log('Registration response:', response);
 
       if (response.success && response.data?.access_token) {
         console.log('✅ Registration successful, token received:', response.data.access_token.substring(0, 20) + '...');
@@ -243,12 +243,12 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         );
         
         console.log('✅ Tokens saved to localStorage');
-        console.log('🔍 Checking saved token:', CredentialManager.getAccessToken()?.substring(0, 20) + '...');
+  console.log('Checking saved token:', CredentialManager.getAccessToken()?.substring(0, 20) + '...');
 
         // Poi ottieni info utente (ora il token è disponibile)
-        console.log('📡 Calling getCurrentUser...');
+  console.log('Calling getCurrentUser...');
         const userResponse = await apiService.getCurrentUser();
-        console.log('📡 getCurrentUser response:', userResponse);
+  console.log('getCurrentUser response:', userResponse);
 
         if (userResponse.success && userResponse.data) {
           const userInfo: UserInfo = {

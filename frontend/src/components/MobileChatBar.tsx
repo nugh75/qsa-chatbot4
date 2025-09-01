@@ -1,8 +1,9 @@
 import React from 'react'
-import { Paper, IconButton, TextField, Box, Tooltip, CircularProgress } from '@mui/material'
+import { Paper, IconButton, TextField, Box, Tooltip, CircularProgress, Badge } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import MicIcon from '@mui/icons-material/Mic'
 import StopIcon from '@mui/icons-material/Stop'
+import AttachFileIcon from '@mui/icons-material/AttachFile'
 
 interface MobileChatBarProps {
   value: string
@@ -14,13 +15,38 @@ interface MobileChatBarProps {
   onStopRecording: ()=> void
   disabled?: boolean
   isLoading?: boolean
+  onToggleAttachments?: ()=> void
+  attachmentsCount?: number
+  attachmentsOpen?: boolean
 }
 
 // Compact bottom action bar for small screens
-const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, canSend, isRecording, onStartRecording, onStopRecording, disabled, isLoading }) => {
+const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, canSend, isRecording, onStartRecording, onStopRecording, disabled, isLoading, onToggleAttachments, attachmentsCount = 0, attachmentsOpen = false }) => {
   return (
     <Paper elevation={6} sx={{ position:'fixed', bottom:0, left:0, right:0, p:1, borderRadius:0, display:'flex', alignItems:'center', gap:1, zIndex: (theme)=> theme.zIndex.appBar }}>
-  {/* Attachment icon removed for mobile UI cleanup */}
+      {onToggleAttachments && (
+        <Tooltip title={attachmentsOpen ? 'Nascondi allegati' : (attachmentsCount ? 'Mostra allegati' : 'Aggiungi allegati')}>
+          <span>
+            <IconButton
+              size="small"
+              onClick={onToggleAttachments}
+              color={attachmentsOpen || attachmentsCount>0 ? 'primary' : 'default'}
+              aria-label="allegati"
+              sx={{ width:40, height:40 }}
+            >
+              <Badge
+                color="primary"
+                badgeContent={attachmentsCount || 0}
+                overlap="circular"
+                max={9}
+                invisible={attachmentsCount === 0}
+              >
+                <AttachFileIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
       <Box sx={{ flex:1 }}>
         <TextField
           value={value}

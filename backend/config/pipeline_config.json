@@ -1,11 +1,11 @@
 {
   "routes": [
     {
-      "pattern": "\\b(analisi.*secondo livello|sintesi trasversale|raggruppamenti|collega i fattori)\\b",
-      "topic": "analisi_secondo_livello"
+      "pattern": "(?i)\\b(?:analisi\\s*(?:di\\s*)?(?:2(?:º|°)?|ii|secondo)[-\\s]*livello|sintesi[-\\s]*trasversale|raggruppament[oi]|colleg(?:a(?:re)?|ament[oi])\\s+i\\s+fattori|metti\\s+in\\s+relazione\\s+i\\s+fattori)\\b\n",
+      "topic": "Analisi di secondo livello"
     },
     {
-      "pattern": "\\b(fattori cognitivi|C[1-7]||strategie|organizzatori|metacognizione)\\b",
+      "pattern": "\\b(fattori cognitivi|C[1-7]|strategie|organizzatori|metacognizione)\\b",
       "topic": "Fattori cognitivi"
     },
     {
@@ -13,15 +13,15 @@
       "topic": "artefice_di_se_stessi"
     },
     {
-      "pattern": "\\b(FAQ|domande frequenti|domande e risposte|aiuto rapido|come fare)\\b",
-      "topic": "faq_qsa"
+      "pattern": "(?i)\\b(?:cosa\\s+(?:vuol(?:e| dire)|significa)|come\\s+(?:si|posso|faccio)\\s+(?:interpretare|leggere|capire)|perch[eé])\\b.*\\b(?:scheda|fattor[ei]|qsa|questionario)\\b\n",
+      "topic": "Risposte a domande sul QSA"
     },
     {
       "pattern": "\\b(Prendere appunti attivi|Spaced repetition|Mappe concettuali|Auto-spiegazione|Pomodoro|Elaborazione personale|Testing effect|Studio distribuito|Insegnare agli altri|Parole chiave|Uso di esempi|Multimodalità|Sintesi scritta|Uso di analogie|Studio collaborativo|Domande guida|Organizzazione del tempo|Uso della memoria visiva|Gestione delle pause|Riflessione metacognitiva)\\b",
       "topic": "strategie di apprendimento"
     },
     {
-      "pattern": "\\b fattori affettivo-movivazionali  | A[1-7] \\b",
+      "pattern": "(?i)\\b(?:fattori?\\s*affettiv[oi][- ]?motivazional[ei]?|a\\s*[1-7])\\b\n",
       "topic": "Fattori affettivo motivazionali"
     }
   ],
@@ -33,6 +33,8 @@
     "prva": "strategie_apprendimento.txt",
     "strategie di apprendimento": "strategie_apprendimento.txt",
     "Fattori affettivo motivazionali": "Fattori affettivo-motivazionale.md",
-    "Fattori cognitivi": "fattori-cognitivi.txt"
+    "Fattori cognitivi": "fattori-cognitivi.txt",
+    "Analisi di secondo livello": "analisi-di-secondo-livello.txt",
+    "Risposte a domande sul QSA": "domane-e-risposte.txt"
   }
 }

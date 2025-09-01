@@ -5,7 +5,7 @@ import hashlib
 import re
 from .prompts import load_system_prompt, get_system_prompt_by_id
 from .personalities import get_personality  # includes temperature & context config
-from .topic_router import detect_topic
+from .topic_router import detect_topic, detect_topics
 from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
 from .logging_utils import log_interaction, log_system
@@ -134,7 +134,8 @@ async def chat(
         memory = get_memory()
         # Aggiungi il messaggio dell'utente alla memoria (con allegati)
         topic = detect_topic(full_user_message)
-        memory.add_message(session_id, "user", full_user_message, {"topic": topic})
+        topics_multi = detect_topics(full_user_message)
+        memory.add_message(session_id, "user", full_user_message, {"topic": topic, "topics_multi": topics_multi})
     else:
         topic = detect_topic(full_user_message)
     
@@ -177,6 +178,8 @@ async def chat(
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
     rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     
     # Fallback al sistema legacy se RAG non trova nulla
@@ -360,7 +363,7 @@ async def chat(
     
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
-    resp = {"reply": answer, "topic": topic}
+    resp = {"reply": answer, "topic": topic, "topics": [t["topic"] for t in topics_multi] if topics_multi else ([topic] if topic else [])}
     # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
         sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
@@ -378,14 +381,23 @@ async def chat(
                     "download_url": f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None
                 } for r in rag_results[:10]
             ]
-        if topic and (not personality_enabled_topics or topic in (personality_enabled_topics or [])):
-            try:
-                from .personalities import load_topic_descriptions
-                _td = load_topic_descriptions()
-                descr = _td.get(topic) if isinstance(_td, dict) else None
-            except Exception:
-                descr = None
-            sources["pipeline_topics"].append({"name": topic, "description": descr})
+        # Aggiungi tutti i topic rilevati (multi) mantenendo anche quello principale se non già incluso
+        topics_for_sources = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+        # Filtra per personality_enabled_topics se definito
+        topics_filtered = [t for t in topics_for_sources if (not personality_enabled_topics or t['topic'] in (personality_enabled_topics or []))]
+        seen_topics = set()
+        try:
+            from .personalities import load_topic_descriptions
+            _td = load_topic_descriptions()
+        except Exception:
+            _td = {}
+        for t in topics_filtered:
+            nm = t['topic']
+            if nm in seen_topics:
+                continue
+            seen_topics.add(nm)
+            descr = _td.get(nm) if isinstance(_td, dict) else None
+            sources["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
         try:
             from .rag_routes import get_user_context
             from .rag_engine import rag_engine
@@ -446,6 +458,9 @@ async def chat(
             "personality_id": x_personality_id,
             "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
             "topic": topic,
+            "topics_multi": topics_multi,
+            # Estrarre anche solo la lista semplice di pattern per analisi rapida (senza duplicare tutta la struttura rag_results)
+            "topics_patterns": [t.get('pattern') for t in (topics_multi or [])],
             "conversation_id": conversation_id,
             "session_id": session_id,
             "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
@@ -547,6 +562,7 @@ async def chat_stream(
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
     if not topic:
         topic = 'generale'
     # Costruisci full_user_message coerente col non-stream (allegati non gestiti qui per semplicità futura estensione)
@@ -720,12 +736,20 @@ async def chat_stream(
                                 "download_url": r.get("download_url")
                             } for r in rag_results[:10]
                         ]
-                    if topic:
-                        try:
-                            descr = _td2.get(topic) if isinstance(_td2, dict) else None
-                        except Exception:
-                            descr = None
-                        sources["pipeline_topics"].append({"name": topic, "description": descr})
+                    # Inserisci multi-topic
+                    topics_for_sources = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+                    try:
+                        descr_map = _td2 if isinstance(_td2, dict) else {}
+                    except Exception:
+                        descr_map = {}
+                    seen_mt = set()
+                    for t in topics_for_sources:
+                        nm = t['topic']
+                        if nm in seen_mt:
+                            continue
+                        seen_mt.add(nm)
+                        descr = descr_map.get(nm)
+                        sources["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
                     try:
                         from .rag_routes import get_user_context
                         all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
@@ -829,6 +853,7 @@ async def chat_stream(
                         "personality_id": x_personality_id,
                         "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
                         "topic": topic,
+                        "topics_patterns": [t.get('pattern') for t in (topics_multi or [])],
                         "conversation_id": conversation_id,
                         "session_id": session_id,
                         "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
@@ -862,12 +887,19 @@ async def chat_stream(
                             "download_url": r.get("download_url")
                         } for r in rag_results[:10]
                     ]
-                if topic:
-                    try:
-                        descr = _td3.get(topic) if isinstance(_td3, dict) else None
-                    except Exception:
-                        descr = None
-                    sources_final["pipeline_topics"].append({"name": topic, "description": descr})
+                topics_for_sources2 = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+                try:
+                    descr_map2 = _td3 if isinstance(_td3, dict) else {}
+                except Exception:
+                    descr_map2 = {}
+                seen_mt2 = set()
+                for t in topics_for_sources2:
+                    nm = t['topic']
+                    if nm in seen_mt2:
+                        continue
+                    seen_mt2.add(nm)
+                    descr = descr_map2.get(nm)
+                    sources_final["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
                 try:
                     from .rag_routes import get_user_context
                     all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
@@ -879,7 +911,7 @@ async def chat_stream(
                                 sources_final["rag_groups"].append({"id": gid, "name": nm})
                 except Exception:
                     pass
-                meta = {"done": True, "reply": full_answer, "topic": topic, "source_docs": sources_final if any(sources_final.values()) else None}
+                meta = {"done": True, "reply": full_answer, "topic": topic, "topics": [t['topic'] for t in topics_multi] if topics_multi else ([topic] if topic else []), "source_docs": sources_final if any(sources_final.values()) else None}
                 yield f"data: {_json_final.dumps(meta)}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"

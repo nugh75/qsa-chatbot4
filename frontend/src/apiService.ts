@@ -634,6 +634,12 @@ class ApiService {
   async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
     return this.makeRequest('/admin/pipeline');
   }
+  async validatePipeline(): Promise<ApiResponse<{ issues: { pattern:string; topic?:string; severity:string; code:string; message:string }[]; counts: { ERROR:number; WARN:number; INFO:number } }>> {
+    return this.makeRequest('/admin/pipeline/validate');
+  }
+  async getPipelineRegexGuide(): Promise<ApiResponse<{ content: string }>> {
+    return this.makeRequest('/admin/pipeline/regex-guide');
+  }
   async savePipelineConfig(cfg: { routes: { pattern: string; topic: string }[]; files: Record<string,string> }): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/pipeline', { method: 'POST', body: JSON.stringify(cfg) });
   }

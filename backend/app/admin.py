@@ -1373,6 +1373,9 @@ async def list_avatars():
 
 # ---------------- Pipeline (routing + files) -----------------
 PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
+# Prefer storage copy (editable/persisted) for regex guide; fallback to root project file.
+PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "PIPELINE_REGEX_GUIDE.md"
+PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / "PIPELINE_REGEX_GUIDE.md"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -1397,13 +1400,116 @@ class FileUpdate(BaseModel):
     new_topic: str
     new_filename: str
 
+# ---- Pipeline pattern validation helpers ----
+class PatternIssue(BaseModel):
+    pattern: str
+    topic: Optional[str] = None
+    severity: str  # INFO | WARN | ERROR
+    code: str      # machine readable code
+    message: str   # human readable explanation
+
+def _analyze_pattern(raw: str) -> List[PatternIssue]:
+    issues: List[PatternIssue] = []
+    p = raw.strip()
+    if not p:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="EMPTY", message="Pattern vuoto"))
+        return issues
+    # Compile validity
+    try:
+        re.compile(p)
+    except re.error as e:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="INVALID", message=f"Regex non valida: {e}"))
+        return issues
+    # Heuristics
+    if p.endswith('|') or '||' in p:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="EMPTY_ALTERNATIVE", message="Alternativa vuota (| finale o doppio ||) causa match universale"))
+    # Overly generic catch-all suspicious patterns
+    if p in ['.*', '.+', '.?']:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="TRIVIAL", message="Pattern triviale matcha qualsiasi testo"))
+    # Suspicious any-char repetition
+    if re.search(r"\.[*+]{2,}", p):
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="REDUNDANT_REPEAT", message="Ripetizione eccessiva (.*+ ecc.)"))
+    if '.*.*' in p:
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="DOUBLE_ANY", message="Uso ripetuto di .* consecutivi"))
+    # Long unbounded dot-star segment
+    if '.*' in p and not re.search(r"\[\\n\]", p):
+        issues.append(PatternIssue(pattern=raw, severity="INFO", code="DOTSTAR", message="Usa .* con cautela: valuta limitare con [^\\n]{0,80}"))
+    # Missing word boundaries for simple word (heuristic: only letters/spaces)
+    if re.fullmatch(r"[a-zàèéìòù ]{3,}", p, flags=re.IGNORECASE):
+        if '\\b' not in p:
+            issues.append(PatternIssue(pattern=raw, severity="WARN", code="NO_WORD_BOUNDARY", message="Considera aggiungere \\b ai confini per evitare match parziali"))
+    # Potential catastrophic backtracking (nested quantifiers) simplistic detection
+    if re.search(r"(\(.{0,20}\*[^)]*\+)|\(.{0,20}\+[^)]*\*\)", p):
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="NESTED_QUANTIFIERS", message="Possibile backtracking pesante (quantificatori annidati)"))
+    # Length check
+    if len(p) > 220:
+        issues.append(PatternIssue(pattern=raw, severity="INFO", code="LONG", message="Pattern molto lungo: valuta semplificazione"))
+    return issues
+
+def validate_pipeline_patterns(cfg: dict) -> List[PatternIssue]:
+    out: List[PatternIssue] = []
+    for r in cfg.get('routes', []):
+        pat = r.get('pattern','')
+        topic = r.get('topic')
+        for issue in _analyze_pattern(pat):
+            issue.topic = topic
+            out.append(issue)
+    # Detect duplicate patterns mapping to different topics
+    seen: dict[str,str] = {}
+    for r in cfg.get('routes', []):
+        pat = r.get('pattern','')
+        t = r.get('topic')
+        if pat in seen and seen[pat] != t:
+            out.append(PatternIssue(pattern=pat, topic=t, severity="WARN", code="DUPLICATE_PATTERN", message=f"Pattern duplicato usato anche per topic '{seen[pat]}'"))
+        else:
+            seen[pat] = t
+    return out
+
 @router.get("/admin/pipeline")
 async def get_pipeline_config():
     try:
         data = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        # Attach validation summary (non bloccante)
+        try:
+            issues = validate_pipeline_patterns(data)
+            data['validation'] = {
+                'issues': [i.dict() for i in issues],
+                'counts': {
+                    'ERROR': sum(1 for x in issues if x.severity=='ERROR'),
+                    'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                    'INFO': sum(1 for x in issues if x.severity=='INFO')
+                }
+            }
+        except Exception as _ve:
+            data['validation'] = {'error': str(_ve)}
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento pipeline: {str(e)}")
+
+@router.get('/admin/pipeline/regex-guide')
+async def get_pipeline_regex_guide():
+    """Ritorna il contenuto markdown della guida regex (preferendo la copia in storage)."""
+    try:
+        # Auto-sync: se esiste root ed è più recente o storage mancante, copia root -> storage
+        try:
+            if PIPELINE_REGEX_GUIDE_ROOT_PATH.exists():
+                root_mtime = PIPELINE_REGEX_GUIDE_ROOT_PATH.stat().st_mtime
+                storage_exists = PIPELINE_REGEX_GUIDE_STORAGE_PATH.exists()
+                storage_mtime = PIPELINE_REGEX_GUIDE_STORAGE_PATH.stat().st_mtime if storage_exists else 0
+                if (not storage_exists) or root_mtime > storage_mtime:
+                    PIPELINE_REGEX_GUIDE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    PIPELINE_REGEX_GUIDE_STORAGE_PATH.write_text(PIPELINE_REGEX_GUIDE_ROOT_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+        except Exception as sync_err:
+            # Non blocca la lettura: logga soltanto
+            logging.getLogger(__name__).warning(f"Sync guida regex fallita: {sync_err}")
+
+        path = PIPELINE_REGEX_GUIDE_STORAGE_PATH if PIPELINE_REGEX_GUIDE_STORAGE_PATH.exists() else (PIPELINE_REGEX_GUIDE_ROOT_PATH if PIPELINE_REGEX_GUIDE_ROOT_PATH.exists() else None)
+        if not path:
+            return {"success": False, "error": "Guida non trovata"}
+        text = path.read_text(encoding='utf-8')
+        return {"success": True, "content": text, "source": str(path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura guida: {e}")
 
 @router.post("/admin/pipeline")
 async def update_pipeline_config(cfg: PipelineConfig):
@@ -1417,13 +1523,48 @@ async def update_pipeline_config(cfg: PipelineConfig):
             invalid.append({"pattern": pat, "error": str(e)})
     if invalid:
         raise HTTPException(status_code=400, detail={"message": "Pattern regex non valido", "invalid": invalid})
+    # Heuristic validation (non-blocking except HARD errors)
+    cfg_dict = cfg.dict()
+    issues = validate_pipeline_patterns(cfg_dict)
+    hard_errors = [i for i in issues if i.severity == 'ERROR']
+    if hard_errors:
+        # Block saving if there are HARD errors to enforce quality
+        raise HTTPException(status_code=400, detail={
+            'message': 'Errori di validazione pattern',
+            'issues': [i.dict() for i in hard_errors]
+        })
     try:
         PIPELINE_CONFIG_PATH.write_text(json.dumps(cfg.dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         refresh_routes_cache()
         refresh_files_cache()
-        return {"success": True, "message": "Pipeline salvata"}
+        return {"success": True, "message": "Pipeline salvata", "validation": {
+            'issues': [i.dict() for i in issues],
+            'counts': {
+                'ERROR': 0,
+                'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                'INFO': sum(1 for x in issues if x.severity=='INFO')
+            }
+        }}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio pipeline: {str(e)}")
+
+@router.get('/admin/pipeline/validate')
+async def validate_pipeline_only():
+    """Endpoint dedicato alla sola validazione (senza salvataggio)."""
+    try:
+        data = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding='utf-8'))
+        issues = validate_pipeline_patterns(data)
+        return {
+            'success': True,
+            'issues': [i.dict() for i in issues],
+            'counts': {
+                'ERROR': sum(1 for x in issues if x.severity=='ERROR'),
+                'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                'INFO': sum(1 for x in issues if x.severity=='INFO')
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Errore validazione pipeline: {e}')
 
 @router.post("/admin/pipeline/reset")
 async def reset_pipeline_config():

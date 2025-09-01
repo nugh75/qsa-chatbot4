@@ -1556,17 +1556,34 @@ const AppContent: React.FC = () => {
         </Paper>
       )}
       {isMobile && (
-        <MobileChatBar
-          value={input}
-          onChange={setInput}
-          onSend={send}
-          canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
-          isRecording={isRecording}
-          onStartRecording={startRecording}
-          onStopRecording={stopRecording}
-          disabled={isTranscribing}
-          isLoading={loading || isTranscribing || isStreaming}
-        />
+        <>
+          <Collapse in={showAttachments || attachedFiles.length>0} unmountOnExit timeout={220}>
+            <Box sx={{ position:'fixed', bottom:72, left:0, right:0, px:1, zIndex:(t)=> t.zIndex.appBar }}>
+              <Paper sx={{ p:1, mx:'auto', maxWidth:600, borderRadius:2, border:'1px solid #e0e0e0' }} elevation={3}>
+                <FileManagerCompact
+                  attachedFiles={attachedFiles}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) setShowAttachments(false) }}
+                  maxFiles={3}
+                  disabled={loading}
+                />
+              </Paper>
+            </Box>
+          </Collapse>
+          <MobileChatBar
+            value={input}
+            onChange={setInput}
+            onSend={send}
+            canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
+            isRecording={isRecording}
+            onStartRecording={startRecording}
+            onStopRecording={stopRecording}
+            disabled={isTranscribing}
+            isLoading={loading || isTranscribing || isStreaming}
+            onToggleAttachments={()=> setShowAttachments(o=> !o)}
+            attachmentsCount={attachedFiles.length}
+            attachmentsOpen={showAttachments}
+          />
+        </>
       )}
 
   {/* (Old standalone Allegati section removed: now inline in input area) */}

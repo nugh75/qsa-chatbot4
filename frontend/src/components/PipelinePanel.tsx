@@ -1,10 +1,13 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Chip, LinearProgress, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert, Divider, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, List, ListItemButton, ListItemText } from '@mui/material';
-import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon } from '@mui/icons-material';
+import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Chip, LinearProgress, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert, Divider, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, List, ListItemButton, ListItemText, Tooltip } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material';
+import ReactMarkdown from 'react-markdown';
 import { apiService } from '../apiService';
 // DebugPipelineTest removed per nuova specifica
 
-interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; }
+interface PatternIssue { pattern: string; topic?: string; severity: 'INFO'|'WARN'|'ERROR'; code: string; message: string }
+interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; validation?: { issues: PatternIssue[]; counts: { ERROR:number; WARN:number; INFO:number } } }
 
 interface EditingRoute { mode: 'add' | 'edit'; old_pattern?: string; old_topic?: string; pattern: string; topic: string; }
 
@@ -14,6 +17,7 @@ const PipelinePanel: React.FC = () => {
   const [tab, setTab] = useState(0); // 0: Routes, 1: File Editor
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<PipelineConfigData | null>(null);
+  const [validation, setValidation] = useState<{ issues: PatternIssue[]; counts: { ERROR:number; WARN:number; INFO:number } }|null>(null);
   const [error, setError] = useState<string|null>(null);
   const [editingRoute, setEditingRoute] = useState<EditingRoute>(emptyRoute);
   const [selectedRouteKeys, setSelectedRouteKeys] = useState<Set<string>>(new Set());
@@ -36,6 +40,40 @@ const PipelinePanel: React.FC = () => {
   const [regexMatches, setRegexMatches] = useState<string[]>([]);
   const [regexError, setRegexError] = useState<string|null>(null);
   const [filter, setFilter] = useState('');
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideContent, setGuideContent] = useState<string>('');
+  const [guideLoading, setGuideLoading] = useState(false);
+  const [guideError, setGuideError] = useState<string|null>(null);
+  const [guideSource, setGuideSource] = useState<string>('');
+  const [revalidating, setRevalidating] = useState(false);
+  const theme = useTheme();
+
+  const openGuide = async () => {
+    setGuideOpen(true);
+    if (!guideContent && !guideLoading) {
+      setGuideLoading(true);
+      setGuideError(null);
+      const res = await apiService.getPipelineRegexGuide();
+      if (res.success && (res.data as any)?.content) {
+        const dataAny: any = res.data;
+        setGuideContent(dataAny.content);
+        if (dataAny.source) setGuideSource(String(dataAny.source));
+      } else {
+        setGuideError(res.error || 'Errore nel caricamento della guida');
+      }
+      setGuideLoading(false);
+    }
+  };
+
+  const revalidate = async () => {
+    setRevalidating(true);
+    try {
+      const res = await apiService.validatePipeline();
+      if (res.success) setValidation(res.data as any);
+    } finally {
+      setRevalidating(false);
+    }
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null);
@@ -43,7 +81,12 @@ const PipelinePanel: React.FC = () => {
       console.log('[PipelinePanel] Loading config and files...');
       const cfgRes = await apiService.getPipelineConfig();
       console.log('[PipelinePanel] Config result:', cfgRes);
-      if (cfgRes.success) setConfig(cfgRes.data as any);
+      if (cfgRes.success) {
+        setConfig(cfgRes.data as any);
+        if ((cfgRes.data as any).validation) {
+          setValidation((cfgRes.data as any).validation);
+        }
+      }
       else setError(cfgRes.error||'Errore caricamento config');
   const filesRes = await apiService.listAvailablePipelineFiles();
   if (filesRes.success) setAvailableFiles(filesRes.data?.files||[]);
@@ -229,8 +272,18 @@ const PipelinePanel: React.FC = () => {
       {tab===0 && (
         <Card sx={{ display:'flex', flexDirection:'column' }}>
           <CardContent sx={{ pb:1 }}>
+            <Alert severity="info" sx={{ mb:2 }}>
+              <Typography variant="body2">
+                Guida rapida regex disponibile nel file <strong>PIPELINE_REGEX_GUIDE.md</strong> (root progetto). Evita pattern con alternativa vuota (es. <code>|</code> finale) o troppo generici. Usa <code>\\b</code> per limitare le parole. I log mostrano <code>topics_patterns</code> per audit.
+              </Typography>
+            </Alert>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb:1 }}>
               <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openAddRouteModal}>Aggiungi Route</Button>
+              <IconButton size="small" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton>
+              {validation && (
+                <Chip size="small" color={validation.counts.ERROR>0? 'error': (validation.counts.WARN>0? 'warning':'default')} label={`Val: ${validation.counts.ERROR}E ${validation.counts.WARN}W ${validation.counts.INFO}I`} />
+              )}
+              <Button size="small" variant="outlined" onClick={revalidate} disabled={revalidating} startIcon={<RefreshIcon fontSize="inherit" />}>{revalidating? '...' : 'Rivalida'}</Button>
               <TextField size="small" label="Filtro" value={filter} onChange={e=> setFilter(e.target.value)} sx={{ width:160 }} />
               <TextField size="small" label="Test regex" value={regexTestInput} onChange={e=> setRegexTestInput(e.target.value)} sx={{ flex:1, minWidth:200 }} />
               <IconButton size="small" onClick={loadAll}><RefreshIcon fontSize="small" /></IconButton>
@@ -252,6 +305,7 @@ const PipelinePanel: React.FC = () => {
                       }} />
                     </TableCell>
                     <TableCell>Pattern</TableCell>
+                    <TableCell>Val</TableCell>
                     <TableCell>Topic</TableCell>
                     <TableCell>File</TableCell>
                   <TableCell width={90}>Azioni</TableCell>
@@ -263,12 +317,22 @@ const PipelinePanel: React.FC = () => {
                     const selKey = r.pattern+'\u0001'+r.topic;
                     const selected = selectedRouteKeys.has(selKey);
                     const highlight = patternMatchesTest(r.pattern);
+                    const issues = (validation?.issues||[]).filter(i => i.pattern===r.pattern);
+                    const worst = issues.find(i=> i.severity==='ERROR') || issues.find(i=> i.severity==='WARN') || issues.find(i=> i.severity==='INFO');
+                    const sevBg = worst?.severity==='ERROR' ? 'rgba(244,67,54,0.15)' : worst?.severity==='WARN' ? 'rgba(255,152,0,0.12)' : worst?.severity==='INFO' ? 'rgba(33,150,243,0.10)' : undefined;
                     return (
-                      <TableRow key={key} hover selected={selected} sx={{ bgcolor: highlight? 'success.light':undefined }}>
+                      <TableRow key={key} hover selected={selected} sx={{ bgcolor: highlight? (theme.palette.mode==='dark' ? 'rgba(76,175,80,0.25)' : 'rgba(76,175,80,0.18)') : sevBg, outline: highlight? '2px solid rgba(76,175,80,0.6)': undefined, outlineOffset: -2 }}>
                         <TableCell padding="checkbox" onClick={(e)=> { e.stopPropagation(); toggleSelectRoute(r); }}>
                           <Checkbox size="small" checked={selected} />
                         </TableCell>
                         <TableCell><Typography variant="body2" component="span" sx={{ fontFamily:'monospace' }}>{r.pattern}</Typography></TableCell>
+                        <TableCell>
+                          {worst && (
+                            <Tooltip title={issues.map(i=> `${i.severity}: ${i.message}`).join('\n')}>
+                              <Chip size="small" label={worst.severity} color={worst.severity==='ERROR'? 'error': (worst.severity==='WARN'? 'warning':'default')} />
+                            </Tooltip>
+                          )}
+                        </TableCell>
                         <TableCell><Chip size="small" label={r.topic} /></TableCell>
                         <TableCell>
                           {config?.files && config.files[r.topic] ? (
@@ -371,6 +435,60 @@ const PipelinePanel: React.FC = () => {
         <DialogActions>
           <Button onClick={()=> setFileDialogOpen(false)}>Annulla</Button>
           <Button variant="contained" startIcon={<SaveIcon />} onClick={createStandaloneFile}>Crea</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Regex Guide Dialog */}
+      <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
+        <DialogTitle sx={{ pr:2 }}>Guida Regex Pipeline</DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            bgcolor: theme.palette.mode==='dark'? '#0f1115' : '#fafafa',
+            color: theme.palette.mode==='dark'? 'rgba(255,255,255,0.87)' : 'rgba(0,0,0,0.87)',
+            p:0,
+            display:'flex', flexDirection:'column'
+          }}
+        >
+          {guideLoading && <LinearProgress sx={{ mb:0 }} />}
+          {!guideLoading && guideError && (
+            <Box sx={{ p:3 }}>
+              <Alert severity="error" sx={{ mb:2 }}>{guideError}</Alert>
+              <Button variant="outlined" startIcon={<RefreshIcon />} onClick={()=> { setGuideContent(''); openGuide(); }}>Riprova</Button>
+            </Box>
+          )}
+          {!guideLoading && !guideError && (
+            <Box sx={{ flex:1, display:'flex', flexDirection:'column', minHeight:0 }}>
+              <Box sx={{ px:3, pt:1, pb:0.5, display:'flex', alignItems:'center', gap:2, flexWrap:'wrap', borderBottom:'1px solid', borderColor:'divider' }}>
+                {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} />}
+                <Button size="small" variant="outlined" startIcon={<FileOpenIcon />} onClick={()=> {
+                  // If the guide source is inside storage and filename matches, open editor
+                  const fname = guideSource.split('/').slice(-1)[0];
+                  if (availableFiles.includes(fname)) {
+                    openFileEditor(fname);
+                    setGuideOpen(false);
+                  } else {
+                    // Attempt to load file list then open
+                    (async ()=> {
+                      const fr = await apiService.listAvailablePipelineFiles();
+                      if (fr.success && fr.data?.files?.includes(fname)) {
+                        openFileEditor(fname);
+                        setGuideOpen(false);
+                      } else {
+                        setError('File guida non presente nella lista editing');
+                      }
+                    })();
+                  }
+                }}>Apri nel File Editor</Button>
+              </Box>
+              <Box sx={{ flex:1, overflow:'auto', px:3, py:2, maxWidth: 1100, mx:'auto', '& h1': { mt:2, fontSize:'1.9rem' }, '& h2': { mt:3 }, '& h3': { mt:2 }, '& code': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', p:1.5, borderRadius:1, overflow:'auto' } }}>
+                <ReactMarkdown>{guideContent}</ReactMarkdown>
+              </Box>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: theme.palette.mode==='dark'? '#101418':'#f5f5f5' }}>
+          <Button startIcon={<CloseIcon />} onClick={()=> setGuideOpen(false)}>Chiudi</Button>
         </DialogActions>
       </Dialog>
     </Stack>

@@ -162,10 +162,7 @@ async def chat(
         except Exception as e:
             print(f"Error saving user message: {e}")
     
-    # Contesto & topic con filtri personalità
-    from .topic_router import detect_topic
-    from .rag import get_context, get_rag_context
-    from .personalities import get_personality
+    # Contesto & topic con filtri personalità (imports already at module level; avoid re-import inside to prevent UnboundLocalError)
     
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None
@@ -301,6 +298,7 @@ async def chat(
                         "chunk_id": r.get("chunk_id"),
                         "document_id": r.get("document_id"),
                         "filename": r.get("filename"),
+                        "stored_filename": r.get("stored_filename"),
                         "chunk_index": r.get("chunk_index"),
                         "similarity": r.get("similarity_score"),
                         "preview": (r.get("content") or "")[:200],
@@ -354,6 +352,8 @@ async def chat(
                 {
                     "chunk_index": r.get("chunk_index"),
                     "filename": r.get("filename"),
+                    "document_id": r.get("document_id"),
+                    "stored_filename": r.get("stored_filename"),
                     "similarity": r.get("similarity"),
                     "preview": r.get("preview"),
                     "content": r.get("content")
@@ -513,10 +513,7 @@ async def chat_stream(
         except Exception as e:
             print(f"Error saving user message (stream): {e}")
 
-    # Contesto & topic con filtri personalità
-    from .topic_router import detect_topic
-    from .rag import get_context, get_rag_context
-    from .personalities import get_personality
+    # Contesto & topic con filtri personalità (imports already at module level)
     
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None

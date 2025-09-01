@@ -428,6 +428,16 @@ class ApiService {
     }
   }
 
+  // RAG management (existing methods may be elsewhere; adding search quick method)
+  async searchRagDocuments(query: string): Promise<ApiResponse<{ results: any[] }>> {
+    const q = encodeURIComponent(query);
+    return this.makeRequest<{ results: any[] }>(`/admin/rag/document/search?q=${q}`);
+  }
+
+  async recoverRagGroups(): Promise<ApiResponse<{ created: number; recovered: any[] }>> {
+    return this.makeRequest<{ created: number; recovered: any[] }>(`/admin/rag/recover-groups`, { method: 'POST' });
+  }
+
   // Chat endpoint (compatibile con sistema esistente)
   async chat(messages: any[], provider: string = 'anthropic'): Promise<Response> {
     const accessToken = CredentialManager.getAccessToken();
@@ -499,6 +509,15 @@ class ApiService {
   async listRagGroups(): Promise<ApiResponse<{ groups: any[] }>> {
     return this.makeRequest('/admin/rag/groups');
   }
+  async fixRagOrphans(): Promise<ApiResponse<{ moved: number; group_id: number }>> {
+    return this.makeRequest('/admin/rag/fix-orphans', { method: 'POST' });
+  }
+  async getRagOrphansStatus(): Promise<ApiResponse<{ orphan_chunks: number }>> {
+    return this.makeRequest('/admin/rag/orphans/status');
+  }
+  async cleanupRagOrphanChunks(): Promise<ApiResponse<{ removed: number }>> {
+    return this.makeRequest('/admin/rag/orphans/cleanup-chunks', { method: 'POST' });
+  }
   async createRagGroup(name: string, description: string): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
   }
@@ -513,6 +532,39 @@ class ApiService {
   }
   async deleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
     return this.makeRequest(`/admin/rag/documents/${documentId}`, { method: 'DELETE' });
+  }
+  async renameRagDocument(documentId: number, filename: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/rename`, { method: 'POST', body: JSON.stringify({ filename }) });
+  }
+  async moveRagDocument(documentId: number, group_id: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/move`, { method: 'POST', body: JSON.stringify({ group_id }) });
+  }
+  async duplicateRagDocument(documentId: number, target_group_id: number): Promise<ApiResponse<{ new_document_id: number }>> {
+    return this.makeRequest<{ new_document_id: number }>(`/admin/rag/documents/${documentId}/duplicate`, { method: 'POST', body: JSON.stringify({ target_group_id }) });
+  }
+  async reprocessRagDocument(documentId: number, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<{ chunk_count: number }>> {
+    return this.makeRequest<{ chunk_count: number }>(`/admin/rag/documents/${documentId}/reprocess`, { method: 'POST', body: JSON.stringify(opts || {}) });
+  }
+  async exportRagDocument(documentId: number): Promise<ApiResponse<{ document: any; chunks: any[] }>> {
+    return this.makeRequest<{ document: any; chunks: any[] }>(`/admin/rag/documents/${documentId}/export`);
+  }
+  async archiveRagDocument(documentId: number, archived: boolean): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/archive`, { method: 'POST', body: JSON.stringify({ archived }) });
+  }
+  async ragDocumentMetadata(documentId: number): Promise<ApiResponse<{ document: any }>> {
+    return this.makeRequest<{ document: any }>(`/admin/rag/documents/${documentId}/metadata`);
+  }
+  async forceDeleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/force`, { method: 'DELETE' });
+  }
+  async listAllRagDocuments(params?: { search?: string; group_id?: number; limit?: number; offset?: number }): Promise<ApiResponse<{ total:number; documents:any[] }>> {
+    const q: string[] = []
+    if (params?.search) q.push(`search=${encodeURIComponent(params.search)}`)
+    if (typeof params?.group_id === 'number') q.push(`group_id=${params.group_id}`)
+    if (typeof params?.limit === 'number') q.push(`limit=${params.limit}`)
+    if (typeof params?.offset === 'number') q.push(`offset=${params.offset}`)
+    const qs = q.length ? `?${q.join('&')}` : ''
+    return this.makeRequest(`/admin/rag/documents${qs}`)
   }
   async uploadRagDocument(groupId: number, file: File): Promise<ApiResponse<any>> {
     const form = new FormData();

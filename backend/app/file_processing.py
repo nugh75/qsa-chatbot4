@@ -18,6 +18,10 @@ try:
 except ImportError:
     PyPDF2 = None
     pypdf = None
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 try:
     from docx import Document
@@ -35,60 +39,113 @@ class ProcessedFile(BaseModel):
     processed_at: Optional[datetime] = None
     error: Optional[str] = None
 
-def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text content from PDF file"""
+def extract_text_from_pdf_with_diagnostics(file_path: str, min_chars_threshold: int = 200) -> Dict[str, Any]:
+    """Extract text from PDF trying multiple libraries and return diagnostics.
+
+    Order:
+      1. pypdf (if available)
+      2. PyPDF2 (fallback)
+      3. PyMuPDF (fitz) (used as fallback if previous methods missing or produced too little text)
+
+    If initial method yields < min_chars_threshold chars and PyMuPDF is available, re-extract with PyMuPDF.
+    """
+    chosen_method = None
+    fallback_used = False
     text = ""
-    
-    print(f"🔍 Attempting to extract text from PDF: {file_path}")
-    
-    # Check which PDF library is available
-    print(f"🔍 pypdf available: {pypdf is not None}")
-    print(f"🔍 PyPDF2 available: {PyPDF2 is not None}")
-    
-    if pypdf:
-        print("📚 Using pypdf library")
-        try:
-            with open(file_path, 'rb') as file:
-                reader = pypdf.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
-                
-                for page_num, page in enumerate(reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                    except Exception as e:
-                        print(f"⚠️ Error extracting text from page {page_num + 1}: {e}")
-                        continue
-        except Exception as e:
-            print(f"❌ pypdf error: {e}")
+    page_count = 0
+    errors: list[str] = []
+    print(f"🔍 PDF extraction diagnostics for {file_path}")
+    print(f"   libs => pypdf={bool(pypdf)} PyPDF2={bool(PyPDF2)} fitz={bool(fitz)}")
+
+    def _extract_with_pypdf():
+        nonlocal text, page_count
+        with open(file_path, 'rb') as f:
+            reader = pypdf.PdfReader(f)
+            page_count = len(reader.pages)
+            for page_num, page in enumerate(reader.pages):
+                try:
+                    pt = page.extract_text()
+                    if pt:
+                        text += pt + "\n"
+                except Exception as e:
+                    errors.append(f"pypdf page {page_num+1}: {e}")
+
+    def _extract_with_pypdf2():
+        nonlocal text, page_count
+        with open(file_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            page_count = len(reader.pages)
+            for page_num, page in enumerate(reader.pages):
+                try:
+                    pt = page.extract_text()
+                    if pt:
+                        text += pt + "\n"
+                except Exception as e:
+                    errors.append(f"PyPDF2 page {page_num+1}: {e}")
+
+    def _extract_with_fitz():
+        nonlocal text, page_count
+        doc = fitz.open(file_path)
+        page_count = doc.page_count
+        collected = []
+        for page_num in range(page_count):
+            try:
+                p = doc.load_page(page_num)
+                collected.append(p.get_text("text"))
+            except Exception as e:
+                errors.append(f"fitz page {page_num+1}: {e}")
+        text_local = "\n".join([c for c in collected if c])
+        return text_local
+
+    # Primary attempt
+    try:
+        if pypdf:
+            chosen_method = "pypdf"
+            _extract_with_pypdf()
+        elif PyPDF2:
+            chosen_method = "pypdf2"
+            _extract_with_pypdf2()
+        elif fitz:
+            chosen_method = "pymupdf"
+            text = _extract_with_fitz()
+        else:
+            chosen_method = "none"
             text = ""
-    
-    elif PyPDF2:
-        print("📚 Using PyPDF2 library")
+    except Exception as e:
+        errors.append(f"primary {chosen_method} error: {e}")
+        text = ""
+
+    # Fallback to PyMuPDF if short result
+    if fitz and len(text.strip()) < min_chars_threshold:
         try:
-            with open(file_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
-                
-                for page_num, page in enumerate(reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                    except Exception as e:
-                        print(f"⚠️ Error extracting text from page {page_num + 1}: {e}")
-                        continue
+            new_text = _extract_with_fitz()
+            if len(new_text.strip()) > len(text.strip()):
+                text = new_text
+                fallback_used = chosen_method != "pymupdf"
+                chosen_method = (chosen_method or "") + "+fallback_pymupdf" if chosen_method else "pymupdf"
         except Exception as e:
-            print(f"❌ PyPDF2 error: {e}")
-            text = ""
-    
-    else:
-        print("❌ No PDF library available")
-        text = "Errore: Nessuna libreria PDF disponibile"
-    
-    print(f"✅ Extracted {len(text)} characters from PDF")
-    return text.strip()
+            errors.append(f"fallback pymupdf error: {e}")
+
+    text = text.strip()
+    chars = len(text)
+    short_text = chars < min_chars_threshold
+    print(f"✅ PDF extraction method={chosen_method} chars={chars} pages={page_count} short={short_text} fallback={fallback_used}")
+    if errors:
+        print(f"⚠️ PDF extraction warnings: {errors[:3]}{'...' if len(errors)>3 else ''}")
+    return {
+        "text": text,
+        "method": chosen_method,
+        "pages": page_count,
+        "chars": chars,
+        "fallback_used": fallback_used,
+        "short_text": short_text,
+        "errors": errors
+    }
+
+def extract_text_from_pdf(file_path: str) -> str:
+    """Backward-compatible simple extractor (returns only text)."""
+    info = extract_text_from_pdf_with_diagnostics(file_path)
+    return info["text"]
 
 def extract_text_from_docx(file_path: str) -> str:
     """Extract text from DOCX file"""

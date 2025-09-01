@@ -67,7 +67,7 @@ type RAGResult = {
 
 // Nuova struttura fonti consolidata dal backend (source_docs)
 type SourceDocs = {
-  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string }[]
+  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string }[]
   pipeline_topics?: { name: string; description?: string | null }[]
   rag_groups?: { id: any; name: string }[]
 }
@@ -78,7 +78,8 @@ type Msg = {
   ts:number,
   topic?: string,
   // Nuova chiave unificata
-  source_docs?: SourceDocs | null
+  source_docs?: SourceDocs | null,
+  __sourcesExpanded?: boolean
   // (Campi legacy rimossi: rag_results, pipeline_topics, rag_group_names)
 }
 
@@ -1237,102 +1238,98 @@ const AppContent: React.FC = () => {
                     </Box>
                     {/* Sezione Fonti (nuova) */}
                     {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length) && (
-                      <Box sx={{ mt:1.5, p:1.2, bgcolor:'#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
-                        <Typography variant="caption" sx={{ fontWeight:'bold', color:'#1976d2', display:'block', mb:0.5 }}>Topic e Fonti</Typography>
-                        {m.source_docs.rag_chunks?.length ? (
-                          <Box sx={{ mb:0.5 }}>
-                            <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
-                              {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
-                            </Link>
-                          </Box>
-                        ) : null}
-                        <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
-                          {/* Topic pipeline */}
-                          {m.source_docs.pipeline_topics && m.source_docs.pipeline_topics.map((pt,idx)=>(
-                            <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                              <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
-                            </Box>
-                          ))}
-                          {/* Gruppi RAG selezionati */}
-                          {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
-                            <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                              <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
-                            </Box>
-                          )}
-                          {/* Documenti (derivati dai chunk) */}
-                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (()=>{
-                              // Ordina chunk per similarità desc (non mutare origine)
-                              const sorted = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
-                              const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
-                              // Raggruppa per documento calcolando max similarity e numero chunk
-                              const docMap: Record<string,{name:string; chunks:number; maxSim:number}> = {}
-                              filtered.forEach(r=>{
-                                if(!r.filename) return
-                                const base = (r.filename.split('_').pop() || r.filename)
-                                if(!docMap[base]) docMap[base] = { name: base, chunks:0, maxSim: r.similarity||0 }
-                                docMap[base].chunks += 1
-                                if((r.similarity||0) > docMap[base].maxSim) docMap[base].maxSim = (r.similarity||0)
-                              })
-                              const docs = Object.values(docMap).sort((a,b)=> b.maxSim - a.maxSim)
-                              if(!docs.length) return null
-                              return (
-                                <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                                  <strong style={{ color:'#1976d2' }}>Documenti ({docs.length}):</strong>{' '}
-                                  {docs.slice(0,6).map((d,idx)=> (
-                                    <React.Fragment key={d.name}>
-                                      {idx>0 && ', '}
-                                      <Tooltip arrow title={`Chunk visibili: ${d.chunks}\nMax similarità: ${(d.maxSim*100).toFixed(1)}%`}>
-                                        <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.7rem', p:0, cursor:'pointer' }} onClick={()=> openPreviewForLink(`doc://${encodeURIComponent(d.name)}`, d.name, m.source_docs?.rag_chunks)}>
-                                          {d.name}
-                                        </Link>
-                                      </Tooltip>
-                                    </React.Fragment>
-                                  ))}
-                                  {docs.length>6 && (
-                                    <Tooltip title={docs.slice(6).map(d=>`${d.name} (${(d.maxSim*100).toFixed(0)}%)`).join(', ')} arrow>
-                                      <Box component="span" sx={{ cursor:'default' }}>, +{docs.length-6}</Box>
-                                    </Tooltip>
-                                  )}
-                                </Box>
-                              )
-                          })()}
-                          {/* Chunk RAG */}
-                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (
+                      <Box sx={{ mt:1.5 }}>
+                        <Paper variant="outlined" sx={{ p:1.1, bgcolor: '#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: m.__sourcesExpanded ? 0.5 : 0 }}>
+                            <Typography variant="caption" sx={{ fontWeight:'bold', color:'#1976d2' }}>Topic e Fonti</Typography>
+                            <Button onClick={()=>{
+                              setMessages(prev => prev.map((mm,mi)=> mi===i ? {...mm, __sourcesExpanded: !mm.__sourcesExpanded} : mm));
+                            }} size="small" variant="text" sx={{ fontSize:'0.6rem', minWidth:0, p:0.5 }}>
+                              {m.__sourcesExpanded ? 'Nascondi' : 'Mostra'}
+                            </Button>
+                          </Stack>
+                          {m.__sourcesExpanded && (
                             <Box>
-                                {(()=>{
-                                  const sortedChunks = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
-                                  const filteredChunks = sortedChunks.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
-                                  const total = m.source_docs.rag_chunks.length
-                                  const shown = filteredChunks.length
+                              {m.source_docs.rag_chunks?.length ? (
+                                <Box sx={{ mb:0.5 }}>
+                                  <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
+                                    {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
+                                  </Link>
+                                </Box>
+                              ) : null}
+                              <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
+                                {/* Topic pipeline */}
+                                {m.source_docs.pipeline_topics && m.source_docs.pipeline_topics.map((pt,idx)=>(
+                                  <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
+                                  </Box>
+                                ))}
+                                {/* Gruppi RAG selezionati */}
+                                {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
+                                  </Box>
+                                )}
+                                {/* Documenti con grouping chunks */}
+                                {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (()=>{
+                                  const sorted = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0));
+                                  const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity);
+                                  // Group by document_id if available, else by filename
+                                  const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; maxSim:number; chunks:any[]}>;
+                                  filtered.forEach(ch => {
+                                    const key = (ch.document_id || ch.filename || 'unknown') + '';
+                                    if(!groupsByDoc[key]) groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, maxSim: ch.similarity||0, chunks: [] };
+                                    groupsByDoc[key].chunks.push(ch);
+                                    if((ch.similarity||0) > groupsByDoc[key].maxSim) groupsByDoc[key].maxSim = ch.similarity||0;
+                                  });
+                                  const docEntries = Object.values(groupsByDoc).sort((a,b)=> b.maxSim - a.maxSim);
                                   return (
-                                    <>
-                                      <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Chunks ({shown}/{total}) ordinati per similarità</Box>
-                                      <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5 }}>
-                                        {filteredChunks.slice(0,6).map((r,idx)=>{
-                                  const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
-                                  const simple = baseName.split('.')[0]
-                                  const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
-                                  const preview = (r.preview || '').replace(/\s+/g,' ').trim()
-                                  const shortPrev = preview ? (preview.length>180 ? preview.slice(0,180)+"…" : preview) : ''
-                                  const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarità: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`
-                                  return (
-                                    <Tooltip key={`sc-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
-                                      <Chip size="small" label={label} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
-                                    </Tooltip>
-                                  )
+                                    <Box>
+                                      <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Documenti ({docEntries.length}) ordinati per similarità</Box>
+                                      <Stack spacing={0.5}>
+                                        {docEntries.map((d,di)=>{
+                                          const baseName = d.filename ? (d.filename.split('_').pop() || d.filename) : d.filename || 'Documento';
+                                          return (
+                                            <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
+                                              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:0.3 }}>
+                                                <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}>
+                                                  {baseName}
+                                                  {d.maxSim ? <Box component="span" sx={{ ml:1, fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
+                                                </Box>
+                                                {d.stored_filename && d.document_id && (
+                                                  <Tooltip title="Scarica PDF originale"><IconButton size="small" onClick={()=> window.open(`/admin/rag/documents/${d.document_id}/download`, '_blank')} sx={{ p:0.3 }}>
+                                                    <SmallDownloadIcon size={14} />
+                                                  </IconButton></Tooltip>
+                                                )}
+                                              </Stack>
+                                              <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.4 }}>
+                                                {d.chunks.slice(0,6).map((r,ci)=>{
+                                                  const preview = (r.preview || '').replace(/\s+/g,' ').trim();
+                                                  const shortPrev = preview ? (preview.length>160 ? preview.slice(0,160)+'…' : preview) : '';
+                                                  const tip = `Chunk ${r.chunk_index}${r.similarity? `\nSim: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`;
+                                                  return (
+                                                    <Tooltip key={ci} title={<span style={{ whiteSpace:'pre-line', maxWidth:260, display:'block' }}>{tip}</span>} arrow>
+                                                      <Chip size="small" label={`#${r.chunk_index}`} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                                    </Tooltip>
+                                                  );
+                                                })}
+                                                {d.chunks.length>6 && (
+                                                  <Tooltip title={d.chunks.slice(6).map(r=>`Chunk ${r.chunk_index}`).join(', ')} arrow>
+                                                    <Chip size="small" label={`+${d.chunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                                  </Tooltip>
+                                                )}
+                                              </Box>
+                                            </Paper>
+                                          );
                                         })}
-                                        {filteredChunks.length>6 && (
-                                          <Tooltip title={filteredChunks.slice(6).map(r=>`Chunk ${r.chunk_index}`).join(', ')} arrow>
-                                            <Chip size="small" label={`+${filteredChunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
-                                          </Tooltip>
-                                        )}
-                                      </Box>
-                                    </>
-                                  )
+                                      </Stack>
+                                    </Box>
+                                  );
                                 })()}
+                              </Stack>
                             </Box>
                           )}
-                        </Stack>
+                        </Paper>
                       </Box>
                     )}
                   </Box>

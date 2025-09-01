@@ -89,7 +89,7 @@ def extract_text_from_pdf(file_path: str) -> str:
             print("📚 Using pypdf library")
             with open(file_path, 'rb') as file:
                 reader = pypdf.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
+                print(f"  PDF has {len(reader.pages)} pages")
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
         # Fallback to PyPDF2
@@ -97,7 +97,7 @@ def extract_text_from_pdf(file_path: str) -> str:
             print("📚 Using PyPDF2 library")
             with open(file_path, 'rb') as file:
                 reader = PyPDF2.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
+                print(f"  PDF has {len(reader.pages)} pages")
                 for page in reader.pages:
                     text += page.extract_text() + "\n"
         else:
@@ -334,7 +334,7 @@ async def process_uploaded_file(upload_file: UploadFile) -> ProcessedFile:
         
         # Process based on file type
         if file_ext == 'pdf':
-            print(f"📄 Processing PDF file: {filename}")
+            print(f"  Processing PDF file: {filename}")
             text_content = extract_text_from_pdf(temp_file_path)
             processed_file.content = text_content
             

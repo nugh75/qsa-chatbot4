@@ -131,7 +131,7 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         if context_parts:
             context = "\n".join(context_parts)
             header = f"[CONTESTO RAG - {len(context_parts)} documenti rilevanti trovati]\n\n"
-            footer = "\n[ISTRUZIONI: Quando usi informazioni da queste fonti, cita il nome del file usando il formato: [📄 nome_file.pdf](download_link) ]"
+            footer = "\n[ISTRUZIONI: Quando usi informazioni da queste fonti, cita il nome del file usando il formato: [  nome_file.pdf](download_link) ]"
             assembled = header + context + footer
             print(f"[RAG] Contesto assemblato con {len(context_parts)} fonti, lunghezza={len(assembled)}")
             return assembled
@@ -169,13 +169,13 @@ def format_response_with_citations(response: str, search_results: List[Dict]) ->
     # Cerca pattern di citazioni nel response e aggiungi link
     import re
     
-    # Pattern per citazioni: [📄 filename]
-    citation_pattern = r'\[📄\s+([^\]]+)\]'
+    # Pattern per citazioni: [  filename]
+    citation_pattern = r'\[ \s+([^\]]+)\]'
     
     def replace_citation(match):
         filename = match.group(1).strip()
         if filename in file_links:
-            return f"[📄 {filename}]({file_links[filename]})"
+            return f"[  {filename}]({file_links[filename]})"
         return match.group(0)  # Return original if no link found
     
     response_with_links = re.sub(citation_pattern, replace_citation, response)

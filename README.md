@@ -2,25 +2,45 @@
 
 **English** | [Italiano](#italiano)
 
+## Recent Updates (2025-09-01)
+
+### EN
+- Added RAG source downloads (`/api/rag/download/{document_id}`) with `original_filename`, `stored_filename`, `download_url` metadata.
+- Introduced per-chunk `chunk_label` in unified `source_docs.rag_chunks` for clearer citation mapping.
+- Unified message payload: `source_docs` now wraps `rag_chunks`, `pipeline_topics`, `rag_groups` (legacy arrays removed).
+- Document preview dialog aggregates chunk content via internal `doc://` links auto-injected from `[DOC filename]` references.
+- Markdown normalization (unescape literal \n, improved paragraph spacing, soft breaks via remark-breaks) for consistent rendering including "Fonti consultate:" section.
+- Removed decorative emojis across UI; standardized on clean SVG/MUI icons only.
+
+### IT
+- Aggiunti download delle fonti RAG (`/api/rag/download/{document_id}`) con metadati `original_filename`, `stored_filename`, `download_url`.
+- Introdotta etichetta per chunk (`chunk_label`) in `source_docs.rag_chunks` per mappare le citazioni.
+- Unificato il payload dei messaggi: `source_docs` contiene `rag_chunks`, `pipeline_topics`, `rag_groups` (rimosse liste legacy).
+- Dialog di anteprima documento che aggrega il contenuto dei chunk tramite link interni `doc://` generati da riferimenti `[DOC nomefile]`.
+- Normalizzazione Markdown (de-escape \n, spaziatura paragrafi, soft break con remark-breaks) per rendere correttamente la sezione "Fonti consultate:".
+- Rimosse tutte le emoji decorative nell'interfaccia; solo icone SVG/MUI.
+
+---
+
 ## 🚀 Features
 
 An advanced AI chatbot with comprehensive RAG (Retrieval-Augmented Generation) system, user management, and multi-provider AI support. Features a complete admin panel for content management and user administration.
 
 ### Core Features
-- **🤖 Multiple AI Providers**: Gemini, OpenAI, Claude, OpenRouter, Ollama, Local
-- **🎵 Text-to-Speech**: Edge TTS, ElevenLabs, OpenAI Voice, Piper  
-- **🎤 Speech-to-Text**: Voice recording support with Whisper
-- **📚 Advanced RAG System**: PDF upload, document chunking, semantic search with HuggingFace embeddings
-- **👥 User Management**: Complete admin interface for user administration
-- **🎭 Advanced Personalities**: Granular control over AI behavior with pipeline topics, RAG groups, and MCP servers
-- **🔌 MCP Integration**: Model Context Protocol support for external services (Email, Calendar, Filesystem, etc.)
-- **🎛️ Admin Panel**: Full configuration dashboard (password: `Lagom192.`)
-- **🎨 Modern Interface**: Clean design with professional SVG icons
-- **💾 Chat Export**: JSON conversation export
-- **🔒 Security**: JWT authentication, encrypted conversations
+- Multiple AI Providers: Gemini, OpenAI, Claude, OpenRouter, Ollama, Local
+- Text-to-Speech: Edge TTS, ElevenLabs, OpenAI Voice, Piper  
+- Speech-to-Text: Voice recording support with Whisper
+- Advanced RAG System: PDF upload, document chunking, semantic search with HuggingFace embeddings
+- User Management: Complete admin interface for user administration
+- Advanced Personalities: Granular control over AI behavior with pipeline topics, RAG groups, and MCP servers
+- MCP Integration: Model Context Protocol support for external services (Email, Calendar, Filesystem, etc.)
+- Admin Panel: Full configuration dashboard (password: `Lagom192.`)
+- Modern Interface: Clean design with professional SVG icons
+- Chat Export: JSON conversation export
+- Security: JWT authentication, encrypted conversations
 
 ### RAG System
-- **📄 PDF Processing**: Automatic text extraction and intelligent chunking
+- PDF Processing: Automatic text extraction and intelligent chunking
 - **🧠 Semantic Search**: HuggingFace sentence-transformers with FAISS vector indexing
 - **📁 Document Groups**: Organize content by topics and contexts
 - **🎯 Context Selection**: Dynamic context switching during conversations
@@ -173,7 +193,7 @@ This advanced personality system enables creating specialized AI assistants for 
 - **🔒 Security**: JWT authentication, encrypted conversations
 
 ### RAG System
-- **📄 PDF Processing**: Automatic text extraction and intelligent chunking
+- **  PDF Processing**: Automatic text extraction and intelligent chunking
 - **🧠 Semantic Search**: HuggingFace sentence-transformers with FAISS vector indexing
 - **📁 Document Groups**: Organize content by topics and contexts
 - **🎯 Context Selection**: Dynamic context switching during conversations
@@ -509,7 +529,7 @@ Un chatbot AI avanzato con sistema RAG (Retrieval-Augmented Generation) completo
 - **🔒 Sicurezza**: Autenticazione JWT, conversazioni crittografate
 
 ### Sistema RAG
-- **📄 Processamento PDF**: Estrazione automatica testo e chunking intelligente
+- **  Processamento PDF**: Estrazione automatica testo e chunking intelligente
 - **🧠 Ricerca Semantica**: HuggingFace sentence-transformers con indicizzazione FAISS
 - **📁 Gruppi Documenti**: Organizza contenuti per argomenti e contesti
 - **🎯 Selezione Contesto**: Cambio dinamico del contesto durante le conversazioni
@@ -753,7 +773,7 @@ qsa-chatbot/
 └── README.md             # This file
 ```
 
-## 📄 License
+##   License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 

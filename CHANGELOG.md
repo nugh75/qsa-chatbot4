@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.1 - 2025-09-01
+
+### Added
+- RAG source downloads with `download_url` and original filename exposure.
+- Chunk labels (`chunk_label`) surfaced in both streaming and non-stream chat responses.
+- Unified `source_docs` message payload replacing legacy separate arrays.
+- Document preview dialog fed by aggregated chunks via `doc://` links.
+- Markdown normalization + `remark-breaks` for soft line breaks and improved "Fonti consultate:" formatting.
+
+### Changed
+- Removed all emoji decorations in frontend; standardized on SVG (MUI) icons.
+- Updated docs (AGENTS, ISTRUZIONI, ARCHITECTURE) bilingual sections (EN first then IT).
+
+### Fixed
+- Missing propagation of chunk metadata in streaming responses.
+- Inconsistent clickable source filenames due to absent `stored_filename` mapping.
+
+### Migration Notes
+- Frontend now expects `message.source_docs?.rag_chunks` not legacy `rag_results`.
+- Update any external integrations consuming chat JSON accordingly.
+
+### IT (Sintesi)
+- Aggiunti download fonti RAG, etichette chunk, normalizzazione Markdown, rimosse emoji.
+- Unificato `source_docs`; corretti metadata mancanti nello streaming.
+
 ## v0.5.0 - 2025-08-31
 
 ### Added - Sistema MCP (Model Context Protocol)

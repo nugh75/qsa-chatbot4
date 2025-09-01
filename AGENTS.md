@@ -1,5 +1,29 @@
 # Repository Guidelines
 
+## Recent Updates / Aggiornamenti Recenti (2025-09-01)
+
+### EN
+This repository now includes the following improvements:
+1. RAG Source Downloads: Each retrieved document chunk now carries `document_id`, `stored_filename`, `original_filename`, and a direct `download_url` served by the backend. The chat UI shows a clickable filename; no emoji icons are used anymore.
+2. Chunk Labels: Retrieval adds a human readable `chunk_label` (e.g. `p3-c5`) exposed through the unified `source_docs.rag_chunks` array so the UI can display which chunks contributed to an answer.
+3. Unified Source Metadata: Chat (sync + streaming) responses embed a single `source_docs` object with `rag_chunks`, `pipeline_topics`, and `rag_groups`. Legacy per-field arrays were removed.
+4. Markdown Normalization: Added preprocessing to unescape literal `\n`, enforce paragraph separation before the "Fonti consultate:" section, collapse excess blank lines, and support soft line breaks via `remark-breaks`.
+5. Document Link Injection: Bare references like `[DOC filename]` are auto-linked (scheme `doc://`) and can be previewed in a dialog aggregating all related chunks.
+6. Emoji Removal in UI: All decorative emojis were removed from the frontend source; only SVG / MUI icons remain per design guideline.
+
+Contributors updating RAG or chat logic should extend the `source_docs` contract rather than adding parallel fields. When adding new per-chunk metadata, ensure both streaming and non-stream endpoints map it through.
+
+### IT
+Sono state introdotte le seguenti migliorie:
+1. Download delle Fonti RAG: Ogni chunk recuperato espone ora `document_id`, `stored_filename`, `original_filename` e un `download_url` diretto. L'interfaccia chat mostra il nome file cliccabile; nessuna emoji viene più usata.
+2. Etichette Chunk: Il retrieval aggiunge una etichetta leggibile (`chunk_label`, es. `p3-c5`) esposta in `source_docs.rag_chunks` per mostrare quali parti hanno contribuito alla risposta.
+3. Metadati Unificati: Le risposte della chat (sincrone e streaming) includono un unico oggetto `source_docs` con `rag_chunks`, `pipeline_topics`, `rag_groups`. I vecchi array separati sono stati rimossi.
+4. Normalizzazione Markdown: Preprocessing per de-escapare `\n`, forzare la separazione di paragrafo prima di "Fonti consultate:", comprimere righe vuote multiple e supportare soft line break via `remark-breaks`.
+5. Iniezione Link Documenti: Riferimenti semplici come `[DOC nomefile]` diventano link (schema `doc://`) con anteprima aggregata dei chunk correlati.
+6. Rimozione Emoji nella UI: Tutte le emoji ornamentali sono state rimosse dal frontend; restano solo icone SVG / MUI come da linea guida.
+
+Per estendere la logica RAG o chat, aggiornare il contratto di `source_docs` invece di creare nuovi campi paralleli. Aggiungendo nuovi metadati per chunk, assicurarsi di propagarli sia negli endpoint streaming sia non-stream.
+
 ## Project Structure & Module Organization
 - Backend: `backend/app` (FastAPI routers like `chat.py`, `rag_routes.py`, `auth_routes.py`), config in `backend/config`, data/models in `backend/{data,models}`, persistent files in `backend/storage`.
 - Frontend: `frontend/src` (React + Vite), static assets in `frontend/public`, build output in `frontend/dist`.

@@ -205,7 +205,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
             
             # Process based on file type - ONLY TEXT EXTRACTION
             if file_ext == 'pdf':
-                print(f"📄 Processing PDF file: {filename}")
+                print(f"  Processing PDF file: {filename}")
                 text_content = extract_text_from_pdf(temp_file_path)
                 processed_file.content = text_content
                 

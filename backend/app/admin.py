@@ -53,6 +53,10 @@ from fastapi.responses import FileResponse
 import glob
 import json as _json
 
+# Percorsi guida amministratore (root + storage copia)
+ADMIN_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent.parent / 'ADMIN_GUIDE.md'
+ADMIN_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / 'storage' / 'admin' / 'ADMIN_GUIDE.md'
+
 # Configurazione database - usa il percorso relativo alla directory backend
 BASE_DIR = Path(__file__).parent.parent
 DATABASE_PATH = BASE_DIR / "storage" / "databases" / "qsa_chatbot.db"
@@ -1510,6 +1514,27 @@ async def get_pipeline_regex_guide():
         return {"success": True, "content": text, "source": str(path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore lettura guida: {e}")
+
+@router.get('/admin/admin-guide')
+async def get_admin_general_guide():
+    """Restituisce la guida amministratore generale (auto-sync root→storage)."""
+    try:
+        try:
+            if ADMIN_GUIDE_ROOT_PATH.exists():
+                root_mtime = ADMIN_GUIDE_ROOT_PATH.stat().st_mtime
+                storage_exists = ADMIN_GUIDE_STORAGE_PATH.exists()
+                storage_mtime = ADMIN_GUIDE_STORAGE_PATH.stat().st_mtime if storage_exists else 0
+                if (not storage_exists) or root_mtime > storage_mtime:
+                    ADMIN_GUIDE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    ADMIN_GUIDE_STORAGE_PATH.write_text(ADMIN_GUIDE_ROOT_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+        except Exception as sync_err:
+            logging.getLogger(__name__).warning(f"Sync guida admin fallita: {sync_err}")
+        path = ADMIN_GUIDE_STORAGE_PATH if ADMIN_GUIDE_STORAGE_PATH.exists() else (ADMIN_GUIDE_ROOT_PATH if ADMIN_GUIDE_ROOT_PATH.exists() else None)
+        if not path:
+            return {"success": False, "error": "Guida amministratore non trovata"}
+        return {"success": True, "content": path.read_text(encoding='utf-8'), "source": str(path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura guida amministratore: {e}")
 
 @router.post("/admin/pipeline")
 async def update_pipeline_config(cfg: PipelineConfig):

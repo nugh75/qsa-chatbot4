@@ -1,3 +1,112 @@
+# Guida Amministratore & Regex Pipeline
+
+> Sezione 1: Guida Amministratore (Operations & Governance)
+>
+> Sezione 2: Guida Regex (ingegneria dei pattern per il routing dei topic)
+
+---
+## Sezione 1 - Guida Amministratore Completa
+
+### 1. Visione d'Insieme del Sistema
+Il sistema è composto da:
+- Backend FastAPI (autenticazione, chat, RAG, routing topic regex, storage, usage tracking, feedback, TTS/ASR opzionali)
+- Frontend React (AdminPanel + interfaccia utente chat)
+- Storage persistente (file pipeline, guide, personalità, log, usage, RAG data)
+- Moduli opzionali MCP / embedding / RAG engine
+
+Flusso alto livello di un messaggio utente:
+1. Autenticazione token (sessione o device) → validazione
+2. Normalizzazione input & logging preliminare
+3. Topic detection regex (multi-topic) → arricchimento metadati
+4. RAG (se abilitato) → retrieval chunk + etichette
+5. LLM generation → streaming risposta
+6. Logging finale (usage, topics, pattern, sorgenti RAG, feedback stub)
+
+### 2. Componenti Chiave & File
+| Area | File / Directory | Scopo | Note Operative |
+|------|------------------|-------|----------------|
+| Admin backend | `backend/app/admin.py` | Endpoint admin, pipeline, guide | Include validatore pattern |
+| Routing regex | `pipeline_config.json` (in storage se presente) | Mappa pattern→topic | Gestito via UI |
+| File contenuto topic | `storage/pipeline/*.md` | Materiale didattico associato | Editabile in UI File Editor |
+| Guida regex | `PIPELINE_REGEX_GUIDE.md` (root + storage copia) | Best practice pattern | Auto-sync root→storage |
+| RAG data | `storage/rag_data/` | Documenti indicizzati | Alimentare periodicamente |
+| Personalità | `storage/personalities/` | Profili persona/bot | Coerenza tono risposta |
+| Log | `storage/logs/` | Tracce richieste/risposte | Rotazione manuale se cresce |
+| Usage | `storage/usage/` | Metriche costo/tempo | Analisi ottimizzazione |
+| Feedback | `storage/feedback/` | Riscontri utenti | Migliora modelli/regex |
+| Config pipeline extra | `backend/app/config/` | Altre configurazioni | JSON validati runtime |
+
+### 3. Sicurezza & Ruoli
+- Accesso Admin protetto da autenticazione (verifica token / ruolo) – assicurarsi che le route admin NON siano esposte pubblicamente dietro reverse proxy senza auth.
+- Non archiviare mai segreti in file markdown storabili dagli utenti admin; usare variabili ambiente / secret manager.
+- Sanificare pattern regex: validatore blocca severità ERROR (alternativa vuota, pattern triviale, dot-star eccessivo).
+
+### 4. Performance & Capacità
+| Componente | KPI Principali | Soglie Suggerite | Azione se Superate |
+|------------|----------------|------------------|--------------------|
+| Regex routing | Tempo totale matching per messaggio | < 5 ms medio | Riduci pattern o ottimizza gruppi |
+| RAG retrieval | Latency retrieval | < 300 ms | Pre-calcola embedding, verifica dimensione indice |
+| LLM generation | TTFB (time to first byte) | < 2 s | Riduci prompt system / contesto RAG |
+| Storage crescita | Dimensione log diario | < 500MB | Archivia / comprimi |
+| Pattern volume | Numero pattern attivi | < 150 | Consolidare / refactoring |
+
+### 5. Procedure Operative Standard (SOP)
+| Task | Frequenza | Passi | Criterio Successo |
+|------|----------|-------|------------------|
+| Revisione pattern | Settimanale | Esporta log topics, calcola frequenza | Nessun pattern >90% match rate salvo giustificato |
+| Aggiornamento RAG | Mensile / on-demand | Aggiungi file, rigenera embedding | Nuovi documenti reperibili entro 5 min |
+| Pulizia log | Mensile | Comprimere vecchi >30gg | Riduzione spazio >60% |
+| Backup storage | Giornaliero | Snapshot volume | Ripristino test superato |
+| Verifica sicurezza | Trimestrale | Controllo esposizione admin + token | Nessuna route admin non auth |
+
+### 6. Flusso di Deployment Cambi Regex
+1. Modifica / aggiunta pattern in UI (bozza) → non salvare se ERROR.
+2. Usa “Test regex” con corpus breve realistico.
+3. Salva → logs genereranno nuovi `topics_patterns`.
+4. Dopo 24h analizza distribuzione → eventuale refactor.
+
+### 7. Analisi Log per Ottimizzazione
+Script (da creare) suggerito: estrai JSON lines, conteggia pattern, ordina per frequenza; identifica outlier. Se un pattern appare nel 95% dei messaggi → probabilmente troppo generico.
+
+### 8. Gestione Incidenti
+| Scenario | Segnale | Mitigazione Rapida | Follow-up |
+|----------|---------|--------------------|-----------|
+| Falsi positivi massivi | Un topic compare in quasi tutte le conversazioni | Disattiva temporaneamente pattern (commenta / rimuovi) | Refactoring pattern / documento guida |
+| Lentezza risposte | Crescita TTFB > soglia | Disabilita RAG temporaneamente | Profilare retrieval / token prompt |
+| Errori validatore bloccanti | Non si salva pipeline | Correggi pattern segnalati | Aggiungi test regressione |
+| Fonte RAG mancante | Nessun documento nelle risposte | Verifica indice / percorso storage | Reindicizza |
+
+### 9. Checklist Audit Mensile
+- [ ] Nessun pattern con alternativa vuota
+- [ ] Numero pattern sotto soglia
+- [ ] Log ruotati e compressi
+- [ ] Backup ripristinato test (ultimo mese)
+- [ ] RAG aggiornato con docs più recenti
+- [ ] Nessun file sensibile in markdown pubblici
+
+### 10. Roadmap Operativa Consigliata
+| Priorità | Iniziativa | Beneficio | Sforzo |
+|----------|-----------|-----------|--------|
+| Alta | Evidenziazione match nel testo test | Riduce errori pattern | Medio |
+| Alta | Script analisi frequenza pattern | Migliora precisione routing | Basso |
+| Media | Auto-suggerimenti ottimizzazione regex | Accelera sviluppo pattern | Medio/Alto |
+| Media | Dashboard metriche RAG (hit rate) | Visibilità qualità fonti | Medio |
+| Bassa | Versionamento storico pipeline | Audit completo | Medio |
+
+### 11. Governance delle Modifiche
+Implementare (futuro) semplice file `PIPELINE_CHANGES.md` con righe: data, autore, motivazione, pattern aggiunti/rimossi. Favorisce audit e rollback cognitivo.
+
+### 12. Domande Rapide Amministratore
+| Domanda | Dove guardare | Azione |
+|---------|---------------|--------|
+| Perché un topic appare? | Log `topics_multi` | Verifica pattern & contesto testo |
+| Perché TTFB alto? | Metriche usage + log timing | Riduci contesto RAG / controlla latenza embedding |
+| Perché guida non aggiornata? | Confronta mtime root vs storage | Tocca root file per forzare sync |
+| Pattern non salvabile? | Validatore risposta API | Correggi severità ERROR |
+| File RAG ignorato? | Indice embedding | Rigenera embedding / check estensione |
+
+---
+
 # Guida Estesa: Regex per la Pipeline dei Topic
 
 Questa guida (estesa) copre principi, casi avanzati, errori da evitare, performance, manutenzione e debugging dell'instradamento tramite espressioni regolari (regex) per i topic. Include una sezione di sintesi bilingue (IT/EN) e una FAQ operativa.

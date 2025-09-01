@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.5.2 - 2025-09-01
+
+### Added
+- Pulsante icona "Guida Admin" nella toolbar del pannello amministrazione (accesso rapido alla documentazione).
+- Guida Amministratore completa (21 sezioni) con istruzioni per ogni tab: Provider, Prompt, Personalità, Pipeline Regex, Contenuti, RAG, RAG Admin, Feedback, Usage, Utenti, Dispositivi, Welcome/Guide, Log, Sicurezza, Performance, SOP, Troubleshooting, Checklist, Roadmap, Convenzioni.
+- Funzionalità guida: indice (TOC) sticky con evidenziazione sezione attiva (scroll spy), ricerca interna full‑text con highlight dinamico, controllo dimensione caratteri (+ / − / reset), anchor id generati per ogni heading tramite plugin slug locale.
+- Evidenziazione risultati ricerca con stile dedicato e reset pulito al cambio query.
+
+### Changed
+- Migliorata leggibilità guida: contrasto, larghezza massima contenuto, spaziatura, scala tipografica, stile blockquote e code block uniformati al tema.
+- Chat/Arena nella toolbar admin passati a pulsanti solo icona (UI più compatta).
+- Sostituita dipendenza esterna di slug remark (versione problematica) con implementazione interna leggera per stabilizzare build e rimuovere warning tipizzazione.
+
+### Fixed
+- Il pulsante Guida inizialmente non apriva il contenuto (rimosso meccanismo di evento personalizzato in favore di stato locale diretto).
+- Errori di build dovuti a versione non risolvibile del plugin heading slug esterno (risolti eliminando la dipendenza e introducendo plugin locale).
+- Evitati duplicati di wrapper/fragment che causavano errore JSX nella prima integrazione del dialog.
+
+### Technical Notes
+- Il plugin locale genera id normalizzando testo heading (minuscolo, sostituzione spazi/punteggiatura) senza introdurre nuove dipendenze.
+- La guida root `ADMIN_GUIDE.md` ora è la fonte primaria; la copia in storage viene sovrascritta su mtime più recente.
+
+### IT (Sintesi)
+- Aggiunta guida amministratore completa con TOC, ricerca, highlight, zoom font.
+- Migliorata leggibilità e stabilizzata toolchain (rimosso plugin slug esterno).
+- Risolto problema apertura dialog guida.
+
+### EN (Brief)
+- Added full Admin Guide with sticky TOC, search highlighting, font scaling.
+- Improved readability & removed external slug plugin for stable builds.
+- Fixed guide dialog open logic.
+
+### Next (Ideas)
+- Deep linking via URL hash + pulsante copia link heading.
+- Persistenza scala font e ultima query (localStorage).
+- Esportazione PDF / stampa ottimizzata (CSS print styles).
+- Accessibilità: ARIA landmarks e annunci live per risultati ricerca.
+
+### Tag & Release
+Esempio comandi (aggiorna branch/tag se necessario):
+```
+git add CHANGELOG.md ADMIN_GUIDE.md
+git commit -m "chore: release v0.5.2"
+git tag -a v0.5.2 -m "Release v0.5.2"
+git push origin HEAD --tags
+```
+
 ## v0.5.1 - 2025-09-01
 
 ### Added

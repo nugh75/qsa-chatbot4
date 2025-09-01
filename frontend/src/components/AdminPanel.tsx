@@ -68,14 +68,18 @@ import {
   AdminPanelSettings as AdminIcon,
   Description as DescriptionIcon,
   Save as SaveIcon,
-  RestartAlt as RestartAltIcon
+  RestartAlt as RestartAltIcon,
+  HelpOutline as HelpOutlineIcon
 } from '@mui/icons-material';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkSlugLocal from '../utils/remarkSlugLocal';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { it } from 'date-fns/locale';
 
 // Import servizi
 import { apiService } from '../apiService';
-import RAGManagement from './RAGManagement';
+import AdminRAGManagement from './AdminRAGManagement';
 // import AdminUserManagement from './AdminUserManagement';
 
 interface AdminStats {
@@ -165,6 +169,75 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [availableFiles, setAvailableFiles] = useState<string[]>([]);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [pipelineMessage, setPipelineMessage] = useState<string | null>(null);
+  // Regex guide dialog state (lightweight inline version for AdminPanel)
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideLoading, setGuideLoading] = useState(false);
+  const [guideError, setGuideError] = useState<string|null>(null);
+  const [guideContent, setGuideContent] = useState('');
+  const [guideSource, setGuideSource] = useState('');
+  // Admin guide state
+  const [adminGuideOpen, setAdminGuideOpen] = useState(false);
+  const [adminGuideLoading, setAdminGuideLoading] = useState(false);
+  const [adminGuideError, setAdminGuideError] = useState<string|null>(null);
+  const [adminGuideContent, setAdminGuideContent] = useState('');
+  const [adminGuideSource, setAdminGuideSource] = useState('');
+  const [adminGuideSearch, setAdminGuideSearch] = useState('');
+  const [adminGuideToc, setAdminGuideToc] = useState<{id:string; level:number; title:string}[]>([]);
+  const adminGuideContainerRef = React.useRef<HTMLDivElement|null>(null);
+  const [activeAdminHeading, setActiveAdminHeading] = useState<string>('');
+  // Parse TOC when content changes
+  useEffect(() => {
+    if (!adminGuideContent) { setAdminGuideToc([]); return; }
+    const lines = adminGuideContent.split(/\n/);
+    const toc: {id:string; level:number; title:string}[] = [];
+    lines.forEach(l => {
+      const m = /^(#{1,4})\s+(.*)$/.exec(l.trim());
+      if (m) {
+        const level = m[1].length;
+        const raw = m[2].replace(/[`*_]+/g,'').trim();
+        const id = raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+        toc.push({ id, level, title: raw });
+      }
+    });
+    setAdminGuideToc(toc);
+  }, [adminGuideContent]);
+
+  // Scroll spy
+  useEffect(() => {
+    if (!adminGuideOpen) return;
+    const el = adminGuideContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4')) as HTMLElement[];
+      const top = el.scrollTop;
+      let current = '';
+      for (const h of headings) {
+        if (h.offsetTop - 80 <= top) current = h.id || '';
+        else break;
+      }
+      if (current && current !== activeAdminHeading) setActiveAdminHeading(current);
+    };
+    el.addEventListener('scroll', onScroll);
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [adminGuideOpen, adminGuideContent, activeAdminHeading]);
+
+  const filteredAdminHtml = React.useMemo(() => {
+    if (!adminGuideSearch) return adminGuideContent;
+    try {
+      const re = new RegExp(`(${adminGuideSearch.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})`, 'ig');
+      return adminGuideContent.replace(re, '===$1==='); // markers
+    } catch { return adminGuideContent; }
+  }, [adminGuideContent, adminGuideSearch]);
+
+  // Custom component to highlight search markers
+  const renderers = React.useMemo(() => ({
+    text: (props: any) => {
+      const parts = String(props.children).split(/===/g);
+      if (parts.length === 1) return <>{props.children}</>;
+      return <>{parts.map((p,i) => i%2===1 ? <mark key={i} style={{ background:'#ffc107', color:'#000', padding:'0 2px' }}>{p}</mark> : p)}</>;
+    }
+  }), []);
 
   // State per filtri e paginazione
   const [userSearch, setUserSearch] = useState('');
@@ -320,6 +393,34 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       setPipelineMessage(e.response?.data?.detail || 'Errore nell\'aggiunta route');
     } finally {
       setPipelineLoading(false);
+    }
+  };
+
+  const openRegexGuide = async () => {
+    setGuideOpen(true);
+    if (!guideContent && !guideLoading) {
+      setGuideLoading(true); setGuideError(null);
+      const res = await apiService.getPipelineRegexGuide();
+      if (res.success && (res.data as any)?.content) {
+        const d:any = res.data; setGuideContent(d.content); if (d.source) setGuideSource(String(d.source));
+      } else {
+        setGuideError(res.error || 'Errore caricamento guida');
+      }
+      setGuideLoading(false);
+    }
+  };
+
+  const openAdminGuide = async () => {
+    setAdminGuideOpen(true);
+    if (!adminGuideContent && !adminGuideLoading) {
+      setAdminGuideLoading(true); setAdminGuideError(null);
+      const res = await apiService.getAdminGuide();
+      if (res.success && (res.data as any)?.content) {
+        const d:any = res.data; setAdminGuideContent(d.content); if (d.source) setAdminGuideSource(String(d.source));
+      } else {
+        setAdminGuideError(res.error || 'Errore caricamento guida admin');
+      }
+      setAdminGuideLoading(false);
     }
   };
 
@@ -484,7 +585,15 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
             <CardHeader 
               title="Gestione Route" 
               subheader="Pattern regex per il routing dei messaggi"
-              action={
+              action={<Box display="flex" gap={1}>
+                <Button
+                  variant="outlined"
+                  startIcon={<HelpOutlineIcon />}
+                  onClick={openRegexGuide}
+                  disabled={pipelineLoading}
+                >
+                  Guida
+                </Button>
                 <Button
                   variant="contained"
                   startIcon={<SettingsIcon />}
@@ -493,7 +602,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
                 >
                   Aggiungi Route
                 </Button>
-              }
+              </Box>}
             />
             <CardContent>
               <TableContainer>
@@ -1499,6 +1608,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
           <Tab label="RAG" icon={<StorageIcon />} />
           <Tab label="Prompt" icon={<DescriptionIcon />} />
           <Tab label="Welcome" icon={<DescriptionIcon />} />
+          <Button size="small" variant="outlined" sx={{ ml: 'auto', alignSelf:'center' }} onClick={openAdminGuide}>Guida Admin</Button>
         </Tabs>
 
         <Box sx={{ minHeight: 400 }}>
@@ -1506,7 +1616,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
           {currentTab === 1 && <UsersTab />}
           {currentTab === 2 && <DevicesTab />}
           {currentTab === 3 && <PipelineTab />}
-          {currentTab === 4 && <RAGManagement />}
+          {currentTab === 4 && <AdminRAGManagement />}
           {currentTab === 5 && <PromptsTab />}
           {currentTab === 6 && <WelcomeGuidesTab />}
         </Box>
@@ -1517,6 +1627,67 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       </DialogActions>
 
       <DeviceActionDialog />
+      {/* Regex Guide Dialog */}
+      <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
+        <DialogTitle>Guida Regex Pipeline</DialogTitle>
+        <DialogContent dividers sx={{ bgcolor:'#0f1115', p:0, display:'flex', flexDirection:'column' }}>
+          {guideLoading && <LinearProgress />}
+          {!guideLoading && guideError && (
+            <Box p={3}>
+              <Alert severity="error" sx={{ mb:2 }}>{guideError}</Alert>
+              <Button variant="outlined" startIcon={<RefreshIcon />} onClick={()=> { setGuideContent(''); openRegexGuide(); }}>Riprova</Button>
+            </Box>
+          )}
+          {!guideLoading && !guideError && (
+            <Box sx={{ flex:1, overflow:'auto', px:3, py:2, maxWidth:1100, mx:'auto', '& code': { bgcolor:'#1e2530', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor:'#1e2530', p:1.5, borderRadius:1, overflow:'auto' } }}>
+              {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} sx={{ mb:1 }} />}
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{guideContent}</ReactMarkdown>
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setGuideOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+      {/* Admin General Guide Dialog */}
+      <Dialog open={adminGuideOpen} onClose={()=> setAdminGuideOpen(false)} fullScreen>
+        <DialogTitle>Guida Amministratore</DialogTitle>
+        <DialogContent dividers sx={{ bgcolor:'#0f1115', p:0, display:'flex', flexDirection:'row', height:'100%' }}>
+          {adminGuideLoading && <LinearProgress />}
+          {!adminGuideLoading && adminGuideError && (
+            <Box p={3}>
+              <Alert severity="error" sx={{ mb:2 }}>{adminGuideError}</Alert>
+              <Button variant="outlined" startIcon={<RefreshIcon />} onClick={()=> { setAdminGuideContent(''); openAdminGuide(); }}>Riprova</Button>
+            </Box>
+          )}
+          {!adminGuideLoading && !adminGuideError && (
+            <>
+              <Box sx={{ width:260, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', bgcolor:'#11171d', p:1 }}>
+                <TextField size="small" label="Cerca" value={adminGuideSearch} onChange={e=> setAdminGuideSearch(e.target.value)} sx={{ mb:1 }} />
+                <Box sx={{ flex:1, overflow:'auto', pr:1 }}>
+                  {adminGuideToc.map(item => (
+                    <Box key={item.id} sx={{ pl:(item.level-1)*1.2, py:0.3 }}>
+                      <Button onClick={() => {
+                        const el = adminGuideContainerRef.current?.querySelector('#'+item.id);
+                        if (el && adminGuideContainerRef.current) {
+                          adminGuideContainerRef.current.scrollTo({ top: (el as HTMLElement).offsetTop - 60, behavior:'smooth' });
+                        }
+                      }} size="small" variant={activeAdminHeading===item.id? 'contained':'text'} color={activeAdminHeading===item.id? 'primary':'inherit'} sx={{ justifyContent:'flex-start', textTransform:'none', fontSize:12, width:'100%' }}>{item.title}</Button>
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
+              <Box ref={adminGuideContainerRef} sx={{ flex:1, overflow:'auto', px:3, py:2, '& code': { bgcolor:'#1e2530', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor:'#1e2530', p:1.5, borderRadius:1, overflow:'auto' } }}>
+                {adminGuideSource && <Chip size="small" label={adminGuideSource.replace(/^.*\/storage\//,'storage/')} sx={{ mb:1 }} />}
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkSlugLocal]} components={renderers}>{filteredAdminHtml}</ReactMarkdown>
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setAdminGuideOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
       
       {/* Pipeline Dialogs */}
       <AddRouteDialog />

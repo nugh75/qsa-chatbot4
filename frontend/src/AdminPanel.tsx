@@ -4,10 +4,10 @@ import {
   FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
   Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
   Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
-  Tooltip, Slider, Tabs, Tab
+  Tooltip, Slider, Tabs, Tab, Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material'
 
 import UserManagement from './components/UserManagement'
 import ModelProvidersPanel from './components/ModelProvidersPanel'
@@ -29,6 +29,9 @@ import { authFetch, BACKEND } from './utils/authFetch'
 import FooterSettingsPanel from './components/FooterSettingsPanel'
 import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkSlugLocal from './utils/remarkSlugLocal'
 
 const AdminPanel: React.FC = () => {
   // Stato principale
@@ -51,6 +54,16 @@ const AdminPanel: React.FC = () => {
   const [showFooterBlock, setShowFooterBlock] = useState<boolean>(true)
   const [savingArena, setSavingArena] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
+  // Guida Admin modal state
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideLoading, setGuideLoading] = useState(false)
+  const [guideError, setGuideError] = useState<string|null>(null)
+  const [guideContent, setGuideContent] = useState('')
+  const [guideSearch, setGuideSearch] = useState('')
+  const [guideToc, setGuideToc] = useState<{id:string; level:number; title:string}[]>([])
+  const [activeHeading, setActiveHeading] = useState('')
+  const guideRef = React.useRef<HTMLDivElement|null>(null)
+  const [guideFontScale, setGuideFontScale] = useState(1)
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
@@ -166,6 +179,73 @@ const AdminPanel: React.FC = () => {
     loadUsage()
     loadUiSettings()
   }, [])
+
+  // Fetch guida
+  const openGuide = async () => {
+    setGuideOpen(true)
+    if (!guideContent && !guideLoading) {
+      setGuideLoading(true); setGuideError(null)
+      const res = await apiService.getAdminGuide?.()
+      if (res?.success && (res.data as any)?.content) {
+        setGuideContent((res.data as any).content)
+      } else {
+        setGuideError(res?.error || 'Errore caricamento guida')
+      }
+      setGuideLoading(false)
+    }
+  }
+
+  // TOC build
+  useEffect(() => {
+    if (!guideContent) { setGuideToc([]); return }
+    const lines = guideContent.split(/\n/)
+    const toc: {id:string; level:number; title:string}[] = []
+    lines.forEach(l => {
+      const m = /^(#{1,4})\s+(.*)$/.exec(l.trim())
+      if (m) {
+        const level = m[1].length
+        const raw = m[2].replace(/[`*_]+/g,'').trim()
+        const id = raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
+        toc.push({ id, level, title: raw })
+      }
+    })
+    setGuideToc(toc)
+  }, [guideContent])
+
+  // Scroll spy
+  useEffect(() => {
+    if (!guideOpen) return
+    const el = guideRef.current; if (!el) return
+    const onScroll = () => {
+      const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4')) as HTMLElement[]
+      const top = el.scrollTop
+      let current = ''
+      for (const h of headings) {
+        if (h.offsetTop - 80 <= top) current = h.id || ''
+        else break
+      }
+      if (current && current !== activeHeading) setActiveHeading(current)
+    }
+    el.addEventListener('scroll', onScroll)
+    onScroll()
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [guideOpen, guideContent, activeHeading])
+
+  const filteredGuide = useMemo(() => {
+    if (!guideSearch) return guideContent
+    try {
+      const re = new RegExp(`(${guideSearch.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})`, 'ig')
+      return guideContent.replace(re, '===$1===')
+    } catch { return guideContent }
+  }, [guideContent, guideSearch])
+
+  const mdRenderers = useMemo(() => ({
+    text: (props: any) => {
+      const parts = String(props.children).split(/===/g)
+      if (parts.length === 1) return <>{props.children}</>
+      return <>{parts.map((p,i)=> i%2===1 ? <mark key={i} style={{ background:'#ffc107', color:'#000', padding:'0 2px' }}>{p}</mark> : p)}</>
+    }
+  }), [])
 
   const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean;}>) => {
     setSavingArena(true)
@@ -322,12 +402,14 @@ const AdminPanel: React.FC = () => {
   const panelVisible = (key: string) => (activePanels as readonly string[]).includes(key)
 
   return (
+    <>
     <Container maxWidth="lg" sx={{ py: 3 }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
         <SettingsIcon />
         <Typography variant="h5" sx={{ mr: 2 }}>Pannello di amministrazione</Typography>
-        <Button size="small" startIcon={<ChatIcon />} href="/" variant="outlined">Chat</Button>
-        <Button size="small" startIcon={<ArenaIcon />} href="/arena" variant="outlined">Arena</Button>
+  <Tooltip title="Chat"><IconButton size="small" href="/" color="primary"><ChatIcon fontSize="small" /></IconButton></Tooltip>
+  <Tooltip title="Arena"><IconButton size="small" href="/arena" color="primary"><ArenaIcon fontSize="small" /></IconButton></Tooltip>
+  <Tooltip title="Guida Admin"><IconButton size="small" color="secondary" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton></Tooltip>
   <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> saveUiSettings(e.target.checked, undefined)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
         {loading && <LinearProgress sx={{ flexBasis: '100%', mt: 1 }} />}
       </Stack>
@@ -740,7 +822,50 @@ const AdminPanel: React.FC = () => {
       </AccordionDetails>
     </Accordion>
   )}
-    </Container>
+  </Container>
+    <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
+      <DialogTitle>Guida Amministratore</DialogTitle>
+  <DialogContent dividers sx={{ p:0, display:'flex', flexDirection:'row', height:'100%', bgcolor:(theme)=> theme.palette.mode==='dark'? '#12161b':'#f5f7f9' }}>
+        {guideLoading && <LinearProgress sx={{ position:'absolute', top:0, left:0, right:0 }} />}
+        {!guideLoading && guideError && (
+          <Box p={3}>
+            <Alert severity='error' sx={{ mb:2 }}>{guideError}</Alert>
+            <Button variant='outlined' onClick={()=> { setGuideContent(''); openGuide() }}>Riprova</Button>
+          </Box>
+        )}
+        {!guideLoading && !guideError && (
+          <>
+            <Box sx={{ width:250, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', p:1, bgcolor:(theme)=> theme.palette.mode==='dark'? '#181e24':'#ffffff' }}>
+              <TextField size='small' label='Cerca' value={guideSearch} onChange={e=> setGuideSearch(e.target.value)} sx={{ mb:1 }} />
+              <Stack direction='row' spacing={1} sx={{ mb:1 }}>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(s=> Math.max(0.8, +(s-0.1).toFixed(2)))}>-</Button>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(1)}>100%</Button>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(s=> Math.min(1.6, +(s+0.1).toFixed(2)))}>+</Button>
+              </Stack>
+              <Box sx={{ flex:1, overflow:'auto' }}>
+                {guideToc.map(item => (
+                  <Box key={item.id} sx={{ pl:(item.level-1)*1.2, py:0.25 }}>
+                    <Button size='small' variant={activeHeading===item.id? 'contained':'text'} color={activeHeading===item.id? 'primary':'inherit'} sx={{ justifyContent:'flex-start', textTransform:'none', fontSize:12, width:'100%' }} onClick={()=> {
+                      const el = guideRef.current?.querySelector('#'+item.id)
+                      if (el && guideRef.current) guideRef.current.scrollTo({ top:(el as HTMLElement).offsetTop - 60, behavior:'smooth' })
+                    }}>{item.title}</Button>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+            <Box ref={guideRef} sx={{ flex:1, overflow:'auto', px:3, py:2 }}>
+              <Box sx={{ maxWidth:1000, mx:'auto', fontSize: `${guideFontScale}rem`, lineHeight:1.6, '& h1, & h2, & h3, & h4': { fontWeight:600, lineHeight:1.25, mt: '2.2em' }, '& h1': { fontSize: `${1.9*guideFontScale}rem`, mt:0 }, '& h2': { fontSize: `${1.45*guideFontScale}rem` }, '& h3': { fontSize: `${1.2*guideFontScale}rem` }, '& h4': { fontSize: `${1.05*guideFontScale}rem` }, '& p': { mb:'1em' }, '& ul': { pl:3, mb:'1em' }, '& li': { mb:0.4 }, '& code': { bgcolor:(theme)=> theme.palette.mode==='dark'? '#1e2530':'#e3e7ea', px:0.5, py:0.25, borderRadius:0.5, fontSize:'0.82em' }, '& pre code': { fontSize:'0.85em' }, '& pre': { bgcolor:(theme)=> theme.palette.mode==='dark'? '#1e2530':'#e3e7ea', p:1.2, borderRadius:1, overflow:'auto' }, '& blockquote': { borderLeft:'4px solid', borderColor:'primary.main', bgcolor:(theme)=> theme.palette.mode==='dark'? 'rgba(255,255,255,0.05)':'#f0f6ff', py:0.5, px:2, mb:'1em', fontStyle:'italic' } }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkSlugLocal]} components={mdRenderers}>{filteredGuide}</ReactMarkdown>
+              </Box>
+            </Box>
+          </>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={()=> setGuideOpen(false)}>Chiudi</Button>
+      </DialogActions>
+  </Dialog>
+  </>
   )
 }
 

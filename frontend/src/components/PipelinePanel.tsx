@@ -3,6 +3,8 @@ import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButto
 import { useTheme } from '@mui/material/styles';
 import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkSlugLocal from '../utils/remarkSlugLocal';
 import { apiService } from '../apiService';
 // DebugPipelineTest removed per nuova specifica
 
@@ -45,6 +47,10 @@ const PipelinePanel: React.FC = () => {
   const [guideLoading, setGuideLoading] = useState(false);
   const [guideError, setGuideError] = useState<string|null>(null);
   const [guideSource, setGuideSource] = useState<string>('');
+  const [guideSearch, setGuideSearch] = useState('');
+  const [guideToc, setGuideToc] = useState<{id:string; level:number; title:string}[]>([]);
+  const [activeGuideHeading, setActiveGuideHeading] = useState('');
+  const guideContainerRef = React.useRef<HTMLDivElement|null>(null);
   const [revalidating, setRevalidating] = useState(false);
   const theme = useTheme();
 
@@ -64,6 +70,60 @@ const PipelinePanel: React.FC = () => {
       setGuideLoading(false);
     }
   };
+
+  // Build TOC when guide content changes
+  useEffect(() => {
+    if (!guideContent) { setGuideToc([]); return; }
+    const lines = guideContent.split(/\n/);
+    const toc: {id:string; level:number; title:string}[] = [];
+    lines.forEach(l => {
+      const m = /^(#{1,4})\s+(.*)$/.exec(l.trim());
+      if (m) {
+        const level = m[1].length;
+        const raw = m[2].replace(/[`*_]+/g,'').trim();
+        const id = raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+        toc.push({ id, level, title: raw });
+      }
+    });
+    setGuideToc(toc);
+  }, [guideContent]);
+
+  // Scroll spy
+  useEffect(() => {
+    if (!guideOpen) return;
+    const el = guideContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4')) as HTMLElement[];
+      const top = el.scrollTop;
+      let current = '';
+      for (const h of headings) {
+        if (h.offsetTop - 80 <= top) current = h.id || '';
+        else break;
+      }
+      if (current && current !== activeGuideHeading) setActiveGuideHeading(current);
+    };
+    el.addEventListener('scroll', onScroll);
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [guideOpen, guideContent, activeGuideHeading]);
+
+  // Search highlight processing
+  const filteredGuideMarkdown = useMemo(() => {
+    if (!guideSearch) return guideContent;
+    try {
+      const re = new RegExp(`(${guideSearch.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})`, 'ig');
+      return guideContent.replace(re, '===$1===');
+    } catch { return guideContent; }
+  }, [guideContent, guideSearch]);
+
+  const renderers = useMemo(() => ({
+    text: (props: any) => {
+      const parts = String(props.children).split(/===/g);
+      if (parts.length === 1) return <>{props.children}</>;
+      return <>{parts.map((p,i) => i%2===1 ? <mark key={i} style={{ background:'#ffc107', color:'#000', padding:'0 2px' }}>{p}</mark> : p)}</>;
+    }
+  }), []);
 
   const revalidate = async () => {
     setRevalidating(true);
@@ -438,7 +498,7 @@ const PipelinePanel: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      {/* Regex Guide Dialog */}
+      {/* Regex Guide Dialog with TOC & Search */}
       <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
         <DialogTitle sx={{ pr:2 }}>Guida Regex Pipeline</DialogTitle>
         <DialogContent
@@ -447,10 +507,10 @@ const PipelinePanel: React.FC = () => {
             bgcolor: theme.palette.mode==='dark'? '#0f1115' : '#fafafa',
             color: theme.palette.mode==='dark'? 'rgba(255,255,255,0.87)' : 'rgba(0,0,0,0.87)',
             p:0,
-            display:'flex', flexDirection:'column'
+            display:'flex', flexDirection:'row', height:'100%'
           }}
         >
-          {guideLoading && <LinearProgress sx={{ mb:0 }} />}
+          {guideLoading && <LinearProgress sx={{ position:'absolute', left:0, right:0, top:0 }} />}
           {!guideLoading && guideError && (
             <Box sx={{ p:3 }}>
               <Alert severity="error" sx={{ mb:2 }}>{guideError}</Alert>
@@ -458,33 +518,40 @@ const PipelinePanel: React.FC = () => {
             </Box>
           )}
           {!guideLoading && !guideError && (
-            <Box sx={{ flex:1, display:'flex', flexDirection:'column', minHeight:0 }}>
-              <Box sx={{ px:3, pt:1, pb:0.5, display:'flex', alignItems:'center', gap:2, flexWrap:'wrap', borderBottom:'1px solid', borderColor:'divider' }}>
-                {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} />}
-                <Button size="small" variant="outlined" startIcon={<FileOpenIcon />} onClick={()=> {
-                  // If the guide source is inside storage and filename matches, open editor
+            <>
+              <Box sx={{ width:250, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', bgcolor: theme.palette.mode==='dark'? '#11171d':'#f1f3f5', p:1 }}>
+                <TextField size="small" label="Cerca" value={guideSearch} onChange={e=> setGuideSearch(e.target.value)} sx={{ mb:1 }} />
+                {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} sx={{ mb:1 }} />}
+                <Button size="small" variant="outlined" startIcon={<FileOpenIcon />} sx={{ mb:1 }} onClick={()=> {
                   const fname = guideSource.split('/').slice(-1)[0];
-                  if (availableFiles.includes(fname)) {
-                    openFileEditor(fname);
-                    setGuideOpen(false);
-                  } else {
-                    // Attempt to load file list then open
-                    (async ()=> {
-                      const fr = await apiService.listAvailablePipelineFiles();
-                      if (fr.success && fr.data?.files?.includes(fname)) {
-                        openFileEditor(fname);
-                        setGuideOpen(false);
-                      } else {
-                        setError('File guida non presente nella lista editing');
-                      }
-                    })();
+                  if (fname) {
+                    if (availableFiles.includes(fname)) { openFileEditor(fname); setGuideOpen(false); }
+                    else {
+                      (async ()=> {
+                        const fr = await apiService.listAvailablePipelineFiles();
+                        if (fr.success && fr.data?.files?.includes(fname)) { openFileEditor(fname); setGuideOpen(false); }
+                        else setError('File guida non presente nella lista editing');
+                      })();
+                    }
                   }
                 }}>Apri nel File Editor</Button>
+                <Box sx={{ flex:1, overflow:'auto' }}>
+                  {guideToc.map(item => (
+                    <Box key={item.id} sx={{ pl:(item.level-1)*1.2, py:0.25 }}>
+                      <Button onClick={() => {
+                        const el = guideContainerRef.current?.querySelector('#'+item.id);
+                        if (el && guideContainerRef.current) {
+                          guideContainerRef.current.scrollTo({ top: (el as HTMLElement).offsetTop - 60, behavior:'smooth' });
+                        }
+                      }} size="small" variant={activeGuideHeading===item.id? 'contained':'text'} color={activeGuideHeading===item.id? 'primary':'inherit'} sx={{ justifyContent:'flex-start', textTransform:'none', fontSize:12, width:'100%' }}>{item.title}</Button>
+                    </Box>
+                  ))}
+                </Box>
               </Box>
-              <Box sx={{ flex:1, overflow:'auto', px:3, py:2, maxWidth: 1100, mx:'auto', '& h1': { mt:2, fontSize:'1.9rem' }, '& h2': { mt:3 }, '& h3': { mt:2 }, '& code': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', p:1.5, borderRadius:1, overflow:'auto' } }}>
-                <ReactMarkdown>{guideContent}</ReactMarkdown>
+              <Box ref={guideContainerRef} sx={{ flex:1, overflow:'auto', px:3, py:2, maxWidth: 1150, mx:'auto', '& h1': { mt:2, fontSize:'1.9rem' }, '& h2': { mt:3 }, '& h3': { mt:2 }, '& code': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', p:1.5, borderRadius:1, overflow:'auto' } }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkSlugLocal]} components={renderers}>{filteredGuideMarkdown}</ReactMarkdown>
               </Box>
-            </Box>
+            </>
           )}
         </DialogContent>
         <DialogActions sx={{ bgcolor: theme.palette.mode==='dark'? '#101418':'#f5f5f5' }}>

@@ -640,6 +640,9 @@ class ApiService {
   async getPipelineRegexGuide(): Promise<ApiResponse<{ content: string }>> {
     return this.makeRequest('/admin/pipeline/regex-guide');
   }
+  async getAdminGuide(): Promise<ApiResponse<{ content: string }>> {
+    return this.makeRequest('/admin/admin-guide');
+  }
   async savePipelineConfig(cfg: { routes: { pattern: string; topic: string }[]; files: Record<string,string> }): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/pipeline', { method: 'POST', body: JSON.stringify(cfg) });
   }

@@ -236,6 +236,7 @@ const AppContent: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
+  const [showAttachments, setShowAttachments] = useState(false)
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const isVerySmall = useMediaQuery('(max-width:420px)')
@@ -1515,8 +1516,22 @@ const AppContent: React.FC = () => {
                 canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
                 isRecording={isRecording}
                 isLoading={loading || isTranscribing || isStreaming}
+                onToggleAttachments={()=> setShowAttachments(o=> !o)}
+                attachmentsCount={attachedFiles.length}
+                attachmentsOpen={showAttachments}
               />
             </Stack>
+            {/* Inline attachments area (collapsed) */}
+            <Collapse in={showAttachments || attachedFiles.length>0} unmountOnExit timeout={220}>
+              <Box sx={{ mt:1.5, borderTop:'1px solid #eee', pt:1 }}>
+                <FileManagerCompact
+                  attachedFiles={attachedFiles}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) setShowAttachments(false) }}
+                  maxFiles={3}
+                  disabled={loading}
+                />
+              </Box>
+            </Collapse>
           </Box>
           {(isRecording || playingMessageIndex !== null) && (
             <Box sx={{ px: 2, pb: 1 }}>
@@ -1554,22 +1569,7 @@ const AppContent: React.FC = () => {
         />
       )}
 
-      {/* File Manager */}
-      <Box sx={{ mt: 2 }}>
-        <Box sx={{ display:'flex', alignItems:'center', gap:1, mb: 0.5 }}>
-          <ImageIcon sx={{ color:'text.secondary' }} fontSize="small" />
-          <Typography variant="body2" color="text.secondary">Allegati</Typography>
-          <Tooltip title="Carica PDF o immagini: il chatbot userà i contenuti nelle risposte.">
-            <HelpOutlineIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-          </Tooltip>
-        </Box>
-        <FileManagerCompact
-          attachedFiles={attachedFiles}
-          onFilesChange={setAttachedFiles}
-          maxFiles={3}
-          disabled={loading}
-        />
-      </Box>
+  {/* (Old standalone Allegati section removed: now inline in input area) */}
 
   {/* RAG Context Selector removed per richiesta: la selezione contesti ora integrata nei metadati bubble */}
 

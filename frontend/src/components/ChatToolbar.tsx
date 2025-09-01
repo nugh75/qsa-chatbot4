@@ -3,12 +3,14 @@ import {
   Stack,
   CircularProgress,
   IconButton,
+  Badge,
+  Tooltip,
 } from '@mui/material';
 import {
   Send as SendIcon,
   Mic as MicIcon,
   Stop as StopIcon,
-  Add as AddIcon,
+  AttachFile as AttachFileIcon,
 } from '@mui/icons-material';
 
 interface ChatToolbarProps {
@@ -18,6 +20,9 @@ interface ChatToolbarProps {
   canSend: boolean;
   isRecording: boolean;
   isLoading: boolean;
+  onToggleAttachments?: () => void;
+  attachmentsCount?: number;
+  attachmentsOpen?: boolean;
 }
 
 const ChatToolbar: React.FC<ChatToolbarProps> = ({
@@ -26,7 +31,10 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
   onStopRecording,
   canSend,
   isRecording,
-  isLoading
+  isLoading,
+  onToggleAttachments,
+  attachmentsCount = 0,
+  attachmentsOpen = false
 }) => {
   
   const handleMicClick = () => {
@@ -39,6 +47,29 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
 
   return (
     <Stack direction="row" spacing={0.5} alignItems="center">
+      {onToggleAttachments && (
+        <Tooltip title={attachmentsOpen ? 'Nascondi allegati' : (attachmentsCount ? 'Mostra allegati' : 'Aggiungi allegati')}>
+          <span>
+            <IconButton
+              onClick={onToggleAttachments}
+              disabled={isLoading}
+              color={attachmentsOpen || attachmentsCount>0 ? 'primary' : 'default'}
+              size="small"
+              sx={{ borderRadius: 2, width: 36, height: 36 }}
+            >
+              <Badge
+                color="primary"
+                badgeContent={attachmentsCount || 0}
+                overlap="circular"
+                max={9}
+                invisible={attachmentsCount === 0}
+              >
+                <AttachFileIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
       <IconButton
         onClick={onSend}
         disabled={!canSend || isLoading}
@@ -56,13 +87,9 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
       <IconButton
         onClick={handleMicClick}
         disabled={isLoading}
-        color={isRecording ? "error" : "primary"}
+        color={isRecording ? 'error' : 'primary'}
         size="small"
-        sx={{ 
-          borderRadius: 2,
-          width: 36,
-          height: 36
-        }}
+        sx={{ borderRadius: 2, width: 36, height: 36 }}
       >
         {isRecording ? <StopIcon /> : <MicIcon />}
       </IconButton>

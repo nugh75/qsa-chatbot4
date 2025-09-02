@@ -1,8 +1,11 @@
 import re
 import json
 from functools import lru_cache
+import os
+import unicodedata
+from .admin import load_config  # to read pipeline_settings
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
@@ -13,9 +16,31 @@ def load_routes() -> List[Tuple[str, str]]:
   """
   try:
     data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    return [(item["pattern"], item["topic"]) for item in data.get("routes", [])]
+    # Config-driven flags (fallback agli env se non ancora salvati in config)
+    try:
+      cfg = load_config()
+      _ps = cfg.get('pipeline_settings', {}) if isinstance(cfg, dict) else {}
+    except Exception:
+      _ps = {}
+    force_case = bool(_ps.get('force_case_insensitive')) or (os.getenv("PIPELINE_FORCE_CASE_INSENSITIVE", "0") in ("1", "true", "True"))
+    cleaned: List[Tuple[str,str]] = []
+    for item in data.get("routes", []):
+      pat = item.get("pattern", "")
+      topic = item.get("topic", "")
+      # Strip whitespace/newline ai bordi
+      pat = pat.strip()
+      # Forza case-insensitive aggiungendo (?i) se richiesto e non già presente
+      if force_case and not pat.startswith("(?i)"):
+        pat = "(?i)" + pat
+      cleaned.append((pat, topic))
+    return cleaned
   except Exception:
     return []
+
+def _normalize_accents(text: str) -> str:
+  """Rimuove gli accenti (diacritici) mantenendo solo caratteri base."""
+  nfkd = unicodedata.normalize('NFKD', text)
+  return ''.join(ch for ch in nfkd if not unicodedata.combining(ch))
 
 def detect_topic(user_text: str, enabled_topics: Optional[List[str]] = None) -> Optional[str]:
   """Rileva il topic dal testo dell'utente
@@ -28,6 +53,13 @@ def detect_topic(user_text: str, enabled_topics: Optional[List[str]] = None) -> 
       Topic rilevato se abilitato, altrimenti None
   """
   t = user_text.lower()
+  try:
+    cfg = load_config(); _ps = cfg.get('pipeline_settings', {}) if isinstance(cfg, dict) else {}
+    norm_acc = bool(_ps.get('normalize_accents')) or (os.getenv("PIPELINE_NORMALIZE_ACCENTS", "0") in ("1", "true", "True"))
+  except Exception:
+    norm_acc = os.getenv("PIPELINE_NORMALIZE_ACCENTS", "0") in ("1", "true", "True")
+  if norm_acc:
+    t = _normalize_accents(t)
   for pat, topic in load_routes():
     try:
       if re.search(pat, t):
@@ -40,7 +72,7 @@ def detect_topic(user_text: str, enabled_topics: Optional[List[str]] = None) -> 
       continue
   return None
 
-def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, max_topics: int = 5) -> List[Dict[str,str]]:
+def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, max_topics: Optional[int] = 5) -> List[Dict[str,str]]:
   """Rileva MULTIPLI topic per il testo utente.
 
   Restituisce una lista di dict {"topic":..., "pattern":...} in ordine di prima occorrenza nel testo
@@ -49,9 +81,16 @@ def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, ma
   Args:
       user_text: Testo dell'utente
       enabled_topics: Lista (whitelist) di topic abilitati
-      max_topics: Numero massimo di topic da restituire
+      max_topics: Numero massimo di topic da restituire. Se None o <=0 restituisce tutti i topic trovati.
   """
   t = user_text.lower()
+  try:
+    cfg = load_config(); _ps = cfg.get('pipeline_settings', {}) if isinstance(cfg, dict) else {}
+    norm_acc = bool(_ps.get('normalize_accents')) or (os.getenv("PIPELINE_NORMALIZE_ACCENTS", "0") in ("1", "true", "True"))
+  except Exception:
+    norm_acc = os.getenv("PIPELINE_NORMALIZE_ACCENTS", "0") in ("1", "true", "True")
+  if norm_acc:
+    t = _normalize_accents(t)
   matches: List[Tuple[int,str,str]] = []  # (start_index, topic, pattern)
   for pat, topic in load_routes():
     if enabled_topics is not None and topic not in enabled_topics:
@@ -71,7 +110,7 @@ def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, ma
       continue
     seen.add(topic)
     out.append({"topic": topic, "pattern": pat})
-    if len(out) >= max_topics:
+    if max_topics is not None and max_topics > 0 and len(out) >= max_topics:
       break
   return out
 

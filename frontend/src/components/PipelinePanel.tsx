@@ -52,6 +52,10 @@ const PipelinePanel: React.FC = () => {
   const [activeGuideHeading, setActiveGuideHeading] = useState('');
   const guideContainerRef = React.useRef<HTMLDivElement|null>(null);
   const [revalidating, setRevalidating] = useState(false);
+  // Pipeline settings flags
+  const [forceCaseInsensitive, setForceCaseInsensitive] = useState<boolean|undefined>(undefined);
+  const [normalizeAccents, setNormalizeAccents] = useState<boolean|undefined>(undefined);
+  const [savingSettings, setSavingSettings] = useState(false);
   const theme = useTheme();
 
   const openGuide = async () => {
@@ -148,6 +152,12 @@ const PipelinePanel: React.FC = () => {
         }
       }
       else setError(cfgRes.error||'Errore caricamento config');
+      // Load pipeline settings (independent)
+      const settingsRes = await apiService.getPipelineSettings();
+      if (settingsRes.success) {
+        setForceCaseInsensitive((settingsRes.data as any)?.settings?.force_case_insensitive);
+        setNormalizeAccents((settingsRes.data as any)?.settings?.normalize_accents);
+      }
   const filesRes = await apiService.listAvailablePipelineFiles();
   if (filesRes.success) setAvailableFiles(filesRes.data?.files||[]);
     } catch (e:any) { 
@@ -353,6 +363,20 @@ const PipelinePanel: React.FC = () => {
                   Elimina ({selectedRouteKeys.size})
                 </Button>
               )}
+              <Divider flexItem orientation="vertical" sx={{ mx:1 }} />
+              <FormControlLabel sx={{ m:0 }} control={<Switch size="small" disabled={forceCaseInsensitive===undefined||savingSettings} checked={!!forceCaseInsensitive} onChange={async e=> {
+                const val = e.target.checked; setForceCaseInsensitive(val); setSavingSettings(true);
+                const res = await apiService.updatePipelineSettings(val, !!normalizeAccents);
+                if (!res.success) { setError(res.error||'Errore salvataggio settings'); }
+                setSavingSettings(false);
+              }} />} label={<Typography variant="caption">Case Insens.</Typography>} />
+              <FormControlLabel sx={{ m:0 }} control={<Switch size="small" disabled={normalizeAccents===undefined||savingSettings} checked={!!normalizeAccents} onChange={async e=> {
+                const val = e.target.checked; setNormalizeAccents(val); setSavingSettings(true);
+                const res = await apiService.updatePipelineSettings(!!forceCaseInsensitive, val);
+                if (!res.success) { setError(res.error||'Errore salvataggio settings'); }
+                setSavingSettings(false);
+              }} />} label={<Typography variant="caption">Normalizza Acc.</Typography>} />
+              {savingSettings && <Chip size="small" label="Salvataggio..." />}
             </Stack>
             <Divider sx={{ mb:1 }} />
             <Table size="small" stickyHeader>

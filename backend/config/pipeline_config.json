@@ -5,7 +5,7 @@
       "topic": "Analisi di secondo livello"
     },
     {
-      "pattern": "\\b(fattori cognitivi|C[1-7]|strategie|organizzatori|metacognizione)\\b",
+      "pattern": "\\b(C1 strategie elaborative|C2 autoregolazione|C3 disorientamento|C4 disponibilità alla collaborazione|C5 organizzatori semantici|C6 difficoltà di concentrazione|C7 autointerrogazione|C[1-7])\\b\n",
       "topic": "Fattori cognitivi"
     },
     {
@@ -21,7 +21,7 @@
       "topic": "strategie di apprendimento"
     },
     {
-      "pattern": "(?i)\\b(?:fattori?\\s*affettiv[oi][- ]?motivazional[ei]?|a\\s*[1-7])\\b\n",
+      "pattern": "(?i)\\b(?:A1\\s*[:\\-]?\\s*(?:ansiet[aà]|ansia)\\s*di\\s*base|A2\\s*[:\\-]?\\s*volizione|A3\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*controllabili|A4\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*incontrollabili|A5\\s*[:\\-]?\\s*mancanza\\s*di\\s*perseveranza|A6\\s*[:\\-]?\\s*percezione\\s*di\\s*competenza|A7\\s*[:\\-]?\\s*interferenze\\s*emotive|(?:ansiet[aà]|ansia)\\s+di\\s+base|volizione|attribuzione\\s+a\\s+cause\\s+controllabili|attribuzione\\s+a\\s+cause\\s+incontrollabili|mancanza\\s+di\\s+perseveranza|percezione\\s+di\\s+competenza|interferenze\\s+emotive|A[1-7])\\b\n\n",
       "topic": "Fattori affettivo motivazionali"
     }
   ],

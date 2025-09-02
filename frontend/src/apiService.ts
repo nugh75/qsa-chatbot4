@@ -634,6 +634,15 @@ class ApiService {
   async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
     return this.makeRequest('/admin/pipeline');
   }
+    async getPipelineSettings(): Promise<ApiResponse<{ settings: { force_case_insensitive: boolean; normalize_accents: boolean } }>> {
+      return this.makeRequest('/admin/pipeline-settings');
+    }
+    async updatePipelineSettings(force_case_insensitive: boolean, normalize_accents: boolean): Promise<ApiResponse<any>> {
+      return this.makeRequest('/admin/pipeline-settings', {
+        method: 'POST',
+        body: JSON.stringify({ force_case_insensitive, normalize_accents })
+      });
+    }
   async validatePipeline(): Promise<ApiResponse<{ issues: { pattern:string; topic?:string; severity:string; code:string; message:string }[]; counts: { ERROR:number; WARN:number; INFO:number } }>> {
     return this.makeRequest('/admin/pipeline/validate');
   }

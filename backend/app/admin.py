@@ -27,7 +27,9 @@ from .prompts import (
 from fastapi import UploadFile
 from fastapi import File as FastFile
 from fastapi.staticfiles import StaticFiles
-from .topic_router import refresh_routes_cache
+# NOTE: Avoid importing topic_router at module import time to prevent circular import
+# (topic_router imports load_config from this module). We'll lazy-import refresh_routes_cache
+# where needed via the _refresh_routes_cache() helper below.
 from .rag import refresh_files_cache
 from .usage import read_usage, usage_stats, reset_usage, query_usage
 from .memory import get_memory
@@ -189,6 +191,17 @@ DEFAULT_CONFIG = {
         "max_messages_per_session": 10,
         "auto_cleanup_hours": 24,
         "enabled": True
+    },
+    "context_settings": {
+        "total_tokens": 9000,            # target totale (token stimati)
+        "min_topics_tokens": 3000,       # minimo riservato ai topics
+        "min_rag_tokens": 2000,          # minimo riservato al RAG
+        "jaccard_threshold": 0.8,        # soglia dedup topic
+        "topics_extra_share": 0.7        # quota leftover ai topics
+    },
+    "pipeline_settings": {
+        "force_case_insensitive": False,
+        "normalize_accents": False
     }
 }
 
@@ -213,6 +226,15 @@ def save_config(config: dict):
     os.makedirs(os.path.dirname(config_file), exist_ok=True)
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+
+def _refresh_routes_cache():
+    """Lazy import per aggiornare la cache delle route senza creare import circolari."""
+    try:
+        from . import topic_router  # type: ignore
+        if hasattr(topic_router, 'refresh_routes_cache'):
+            topic_router.refresh_routes_cache()
+    except Exception:
+        pass
 
 def get_summary_provider():
     """Ottiene il provider configurato per i summary (mai 'local')"""
@@ -307,6 +329,84 @@ async def update_ui_settings(payload: UiSettingsIn):
         return {"success": True, "message": "Impostazioni UI aggiornate"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore salvataggio impostazioni UI: {str(e)}")
+
+# ---- Context settings (topics/RAG budgeting) ----
+class ContextSettingsIn(BaseModel):
+    total_tokens: int
+    min_topics_tokens: int
+    min_rag_tokens: int
+    jaccard_threshold: float | None = None
+    topics_extra_share: float | None = None
+
+class PipelineSettingsIn(BaseModel):
+    force_case_insensitive: bool
+    normalize_accents: bool
+
+@router.get("/admin/context-settings")
+async def get_context_settings():
+    try:
+        cfg = load_config()
+        ctx = cfg.get("context_settings", {})
+        # fill defaults if missing
+        defaults = DEFAULT_CONFIG.get("context_settings", {})
+        merged = {**defaults, **ctx}
+        return {"settings": merged}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento context settings: {e}")
+
+@router.post("/admin/context-settings")
+async def update_context_settings(payload: ContextSettingsIn):
+    try:
+        if payload.total_tokens < 2000:
+            raise HTTPException(status_code=400, detail="total_tokens troppo basso")
+        if payload.min_topics_tokens + payload.min_rag_tokens > payload.total_tokens:
+            raise HTTPException(status_code=400, detail="Somma minimi supera total_tokens")
+        cfg = load_config()
+        cfg.setdefault("context_settings", {})
+        cfg["context_settings"].update({
+            "total_tokens": payload.total_tokens,
+            "min_topics_tokens": payload.min_topics_tokens,
+            "min_rag_tokens": payload.min_rag_tokens,
+        })
+        if payload.jaccard_threshold is not None:
+            cfg["context_settings"]["jaccard_threshold"] = payload.jaccard_threshold
+        if payload.topics_extra_share is not None:
+            cfg["context_settings"]["topics_extra_share"] = payload.topics_extra_share
+        save_config(cfg)
+        return {"success": True, "message": "Context settings aggiornati"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio context settings: {e}")
+
+@router.get("/admin/pipeline-settings")
+async def get_pipeline_settings():
+    try:
+        cfg = load_config()
+        defaults = DEFAULT_CONFIG.get("pipeline_settings", {})
+        merged = {**defaults, **cfg.get("pipeline_settings", {})}
+        return {"settings": merged}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento pipeline settings: {e}")
+
+@router.post("/admin/pipeline-settings")
+async def update_pipeline_settings(payload: PipelineSettingsIn):
+    try:
+        cfg = load_config()
+        cfg.setdefault("pipeline_settings", {})
+        cfg["pipeline_settings"].update({
+            "force_case_insensitive": bool(payload.force_case_insensitive),
+            "normalize_accents": bool(payload.normalize_accents)
+        })
+        save_config(cfg)
+        # Refresh routes cache per applicare subito
+        try:
+            _refresh_routes_cache()
+        except Exception:
+            pass
+        return {"success": True, "message": "Pipeline settings aggiornati"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio pipeline settings: {e}")
 
 @router.get("/admin/config")
 async def get_config():
@@ -1560,7 +1660,7 @@ async def update_pipeline_config(cfg: PipelineConfig):
         })
     try:
         PIPELINE_CONFIG_PATH.write_text(json.dumps(cfg.dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
+        _refresh_routes_cache()
         refresh_files_cache()
         return {"success": True, "message": "Pipeline salvata", "validation": {
             'issues': [i.dict() for i in issues],
@@ -1603,7 +1703,7 @@ async def reset_pipeline_config():
             original = {"routes": [], "files": {}}
         # Sovrascrive
         PIPELINE_CONFIG_PATH.write_text(json.dumps(original, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
+        _refresh_routes_cache()
         refresh_files_cache()
         return {"success": True, "pipeline": original}
     except Exception as e:
@@ -1632,8 +1732,7 @@ async def add_pipeline_route(route: PipelineRoute):
         
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
         return {"success": True, "message": "Route aggiunta con successo"}
     except HTTPException:
         raise
@@ -1671,8 +1770,7 @@ async def update_pipeline_route(update: RouteUpdate):
         
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
         return {"success": True, "message": "Route aggiornata con successo"}
     except HTTPException:
         raise
@@ -1699,8 +1797,7 @@ async def delete_pipeline_route(pattern: str, topic: str):
         
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
         return {"success": True, "message": "Route eliminata con successo"}
     except HTTPException:
         raise

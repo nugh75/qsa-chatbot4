@@ -178,15 +178,211 @@ async def chat(
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
-    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
-    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
-    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
-    
-    # Fallback al sistema legacy se RAG non trova nulla
-    if not rag_context:
-        context = get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
-    else:
-        context = rag_context
+    # Rileva TUTTI i topic (max_topics=None -> illimitato)
+    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None)
+    # Filtra topic quasi duplicati (Jaccard similarity su set parole >= soglia)
+    def _normalize_words(s: str) -> set:
+        import re as _re
+        return {w for w in _re.findall(r"[a-zA-ZàèéìòùA-Z0-9]+", s.lower()) if len(w) > 2}
+    filtered_topics = []
+    seen_sets = []
+    JACCARD_THRESHOLD = 0.8
+    for tinfo in (topics_multi or []):
+        nm = tinfo.get('topic')
+        if not nm:
+            continue
+        wset = _normalize_words(nm)
+        if not wset:
+            filtered_topics.append(tinfo)
+            seen_sets.append(wset)
+            continue
+        duplicate = False
+        for sset in seen_sets:
+            if not sset:
+                continue
+            inter = len(wset & sset)
+            union = len(wset | sset) or 1
+            if inter / union >= JACCARD_THRESHOLD:
+                duplicate = True
+                break
+        if not duplicate:
+            filtered_topics.append(tinfo)
+            seen_sets.append(wset)
+    topics_multi = filtered_topics
+    # --- Dynamic context assembly (topics priority + RAG by similarity) ---
+    import os as _os
+    from .rag import load_files_mapping, load_text
+    # Budgets configurabili (token-approx). Fallback a caratteri.
+    TOTAL_BUDGET = int(_os.getenv("CONTEXT_TOTAL_BUDGET", "9000"))
+    MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_CHARS", "3000"))
+    MIN_RAG = int(_os.getenv("CONTEXT_MIN_RAG_CHARS", "2000"))
+    # Stima token: approx 4 char per token (euristica media lingua mista)
+    def _estimate_tokens(txt: str) -> int:
+        return max(1, len(txt)//4)
+    # Convert budgets (interpretiamo come caratteri se > 2000 e non ridefiniti da *_TOKENS )
+    TOKENS_TOTAL = int(_os.getenv("CONTEXT_TOTAL_TOKENS", str(max(1000, TOTAL_BUDGET//4))))
+    TOKENS_MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_TOKENS", str(max(500, MIN_TOPICS//4))))
+    TOKENS_MIN_RAG = int(_os.getenv("CONTEXT_MIN_RAG_TOKENS", str(max(300, MIN_RAG//4))))
+    # Usare token come baseline; riconvertiamo a caratteri target per fine truncation
+    TOTAL_BUDGET = TOKENS_TOTAL * 4
+    MIN_TOPICS = TOKENS_MIN_TOPICS * 4
+    MIN_RAG = TOKENS_MIN_RAG * 4
+    # Safety clamps
+    if TOTAL_BUDGET < 3000:
+        TOTAL_BUDGET = 3000
+    if MIN_TOPICS + MIN_RAG > TOTAL_BUDGET:
+        # shrink RAG first
+        overflow = (MIN_TOPICS + MIN_RAG) - TOTAL_BUDGET
+        reduce_rag = min(overflow, max(0, MIN_RAG - 1000))  # keep at least 1000 for RAG if possible
+        MIN_RAG -= reduce_rag
+        if MIN_TOPICS + MIN_RAG > TOTAL_BUDGET:
+            MIN_TOPICS = max(1000, TOTAL_BUDGET - MIN_RAG)
+
+    # Collect topic raw snippets
+    file_map = load_files_mapping()
+    topic_snippets: list[tuple[str,str]] = []  # (topic, snippet)
+    seen_topics = set()
+    for tinfo in (topics_multi or []):
+        tname = tinfo.get('topic')
+        if not tname or tname in seen_topics:
+            continue
+        seen_topics.add(tname)
+        if tname in file_map:
+            try:
+                raw_txt = load_text(tname)
+                topic_snippets.append((tname, raw_txt))
+            except Exception:
+                continue
+    # Fallback single-topic context if none collected
+    if not topic_snippets and topic:
+        try:
+            raw_txt = load_text(topic)
+            topic_snippets.append((topic, raw_txt))
+        except Exception:
+            pass
+
+    # We also pre-fetch RAG search results (ordered by similarity) for granular budgeting
+    rag_search_results = []
+    try:
+        from .rag_engine import rag_engine
+        from .rag_routes import get_user_context as _guc
+        selected_groups = _guc(session_id)
+        if personality_enabled_rag_groups is not None:
+            if selected_groups:
+                selected_groups = [g for g in selected_groups if g in personality_enabled_rag_groups]
+            else:
+                selected_groups = personality_enabled_rag_groups
+        if not selected_groups:
+            # attempt auto groups (non-invasive; same logic as get_rag_context)
+            try:
+                all_groups = rag_engine.get_groups()
+                selected_groups = [g['id'] for g in all_groups if g.get('document_count')][:5]
+            except Exception:
+                selected_groups = []
+        if selected_groups:
+            raw_results = rag_engine.search(query=full_user_message, group_ids=selected_groups, top_k=12) or []
+            # sort by similarity_score descending if present
+            rag_search_results = sorted(raw_results, key=lambda r: r.get('similarity_score') or 0.0, reverse=True)
+    except Exception:
+        rag_search_results = []
+
+    # Compose topic section with dynamic allocation
+    # Weight topics by (snippet length truncated + length of topic name)
+    topic_weights = []
+    for name, txt in topic_snippets:
+        weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        topic_weights.append((name, txt, weight))
+    total_w = sum(w for _,_,w in topic_weights) or 1
+    remaining_budget = TOTAL_BUDGET
+    # First assign min budgets
+    topic_budget = min(max(MIN_TOPICS, 0), remaining_budget)
+    remaining_budget -= topic_budget
+    rag_budget = min(max(MIN_RAG, 0), remaining_budget)
+    remaining_budget -= rag_budget
+    # Distribute leftover: priority topics then rag
+    if remaining_budget > 0:
+        # 70% leftover to topics, rest to rag
+        extra_topics = int(remaining_budget * 0.7)
+        topic_budget += extra_topics
+        rag_budget += (remaining_budget - extra_topics)
+
+    def _truncate_sentence_boundary(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        cut = text[:limit]
+        # try to end at period or newline
+        for sep in ['.\n', '. ', '\n', '! ', '? ']:
+            idx = cut.rfind(sep)
+            if idx > limit * 0.5:
+                return cut[:idx+len(sep)].strip()
+        return cut.strip()
+
+    # Build topic context
+    topic_sections = []
+    for name, txt, w in topic_weights:
+        share = int(topic_budget * (w / total_w))
+        # bounding per-topic min 300 max 4000
+        share = max(300, min(4000, share))
+        snippet = _truncate_sentence_boundary(txt, share)
+        topic_sections.append(f"[TOPIC: {name}]\n{snippet}")
+    topic_context_combined = "\n\n".join(topic_sections)
+    if len(topic_context_combined) > topic_budget:
+        topic_context_combined = topic_context_combined[:topic_budget]
+
+    # Build RAG context ordered by similarity
+    rag_sections = []
+    if rag_search_results:
+        # weight rag docs by similarity directly
+        rag_total_sim = sum((r.get('similarity_score') or 0.0001) for r in rag_search_results) or 1
+        for r in rag_search_results:
+            sim = r.get('similarity_score') or 0.0001
+            share = int(rag_budget * (sim / rag_total_sim))
+            share = max(250, min(2500, share))
+            content = r.get('content') or ''
+            snippet = _truncate_sentence_boundary(content, share)
+            fname = r.get('original_filename') or r.get('filename') or 'documento'
+            rag_sections.append(f"[RAG Fonte: {fname} sim={sim:.3f}]\n{snippet}")
+            if sum(len(s) for s in rag_sections) > rag_budget * 1.3:  # soft cap to stop early
+                break
+    rag_context_combined = "\n\n".join(rag_sections)
+    if len(rag_context_combined) > rag_budget:
+        rag_context_combined = rag_context_combined[:rag_budget]
+
+    # Reclaim unused topic space for RAG if rag is truncated severely and topic underused
+    unused_topic = max(0, topic_budget - len(topic_context_combined))
+    if unused_topic > 500 and rag_search_results:
+        rag_extra_allow = min(unused_topic, 2000)
+        # try extend each existing rag section a bit if original content longer (skipped for simplicity)
+        rag_context_combined = (rag_context_combined + '\n')[:(rag_budget + rag_extra_allow)]
+
+    sections = []
+    if topic_context_combined:
+        sections.append(f"[SEZIONE TOPICS]\n{topic_context_combined.strip()}")
+    if rag_context_combined:
+        sections.append(f"[SEZIONE RAG]\n{rag_context_combined.strip()}")
+    context = "\n\n".join(sections)[:TOTAL_BUDGET]
+    # Provide simple rag_context flag for downstream logic (used in logging)
+    rag_context = rag_context_combined if rag_context_combined else ""
+
+    # --- Logging dettagliato regex & contesto ---
+    try:
+        from .logging_utils import log_interaction as _li, log_system as _ls
+        _li({
+            "event": "pipeline_context_built",
+            "request_id": request_id,
+            "topics_detected": topics_multi,
+            "topic_primary": topic,
+            "topic_files_loaded": [t for t,_ in topic_snippets],
+            "topic_budget_chars": topic_budget,
+            "rag_budget_chars": rag_budget,
+            "total_budget_chars": TOTAL_BUDGET,
+            "rag_results_count": len(rag_search_results),
+            "rag_used": bool(rag_context),
+            "user_message_sample": (user_msg or "")[:180],
+        })
+        _ls(20, f"CTX req={request_id} topics={','.join([t.get('topic') for t in topics_multi]) if topics_multi else '-'} rag_docs={len(rag_search_results)} budgets(topic/rag/total)={topic_budget}/{rag_budget}/{TOTAL_BUDGET}")
+    except Exception:
+        pass
         
     # Personality override
     effective_provider = (x_llm_provider or "local").lower()
@@ -232,9 +428,16 @@ async def chat(
         print(f"Using persistent conversation {conversation_id}, frontend provided {len(conversation_history)} history messages")
     
     # Prepara i messaggi per il provider LLM
+    # Costruisci descrizione topics per prompt se multi
+    if topics_multi:
+        topic_names = ", ".join([t['topic'] for t in topics_multi])
+        topic_label = f"topics: {topic_names} (dinamico)"
+    else:
+        topic_label = f"topic: {topic or 'generale'} (dinamico)"
+
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic or 'generale'}]\n{context[:6000]}"}
+        {"role": "system", "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"}
     ]
     
     # Aggiungi la cronologia della conversazione
@@ -562,7 +765,7 @@ async def chat_stream(
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
-    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None)
     if not topic:
         topic = 'generale'
     # Costruisci full_user_message coerente col non-stream (allegati non gestiti qui per semplicità futura estensione)

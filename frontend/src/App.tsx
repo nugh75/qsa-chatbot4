@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import type { PersonalityEntry } from './types/admin'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText } from '@mui/material'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText, LinearProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
 // VolumeUpIcon removed from inline usage (handled by HeaderBar)
@@ -211,6 +211,13 @@ const AppContent: React.FC = () => {
   const [playingMessageIndex, setPlayingMessageIndex] = useState<number | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
+  // Whisper async model loading states
+  const [whisperModalOpen, setWhisperModalOpen] = useState(false)
+  const [whisperStage, setWhisperStage] = useState<'downloading'|'loading'|null>(null)
+  const [whisperProgress, setWhisperProgress] = useState<number>(0)
+  const [whisperModel, setWhisperModel] = useState<string>('small')
+  const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob|null>(null)
+  const whisperPollRef = React.useRef<number|undefined>(undefined)
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [feedback, setFeedback] = useState<{[key: number]: 'like' | 'dislike'}>({})
@@ -449,6 +456,128 @@ const AppContent: React.FC = () => {
   return out
   }
 
+  // Migliora ulteriormente le tabelle markdown:
+  // - Aggiunge riga separatrice se manca (caso: modello produce solo header + righe dati senza ---)
+  // - Normalizza spazi superflui attorno alle pipes
+  const enhanceMarkdownTables = (md: string): string => {
+    if (!md) return md
+    const lines = md.split('\n')
+    const result: string[] = []
+  let inPipeTable = false
+  let currentColCount = 0
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      const next = lines[i+1] || ''
+
+      // Caso 1: formato "legacy" senza pipes: Header line, poi linea di soli trattini separati da spazi -> converti in pipe table
+      // Esempio:
+      // Codice  Nome  Descrizione
+      // -------- ------ -------------
+      // C1   Strategia ...
+      if (/[-A-Za-zÀ-ÖØ-öø-ÿ0-9].*[ \t]{2,}[-A-Za-zÀ-ÖØ-öø-ÿ0-9]/.test(line) && /^\s*-{2,}(?:\s+-{2,})+\s*$/.test(next)) {
+        // Raccogli header columns (split su 2+ spazi)
+        const headerCols = line.trim().split(/\s{2,}/).map(c=>c.trim()).filter(Boolean)
+        const dashParts = next.trim().split(/\s{2,}/)
+        if (headerCols.length === dashParts.length && headerCols.length >= 2) {
+          result.push('| ' + headerCols.join(' | ') + ' |')
+          result.push('| ' + headerCols.map(()=> '---').join(' | ') + ' |')
+          i += 1 // salta riga di trattini
+          // Consuma righe dati finché pattern colonne regge
+          let j = i + 1
+          while (j < lines.length) {
+            const dataLine = lines[j]
+            if (!dataLine.trim()) {
+              break
+            }
+            const dataCols = dataLine.trim().split(/\s{2,}/).map(c=>c.trim())
+            if (dataCols.length === headerCols.length) {
+              result.push('| ' + dataCols.join(' | ') + ' |')
+              j++
+            } else {
+              break
+            }
+          }
+          i = j - 1
+          continue
+        }
+      }
+      // Caso: riga con almeno una pipe ma NON è una riga separatrice e la prossima riga non è separatrice e contiene pipe -> probabilmente manca la riga ---
+      if (/\|/.test(line) && /\|/.test(next) && !/^\s*\|?\s*:?-{2,}:?/.test(line) && !/^\s*\|?\s*:?-{2,}:?/.test(next)) {
+          // Inserisce riga separatrice calcolando numero colonne
+          const parts = line.split('|')
+          const cols = parts.length - 1 // splitting conta bordi
+          if (cols >= 2) {
+            // Normalizza header e celle rimuovendo spazi multipli e vuoti estremi
+            const normalizedCells = parts.map(p => p.trim()).filter((cell,idx,arr)=> !(idx===0 && cell==='') && !(idx===arr.length-1 && cell===''))
+            const normalizedHeader = '|' + normalizedCells.join(' | ') + ' |'
+            result.push(normalizedHeader)
+            result.push('|' + Array(cols).fill('---').join(' | ') + ' |')
+            continue
+          }
+      }
+
+      // Caso 2: Tabella con pipes già presente ma riga separatrice malformata (esempio: header corretto, seconda riga con meno segmenti di ---)
+      // Strategia: se line ha pipes ed è header (non solo ---) e next contiene almeno 3 '-' totali ma numero gruppi '---' + pipes < colonne header, rigenera separatore.
+      if (/\|/.test(line) && !/^\s*\|\s*:?-{3,}:?/.test(line)) {
+        // Conta colonne header
+        const headerCells = line.split('|').map(c=>c.trim()).filter((c,idx,arr)=> !(idx===0 && c==='') && !(idx===arr.length-1 && c===''))
+        if (headerCells.length > 1) {
+          const sepMatch = next.match(/\|/g)
+          const looksLikeSep = /-{3,}/.test(next) && (sepMatch ? sepMatch.length >= 1 : true)
+          if (looksLikeSep) {
+            // Conta gruppi potenziali di separazione (--- o :---: ecc.)
+            const groups = next.split('|').map(s=>s.trim()).filter(Boolean)
+            const validGroupCount = groups.filter(g=>/^:?-{3,}:?$/.test(g)).length
+            if (validGroupCount !== headerCells.length) {
+              // Rigenera intera coppia header + separatore corretto
+              result.push('| ' + headerCells.join(' | ') + ' |')
+              result.push('| ' + headerCells.map(()=> '---').join(' | ') + ' |')
+              i += 1 // Salta la vecchia riga next
+              continue
+            }
+          }
+        }
+      }
+
+      // Tracking stato tabella dopo aver eventualmente pushato header + separatore
+      if (/^\s*\|.*\|\s*$/.test(line) && /\|/.test(line)) {
+        // Se questa è una riga separatrice valida appena aggiunta, attiva stato tabella
+        if (/^\s*\|\s*:?-{3,}:?(\s*\|\s*:?-{3,}:?)*\|?\s*$/.test(line)) {
+          inPipeTable = true
+        } else if (!inPipeTable) {
+          // È un header (non separatore) – determina colonne
+          const headerCellsTmp = line.split('|').map(c=>c.trim()).filter((c,idx,arr)=> !(idx===0 && c==='') && !(idx===arr.length-1 && c===''))
+          currentColCount = headerCellsTmp.length
+        }
+      } else if (inPipeTable) {
+        // Se siamo in tabella ma riga non ha pipe: potrebbe essere continuazione cella multiline → unisci alla riga precedente
+        if (result.length > 0) {
+          const prev = result[result.length -1]
+          if (/^\s*\|.*\|\s*$/.test(prev)) {
+            // Appendi testo (solo se non vuoto) all'ultima cella
+            if (line.trim()) {
+              result[result.length -1] = prev.replace(/\|\s*$/,'') + '<br/>' + line.trim() + ' |'
+            }
+            continue
+          }
+        }
+        // Se riga vuota, chiudi stato tabella
+        if (!line.trim()) {
+          inPipeTable = false
+          currentColCount = 0
+        }
+      }
+
+      // Rimozione righe corpo fatte solo di --- (errori del modello) mantenendo solo separatore ufficiale
+      if (inPipeTable && /^\s*\|\s*(?:-{3,}\s*\|\s*)+(-{3,}\s*)?\|?\s*$/.test(line)) {
+        // Questa è una riga composta solo da dashes (non dovrebbe comparire nel body) -> skip
+        continue
+      }
+      result.push(line)
+    }
+    return result.join('\n')
+  }
+
   // Provider mappings
   const providerLabels: Record<string, string> = {
     'local': 'Locale',
@@ -519,7 +648,9 @@ const AppContent: React.FC = () => {
             setActiveGuide(guideText)
             setMessages(prev => {
               // Se l'utente ha già iniziato una conversazione non sovrascrivere
-              if (prev.length > 1 || (prev[0] && prev[0].content && prev[0].content !== 'Caricamento messaggio di benvenuto…')) return prev
+              if (prev.length > 1 || (prev[0] && prev[0].content && prev[0].content !== 'Caricamento messaggio di benvenuto…')) {
+                return prev
+              }
               if (welcomeText) {
                 return [{ role:'assistant', content: welcomeText, ts: Date.now() }]
               }
@@ -532,7 +663,9 @@ const AppContent: React.FC = () => {
         if (pers.success && pers.data) {
           setPersonalities(pers.data.personalities || [])
           const defId = pers.data.default_id || (pers.data.personalities?.[0]?.id || '')
-          if (defId) setSelectedPersonalityId(defId)
+          if (defId) {
+            setSelectedPersonalityId(defId)
+          }
           // If a default personality exists, prefer its provider
           const def = (pers.data.personalities || []).find(p => p.id === defId)
           if (def && response?.data?.enabled_providers?.includes(def.provider)) {
@@ -608,7 +741,9 @@ const AppContent: React.FC = () => {
 
   const send = async ()=>{
     const text = input.trim()
-    if(!text) return
+    if(!text) {
+      return
+    }
   const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
   setMessages(next); setInput('')
   setLoading(true); setError(undefined)
@@ -707,7 +842,9 @@ const AppContent: React.FC = () => {
             file_type: file.file_type,
             content: file.content
           }
-          if (file.base64_data) att.base64_data = file.base64_data
+          if (file.base64_data) {
+            att.base64_data = file.base64_data
+          }
           return att
         });
       }
@@ -726,7 +863,7 @@ const AppContent: React.FC = () => {
             historySource = messages.slice(-cw)
         }
         // Fallback: al massimo 8 se nessun cw
-        const recentHistory = historySource.slice(- (cw ? cw : 8)).map(msg => ({
+  const recentHistory = historySource.slice(-(cw || 8)).map(msg => ({
             role: msg.role,
             content: msg.content
         }))
@@ -775,14 +912,18 @@ const AppContent: React.FC = () => {
 
       while(true){
         const {done, value} = await reader.read()
-        if(done) break
+        if(done) {
+          break
+        }
         buffer += decoder.decode(value, {stream:true})
 
         const parts = buffer.split('\n\n')
         buffer = parts.pop() || ''
         for(const part of parts){
           const line = part.trim()
-            if(!line.startsWith('data:')) continue
+            if(!line.startsWith('data:')) {
+              continue
+            }
             const jsonStr = line.slice(5).trim()
             try {
               const evt = JSON.parse(jsonStr)
@@ -850,7 +991,9 @@ const AppContent: React.FC = () => {
         })
       })
 
-      if (!response.ok) throw new Error('Errore TTS')
+      if (!response.ok) {
+        throw new Error('Errore TTS')
+      }
       
       const audioBlob = await response.blob()
       const audioUrl = URL.createObjectURL(audioBlob)
@@ -909,17 +1052,34 @@ const AppContent: React.FC = () => {
           formData.append('audio', audioBlob, 'recording.wav')
           formData.append('provider', asrProvider)
 
-          const response = await authFetch(`${BACKEND}/api/transcribe`, {
-            method: 'POST',
-            body: formData
-          })
-
-          if (!response.ok) {
-            throw new Error('Errore nella trascrizione')
+          // Funzione interna per inviare blob e gestire 202
+          const attemptTranscription = async (blob: Blob) => {
+            const fd = new FormData()
+            fd.append('audio', blob, 'recording.wav')
+            fd.append('provider', asrProvider)
+            const resp = await authFetch(`${BACKEND}/api/transcribe`, { method: 'POST', body: fd })
+            if (resp.status === 202) {
+              const data = await resp.json()
+              // Avvia modal progresso
+              setPendingAudioBlob(blob)
+              setWhisperModalOpen(true)
+              setWhisperStage(data.status)
+              setWhisperModel(data.model || asrProvider)
+              setWhisperProgress( data.status === 'loading' ? 90 : 0 )
+              // Avvia polling
+              startWhisperPolling(data.status, data.task_id, data.model || asrProvider, blob)
+              return null
+            }
+            if (!resp.ok) {
+              const errTxt = await resp.text()
+              throw new Error(errTxt || 'Errore nella trascrizione')
+            }
+            const result = await resp.json()
+            return result
           }
 
-          const result = await response.json()
-          if (result.text) {
+          const result = await attemptTranscription(audioBlob)
+          if (result && result.text) {
             setInput(prev => prev + (prev ? ' ' : '') + result.text)
           }
         } catch (error) {
@@ -947,6 +1107,90 @@ const AppContent: React.FC = () => {
       setError(error instanceof Error ? error.message : 'Errore nella registrazione')
       setIsRecording(false)
     }
+  }
+
+  // Polling gestione modello whisper
+  const startWhisperPolling = async (stage: 'downloading'|'loading', taskId: string, model: string, blob: Blob) => {
+    // Cleanup eventuale polling precedente
+    if (whisperPollRef.current) {
+      clearTimeout(whisperPollRef.current)
+    }
+    const tick = async () => {
+      try {
+        if (stage === 'downloading') {
+          // Task download
+          const resp = await authFetch(`${BACKEND}/api/whisper/models/download-tasks/${taskId}`)
+          if (resp.ok) {
+            const data = await resp.json()
+            if (typeof data.progress_pct === 'number') {
+              setWhisperProgress(data.progress_pct)
+            }
+            if (['completed','skipped'].includes(data.status)) {
+              // Passa a loading fase (caricamento in RAM)
+              setWhisperStage('loading')
+              setWhisperProgress(95)
+              // Richiama transcribe per avviare eventuale load
+              if (pendingAudioBlob) {
+                // nuova richiesta -> se ancora 202 loading continueremo polling sotto
+                const fd = new FormData()
+                fd.append('audio', pendingAudioBlob, 'recording.wav')
+                fd.append('provider', asrProvider)
+                const r2 = await authFetch(`${BACKEND}/api/transcribe`, { method:'POST', body: fd })
+                if (r2.status === 202) {
+                  // continue polling via model status
+                } else if (r2.ok) {
+                  const resJson = await r2.json()
+                  if (resJson.text) {
+                    setInput(prev => prev + (prev ? ' ' : '') + resJson.text)
+                  }
+                  finalizeWhisperModal()
+                  return
+                } else {
+                  finalizeWhisperModal()
+                  return
+                }
+              }
+            }
+          }
+        }
+        // Poll stato modello per caricamento in RAM
+        const statusResp = await authFetch(`${BACKEND}/api/whisper/models/${model}/status`)
+        if (statusResp.ok) {
+          const st = await statusResp.json()
+            if (st.loaded) {
+              // Modello pronto: invia trascrizione definitiva
+              if (pendingAudioBlob) {
+                const fd = new FormData()
+                fd.append('audio', pendingAudioBlob, 'recording.wav')
+                fd.append('provider', asrProvider)
+                const finalResp = await authFetch(`${BACKEND}/api/transcribe`, { method:'POST', body: fd })
+                if (finalResp.ok) {
+                  const finalJson = await finalResp.json()
+                  if (finalJson.text) {
+                    setInput(prev => prev + (prev ? ' ' : '') + finalJson.text)
+                  }
+                }
+              }
+              finalizeWhisperModal()
+              return
+            }
+        }
+      } catch (e) {
+        // Ignora errori transitori
+      }
+      whisperPollRef.current = window.setTimeout(tick, 1200)
+    }
+    whisperPollRef.current = window.setTimeout(tick, 1000)
+  }
+
+  const finalizeWhisperModal = () => {
+    if (whisperPollRef.current) clearTimeout(whisperPollRef.current)
+    whisperPollRef.current = undefined
+    setWhisperStage(null)
+    setWhisperProgress(0)
+    setPendingAudioBlob(null)
+    setWhisperModalOpen(false)
+    setIsTranscribing(false)
   }
 
   const stopRecording = () => {
@@ -1014,16 +1258,41 @@ const AppContent: React.FC = () => {
       <HeaderBar
         onOpenSidebar={()=> setSidebarOpen(true)}
         isAdmin={!!user?.is_admin}
-        onDownloadChat={messages.length ? ()=>{
-          const blob = new Blob([messages.map(m=>`[${new Date(m.ts).toLocaleString()}] ${m.role}: ${m.content}`).join('\n\n')], { type:'text/plain' })
-          const url = URL.createObjectURL(blob)
-          const a = document.createElement('a')
-          a.href = url
-          a.download = 'chat.txt'
-          document.body.appendChild(a)
-          a.click()
-          document.body.removeChild(a)
-          URL.revokeObjectURL(url)
+        onDownloadPdf={currentConversationId ? async ()=>{
+          try {
+            const { apiService } = await import('./apiService')
+            const blob = await apiService.downloadConversationPdf(currentConversationId)
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.pdf`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
+        } : undefined}
+        onDownloadTxt={currentConversationId ? async ()=>{
+          try {
+            const { apiService } = await import('./apiService')
+            const blob = await apiService.downloadConversationTxt(currentConversationId)
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.txt`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
+        } : undefined}
+        onDownloadReport={currentConversationId ? async ()=>{
+          try {
+            const { apiService } = await import('./apiService')
+            const blob = await apiService.downloadConversationWithReport(currentConversationId)
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.zip`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
         } : undefined}
         onNewChat={async ()=>{
           try {
@@ -1048,7 +1317,9 @@ const AppContent: React.FC = () => {
             try {
               const { apiService } = await import('./apiService')
               const wg = await apiService.getPublicWelcomeGuide()
-              if (wg.success) setActiveGuide(wg.data?.guide?.content)
+              if (wg.success) {
+                setActiveGuide(wg.data?.guide?.content)
+              }
             } catch { /* ignore */ } finally { setGuideLoading(false) }
           }
           setShowHelp(true)
@@ -1126,17 +1397,35 @@ const AppContent: React.FC = () => {
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
                     '& p': { m: 0 },
                   }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={{
-                      a: ({node, href, children, ...props}) => {
-                        const h = href || ''
-                        const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
-                        if (!isDoc) {
-                          return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkBreaks]}
+                      components={{
+                        a: ({node, href, children, ...props}) => {
+                          const h = href || ''
+                          const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
+                          if (!isDoc) {
+                            return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                          }
+                          return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
+                        },
+                        table: ({node, ...props}) => (
+                          <Box className="markdown-table-wrapper" sx={{ width:'100%', overflowX:'auto', my:1 }}>
+                            <table {...props} />
+                          </Box>
+                        ),
+                        th: ({node, ...props}) => <th {...props} style={{ ...props.style, background:'rgba(0,0,0,0.04)' }} />,
+                        code: ({inline, className, children, ...props}: any) => {
+                          const txt = String(children)
+                          if (inline) return <code {...props}>{children}</code>
+                          return (
+                            <pre style={{ margin: '8px 0', padding: '8px', background:'rgba(0,0,0,0.06)', borderRadius:4, overflowX:'auto' }}>
+                              <code>{txt}</code>
+                            </pre>
+                          )
                         }
-                        return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
-                      }
-                    }}>
-                      {injectDocLinks(normalizeMarkdownForDisplay(m.content), m.source_docs?.rag_chunks)}
+                      }}
+                    >
+                      {injectDocLinks(enhanceMarkdownTables(normalizeMarkdownForDisplay(m.content)), m.source_docs?.rag_chunks)}
                     </ReactMarkdown>
                   </Box>
                 
@@ -1290,9 +1579,13 @@ const AppContent: React.FC = () => {
                                   const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; maxSim:number; chunks:any[]}>;
                                   filtered.forEach(ch => {
                                     const key = (ch.document_id || ch.filename || 'unknown') + '';
-                                    if(!groupsByDoc[key]) groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, maxSim: ch.similarity||0, chunks: [] };
+                                    if(!groupsByDoc[key]) {
+                                      groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, maxSim: ch.similarity||0, chunks: [] };
+                                    }
                                     groupsByDoc[key].chunks.push(ch);
-                                    if((ch.similarity||0) > groupsByDoc[key].maxSim) groupsByDoc[key].maxSim = ch.similarity||0;
+                                    if((ch.similarity||0) > groupsByDoc[key].maxSim) {
+                                      groupsByDoc[key].maxSim = ch.similarity||0;
+                                    }
                                   });
                                   const docEntries = Object.values(groupsByDoc).sort((a,b)=> b.maxSim - a.maxSim);
                                   return (
@@ -1526,7 +1819,7 @@ const AppContent: React.FC = () => {
               <Box sx={{ mt:1.5, borderTop:'1px solid #eee', pt:1 }}>
                 <FileManagerCompact
                   attachedFiles={attachedFiles}
-                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) setShowAttachments(false) }}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) { setShowAttachments(false) } }}
                   maxFiles={3}
                   disabled={loading}
                 />
@@ -1562,7 +1855,7 @@ const AppContent: React.FC = () => {
               <Paper sx={{ p:1, mx:'auto', maxWidth:600, borderRadius:2, border:'1px solid #e0e0e0' }} elevation={3}>
                 <FileManagerCompact
                   attachedFiles={attachedFiles}
-                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) setShowAttachments(false) }}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) { setShowAttachments(false) } }}
                   maxFiles={3}
                   disabled={loading}
                 />
@@ -1899,6 +2192,34 @@ const AppContent: React.FC = () => {
       </Dialog>
 
       <SiteFooter />
+
+      {/* Whisper progress modal */}
+      <Dialog open={whisperModalOpen} onClose={()=>{ /* non chiudere manuale */ }} maxWidth="xs" fullWidth>
+        <DialogTitle>Preparazione modello vocale</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb:1 }}>
+            {whisperStage === 'downloading' ? 'Download modello Whisper in corso…' : 'Caricamento modello in memoria…'}
+          </Typography>
+          {whisperStage === 'downloading' && (
+            <Box sx={{ display:'flex', alignItems:'center', gap:2 }}>
+              <LinearProgress variant="determinate" value={Math.min(100, Math.max(0, whisperProgress))} sx={{ flex:1 }} />
+              <Typography variant="caption" sx={{ width:38, textAlign:'right' }}>{Math.round(whisperProgress)}%</Typography>
+            </Box>
+          )}
+          {whisperStage === 'loading' && (
+            <Box sx={{ display:'flex', alignItems:'center', gap:2 }}>
+              <LinearProgress variant="indeterminate" sx={{ flex:1 }} />
+              <Typography variant="caption" sx={{ width:58, textAlign:'right' }}>loading</Typography>
+            </Box>
+          )}
+          <Typography variant="caption" color="text.secondary" sx={{ display:'block', mt:1 }}>
+            Modello: {whisperModel} • L'operazione avviene una sola volta: i prossimi audio saranno trascritti immediatamente.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled size="small">Attendere…</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 };

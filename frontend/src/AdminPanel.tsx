@@ -649,7 +649,7 @@ const AdminPanel: React.FC = () => {
         <AccordionDetails>
           <Stack spacing={2}>
             <SystemPromptsPanel />
-            <SummaryPromptsPanel />
+            <SummaryPromptsPanel config={config as any} />
           </Stack>
         </AccordionDetails>
       </Accordion>

@@ -1,16 +1,19 @@
 import React, { useEffect, useState, useCallback } from 'react'
-import { Stack, Paper, Typography, Button, TextField, IconButton, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, LinearProgress, Alert } from '@mui/material'
+import { Stack, Paper, Typography, Button, TextField, IconButton, Chip, Dialog, DialogTitle, DialogContent, DialogActions, Tooltip, LinearProgress, Alert, FormControlLabel, Switch, FormControl, InputLabel, Select, MenuItem, Box } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { authFetch, BACKEND } from '../utils/authFetch'
-import { SummaryPromptEntry } from '../types/admin'
+import { SummaryPromptEntry, AdminConfig } from '../types/admin'
+import { apiService } from '../apiService'
 
 interface SummaryPromptsResponse { active_id: string | null; prompts: SummaryPromptEntry[] }
 
-const SummaryPromptsPanel: React.FC = () => {
+interface Props { config?: AdminConfig | null }
+
+const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
   const [items, setItems] = useState<SummaryPromptsResponse>({ active_id: null, prompts: [] })
   const [loading, setLoading] = useState(false)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -20,6 +23,12 @@ const SummaryPromptsPanel: React.FC = () => {
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  // Summary settings state
+  const [summaryProvider, setSummaryProvider] = useState<string>('')
+  const [summaryEnabled, setSummaryEnabled] = useState<boolean>(true)
+  const [summaryModel, setSummaryModel] = useState<string>('')
+  const [savingSettings, setSavingSettings] = useState<boolean>(false)
+  const [settingsLoaded, setSettingsLoaded] = useState<boolean>(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -34,11 +43,39 @@ const SummaryPromptsPanel: React.FC = () => {
 
   useEffect(() => { load() }, [load])
 
+  // Load summary settings
+  const loadSummarySettings = useCallback(async () => {
+    try {
+      const res = await apiService.getSummarySettings()
+      if (res.success) {
+        setSummaryProvider(res.data!.settings.provider)
+        setSummaryEnabled(res.data!.settings.enabled)
+        setSummaryModel(res.data!.settings.model || '')
+      }
+    } finally { setSettingsLoaded(true) }
+  }, [])
+
+  useEffect(() => { loadSummarySettings() }, [loadSummarySettings])
+
+  const saveSummarySettings = async () => {
+    setSavingSettings(true)
+    const payload = { provider: summaryProvider, enabled: summaryEnabled, model: summaryModel || null }
+    const res = await apiService.updateSummarySettings(payload)
+    if (res.success) {
+      setMsg('Impostazioni summary aggiornate')
+    } else {
+      setErr(res.error || 'Errore salvataggio impostazioni summary')
+    }
+    setSavingSettings(false)
+  }
+
   const openNew = () => { setEditing(null); setName(''); setText(''); setDialogOpen(true) }
   const openEdit = (p: SummaryPromptEntry) => { setEditing(p); setName(p.name); setText(p.text); setDialogOpen(true) }
 
   const save = async () => {
-    if (!name.trim() || !text.trim()) return
+    if (!name.trim() || !text.trim()) {
+      return
+    }
     setSaving(true); setErr(null)
     try {
       const res = await authFetch(`${BACKEND}/api/admin/summary-prompts`, {
@@ -60,7 +97,9 @@ const SummaryPromptsPanel: React.FC = () => {
   }
 
   const remove = async (id: string) => {
-    if (!confirm('Eliminare il prompt?')) return
+    if (!confirm('Eliminare il prompt?')) {
+      return
+    }
     await authFetch(`${BACKEND}/api/admin/summary-prompts/${id}`, { method: 'DELETE' })
     load()
   }
@@ -72,6 +111,31 @@ const SummaryPromptsPanel: React.FC = () => {
         <IconButton size="small" onClick={load}><RefreshIcon fontSize="small" /></IconButton>
         <Button size="small" startIcon={<AddIcon />} onClick={openNew}>Nuovo</Button>
       </Stack>
+      {/* Summary settings controls */}
+      <Box sx={{ mt:2, mb:2 }}>
+        <Typography variant="subtitle2" gutterBottom>Impostazioni generazione summary</Typography>
+        {!settingsLoaded && <LinearProgress sx={{ mb:1 }} />}
+        <Stack direction={{ xs:'column', sm:'row' }} spacing={2} alignItems={{ sm:'center' }}>
+          <FormControl size="small" sx={{ minWidth:160 }} disabled={!config}>
+            <InputLabel id="summary-provider-label">Provider</InputLabel>
+            <Select labelId="summary-provider-label" label="Provider" value={summaryProvider} onChange={e=> setSummaryProvider(e.target.value)}>
+              {config && Object.entries(config.ai_providers).filter(([k,v]) => v.enabled && k !== 'local').map(([k]) => (
+                <MenuItem key={k} value={k}>{k}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth:180 }} disabled={!summaryProvider}>
+            <TextFieldSelectModel
+              provider={summaryProvider}
+              model={summaryModel}
+              onChange={setSummaryModel}
+              config={config}
+            />
+          </FormControl>
+          <FormControlLabel control={<Switch size="small" checked={summaryEnabled} onChange={e=> setSummaryEnabled(e.target.checked)} />} label={summaryEnabled? 'Abilitato':'Disabilitato'} />
+          <Button size="small" variant="contained" disabled={savingSettings || !summaryProvider} onClick={saveSummarySettings}>{savingSettings? 'Salvo…':'Salva impostazioni'}</Button>
+        </Stack>
+      </Box>
       {loading && <LinearProgress sx={{ my: 1 }} />}
       <Stack spacing={1} sx={{ mt: 1 }}>
         {items.prompts.map(p => (
@@ -108,3 +172,23 @@ const SummaryPromptsPanel: React.FC = () => {
 }
 
 export default SummaryPromptsPanel
+
+// Helper component for model select (fallback to simple text field if no list)
+interface ModelSelectProps { provider: string; model: string; onChange: (m:string)=>void; config?: AdminConfig | null }
+const TextFieldSelectModel: React.FC<ModelSelectProps> = ({ provider, model, onChange, config }) => {
+  const provCfg: any = provider && config ? (config.ai_providers as any)[provider] : null
+  const models: string[] = provCfg?.models || []
+  if (!models.length) {
+    return (
+      <TextField size="small" label="Model" value={model} onChange={e=> onChange(e.target.value)} placeholder="nome modello" />
+    )
+  }
+  return (
+    <FormControl size="small" fullWidth>
+      <InputLabel id="summary-model-label">Modello</InputLabel>
+      <Select labelId="summary-model-label" label="Modello" value={model} onChange={e=> onChange(e.target.value)}>
+        {models.map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+      </Select>
+    </FormControl>
+  )
+}

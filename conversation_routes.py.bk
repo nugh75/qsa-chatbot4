@@ -63,19 +63,32 @@ async def create_conversation(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Crea una nuova conversazione crittografata"""
+    
     try:
+        # Genera ID unico conversazione
         conversation_id = f"conv_{uuid.uuid4().hex}"
+        
+        # Crea conversazione nel database
         success = ConversationModel.create_conversation(
             conversation_id=conversation_id,
             user_id=current_user["id"],
             title_encrypted=conversation_data.title_encrypted,
             device_id=conversation_data.device_id
         )
+        
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to create conversation")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create conversation"
+            )
+        
         return {"conversation_id": conversation_id}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating conversation: {str(e)}"
+        )
 
 @router.get("/", response_model=List[ConversationResponse])
 async def get_user_conversations(
@@ -83,20 +96,39 @@ async def get_user_conversations(
     current_user: dict = Depends(get_current_active_user)
 ):
     """Recupera le conversazioni dell'utente"""
+    
     try:
-        conversations = ConversationModel.get_user_conversations(user_id=current_user["id"], limit=limit)
+        conversations = ConversationModel.get_user_conversations(
+            user_id=current_user["id"],
+            limit=limit
+        )
+        
         return [ConversationResponse(**conv) for conv in conversations]
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving conversations: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving conversations: {str(e)}"
+        )
 
 @router.get("/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(
     conversation_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    """Recupera una conversazione specifica"""
+    
+    conversation = ConversationModel.get_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+    
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
     return ConversationResponse(**conversation)
 
 @router.put("/{conversation_id}")
@@ -105,11 +137,24 @@ async def update_conversation(
     update_data: ConversationUpdate,
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    """Aggiorna titolo conversazione"""
+    
+    # Verifica che conversazione appartenga all'utente
+    conversation = ConversationModel.get_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+    
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
     try:
+        # Aggiorna titolo
         title_hash = hashlib.sha256(update_data.title_encrypted.encode()).hexdigest()
+        
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
@@ -119,43 +164,92 @@ async def update_conversation(
                 WHERE id = ? AND user_id = ?
             """, (update_data.title_encrypted, title_hash, conversation_id, current_user["id"]))
             conn.commit()
+        
         return {"message": "Conversation updated successfully"}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating conversation: {str(e)}"
+        )
 
 @router.delete("/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    """Elimina conversazione (soft delete)"""
+    
+    # Verifica che conversazione appartenga all'utente
+    conversation = ConversationModel.get_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+    
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
     try:
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""UPDATE conversations SET is_deleted = 1 WHERE id = ? AND user_id = ?""", (conversation_id, current_user["id"]))
-            cursor.execute("""UPDATE messages SET is_deleted = 1 WHERE conversation_id = ?""", (conversation_id,))
+            
+            # Soft delete conversazione e messaggi
+            cursor.execute("""
+                UPDATE conversations SET is_deleted = 1 WHERE id = ? AND user_id = ?
+            """, (conversation_id, current_user["id"]))
+            
+            cursor.execute("""
+                UPDATE messages SET is_deleted = 1 WHERE conversation_id = ?
+            """, (conversation_id,))
+            
             conn.commit()
+        
         return {"message": "Conversation deleted successfully"}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting conversation: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting conversation: {str(e)}"
+        )
 
+# Message endpoints
 @router.get("/{conversation_id}/messages", response_model=List[MessageResponse])
 async def get_conversation_messages(
     conversation_id: str,
     limit: int = 100,
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    """Recupera messaggi di una conversazione"""
+    
+    # Verifica che conversazione appartenga all'utente
+    conversation = ConversationModel.get_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+    
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
     try:
-        messages = MessageModel.get_conversation_messages(conversation_id=conversation_id, limit=limit)
+        messages = MessageModel.get_conversation_messages(
+            conversation_id=conversation_id,
+            limit=limit
+        )
+        
         return [MessageResponse(**msg) for msg in messages]
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving messages: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving messages: {str(e)}"
+        )
 
 @router.post("/{conversation_id}/messages", response_model=Dict[str, str])
 async def add_message(
@@ -163,13 +257,32 @@ async def add_message(
     message_data: MessageCreate,
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    """Aggiunge messaggio a conversazione"""
+    
+    # Verifica che conversazione appartenga all'utente
+    conversation = ConversationModel.get_conversation(
+        conversation_id=conversation_id,
+        user_id=current_user["id"]
+    )
+    
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    if message_data.role not in ["user", "assistant"]:
-        raise HTTPException(status_code=400, detail="Invalid message role")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found"
+        )
+    
+    # Valida role
+    if message_data.role not in ['user', 'assistant']:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid message role"
+        )
+    
     try:
+        # Genera ID messaggio
         message_id = f"msg_{uuid.uuid4().hex}"
+        
+        # Aggiungi messaggio
         success = MessageModel.add_message(
             message_id=message_id,
             conversation_id=conversation_id,
@@ -178,11 +291,20 @@ async def add_message(
             token_count=message_data.token_count or 0,
             processing_time=message_data.processing_time or 0.0
         )
+        
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to add message")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to add message"
+            )
+        
         return {"message_id": message_id}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding message: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding message: {str(e)}"
+        )
 
 # Device management endpoints
 class DeviceRegister(BaseModel):
@@ -331,40 +453,45 @@ async def summarize_conversation(
 @router.get("/{conversation_id}/export-with-report")
 async def export_conversation_with_report(
     conversation_id: str,
-    format: str | None = Query(default=None, description="Formato export: zip (default), pdf oppure txt"),
+    format: str | None = Query(default=None, description="Formato export: zip (default) oppure pdf"),
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Esporta una singola conversazione nei formati disponibili.
-
-    Formati supportati:
-      - zip (default): chat.json, report.md, metadata.json
-      - pdf: singolo PDF con meta, summary e messaggi
-      - txt: testo semplice con meta, summary e messaggi
+    """Esporta una singola conversazione in un archivio ZIP contenente:
+    - chat.json (metadata + messaggi)
+    - report.md (riassunto conversazione)
+    - metadata.json (informazioni di export)
     """
     try:
         conversation = ConversationModel.get_conversation(conversation_id, current_user['id'])
         if not conversation:
-            raise HTTPException(status_code=404, detail=f"Conversation {conversation_id} not found for user {current_user['id']}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Conversation {conversation_id} not found for user {current_user['id']}"
+            )
 
         messages = MessageModel.get_conversation_messages(conversation_id, limit=1000)
         if not messages:
-            raise HTTPException(status_code=400, detail=f"Conversation {conversation_id} has no messages to export")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Conversation {conversation_id} has no messages to export"
+            )
 
+        # Genera summary con error handling migliorato
         summary_prompt = load_summary_prompt()
         summary_provider = get_summary_provider()
         summary_model = get_summary_model()
         llm_messages = [{"role": "system", "content": summary_prompt}] + [
             {"role": m['role'], "content": m['content_encrypted']} for m in messages
         ]
+        
         try:
             summary_text = await chat_with_provider(llm_messages, provider=summary_provider, model=summary_model)
         except Exception as e:
             print(f"Summary generation failed for conversation {conversation_id}: {e}")
-            summary_text = (
-                f"Errore generazione summary: {e}\n\n"
-                f"Conversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
-            )
+            summary_text = f"Errore generazione summary: {e}\n\nConversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
 
+    # Preparazione payload export
+    # Payload principale della chat; includiamo anche il summary per comodità (oltre a report.md)
         chat_payload = {
             "conversation": {
                 "id": conversation['id'],
@@ -373,7 +500,7 @@ async def export_conversation_with_report(
                 "updated_at": conversation['updated_at'],
                 "message_count": conversation['message_count']
             },
-            "summary": summary_text,
+            "summary": summary_text,  # <== aggiunto
             "messages": [
                 {
                     "id": m['id'],
@@ -383,16 +510,9 @@ async def export_conversation_with_report(
                 } for m in messages
             ]
         }
-
-        report_md = (
-            f"# Report Conversazione {conversation['id']}\n\n"
-            f"## Informazioni Generali\n"
-            f"- Creata: {conversation['created_at']}\n"
-            f"- Ultimo aggiornamento: {conversation['updated_at']}\n"
-            f"- Numero messaggi: {len(messages)}\n\n"
-            f"## Riassunto\n\n{summary_text}\n"
-        )
-
+        
+        report_md = f"# Report Conversazione {conversation['id']}\n\n## Informazioni Generali\n- Creata: {conversation['created_at']}\n- Ultimo aggiornamento: {conversation['updated_at']}\n- Numero messaggi: {len(messages)}\n\n## Riassunto\n\n{summary_text}\n"
+        
         metadata = {
             "exported_at": datetime.utcnow().isoformat() + 'Z',
             "user_id": current_user['id'],
@@ -405,43 +525,21 @@ async def export_conversation_with_report(
             "has_summary": bool(summary_text),
             "export_version": "1.2"
         }
-
-        fmt = (format or '').lower()
-        if fmt == 'txt':
-            from typing import List as _List
-            lines: _List[str] = []
-            lines.append(f"Conversation ID: {conversation['id']}")
-            lines.append(f"Creato: {conversation['created_at']}")
-            lines.append(f"Ultimo aggiornamento: {conversation['updated_at']}")
-            lines.append(f"Messaggi: {len(messages)}")
-            lines.append(f"Provider summary: {summary_provider}")
-            if summary_model:
-                lines.append(f"Model summary: {summary_model}")
-            lines.append("")
-            lines.append("=== SUMMARY ===")
-            lines.append(summary_text or '(nessun riassunto)')
-            lines.append("\n=== MESSAGGI ===")
-            for msg in messages:
-                lines.append(f"[{msg['timestamp']}] {msg['role']}: {msg['content_encrypted']}")
-            txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
-            filename_txt = f"conversation_{conversation_id}_report.txt"
-            return StreamingResponse(
-                txt_buffer,
-                media_type='text/plain; charset=utf-8',
-                headers={'Content-Disposition': f'attachment; filename={filename_txt}'}
-            )
-
-        if fmt == 'pdf':
+        # Se richiesto formato PDF, generiamo un PDF unico con report + log messaggi
+        if (format or '').lower() == 'pdf':
             try:
-                import fitz  # type: ignore
                 pdf_buffer = io.BytesIO()
+                # Usando PyMuPDF (fitz) già in requirements (PyMuPDF) per evitare nuove dipendenze
+                import fitz  # type: ignore
                 doc = fitz.open()
 
                 def _add_wrapped_text(page, text: str, top: float = 50, left: float = 50, max_width: float = 500, line_height: float = 14, font_size: float = 11):
+                    # Semplice wrapping per lunghezza caratteri approssimando larghezza
+                    # (per robustezza: split su parole e riempimento linee)
                     words = text.split()
                     line = ''
                     y = top
-                    max_chars = int(max_width / (font_size * 0.55))
+                    max_chars = int(max_width / (font_size * 0.55))  # euristico
                     for w in words:
                         candidate = (line + ' ' + w).strip()
                         if len(candidate) > max_chars and line:
@@ -450,7 +548,7 @@ async def export_conversation_with_report(
                             line = w
                         else:
                             line = candidate
-                        if y > page.rect.height - 60:
+                        if y > page.rect.height - 60:  # nuova pagina se necessario
                             page = doc.new_page()
                             y = 50
                     if line:
@@ -458,6 +556,7 @@ async def export_conversation_with_report(
                         y += line_height
                     return page, y
 
+                # Prima pagina: report
                 page = doc.new_page()
                 page.insert_text((50, 40), f"Report Conversazione {conversation['id']}", fontsize=16)
                 meta_block = (
@@ -465,11 +564,11 @@ async def export_conversation_with_report(
                     f"Ultimo aggiornamento: {conversation['updated_at']}\n"
                     f"Messaggi: {len(messages)}\n"
                     f"Provider summary: {summary_provider}\n"
-                    + (f"Model summary: {summary_model}\n" if summary_model else '')
                 )
                 page.insert_text((50, 70), meta_block, fontsize=11)
                 page.insert_text((50, 120), "Riassunto:", fontsize=13)
                 page, y_cursor = _add_wrapped_text(page, summary_text or '(nessun riassunto)', top=140)
+                # Messaggi
                 page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
                 y_cursor += 30
                 for msg in messages:
@@ -482,29 +581,38 @@ async def export_conversation_with_report(
                 doc.save(pdf_buffer)
                 doc.close()
                 pdf_buffer.seek(0)
-                filename_pdf = f"conversation_{conversation_id}_report.pdf"
+                filename = f"conversation_{conversation_id}_report.pdf"
                 return StreamingResponse(
                     pdf_buffer,
                     media_type='application/pdf',
-                    headers={'Content-Disposition': f'attachment; filename={filename_pdf}'}
+                    headers={'Content-Disposition': f'attachment; filename={filename}'}
                 )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Errore generazione PDF: {e}")
 
+        # Altrimenti default: ZIP con file separati
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('chat.json', json.dumps(chat_payload, ensure_ascii=False, indent=2))
             zf.writestr('report.md', report_md)
             zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+
+    # Fine scrittura file nello zip
         zip_buffer.seek(0)
-        filename_zip = f"conversation_{conversation_id}_export.zip"
+        filename = f"conversation_{conversation_id}_export.zip"
+
         return StreamingResponse(
             zip_buffer,
             media_type='application/zip',
-            headers={'Content-Disposition': f'attachment; filename={filename_zip}'}
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
         )
+        
     except HTTPException:
+        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
         print(f"Unexpected error in export_conversation_with_report: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal error during export: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal error during export: {str(e)}"
+        )

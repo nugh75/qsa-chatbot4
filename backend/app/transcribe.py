@@ -193,6 +193,7 @@ whisper_service = WhisperService()
 
 # ---- Async download task management ----
 _download_tasks: dict[str, dict] = {}
+_load_tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
 
 def _spawn_download_task(model_name: str) -> str:
@@ -252,20 +253,95 @@ def _spawn_download_task(model_name: str) -> str:
     threading.Thread(target=_run, daemon=True).start()
     return task_id
 
+def _spawn_load_task(model_name: str) -> str:
+    """Avvia un task di caricamento in RAM del modello (senza bloccare la request)."""
+    task_id = uuid.uuid4().hex
+    with _tasks_lock:
+        _load_tasks[task_id] = {
+            'task_id': task_id,
+            'model': model_name,
+            'status': 'pending',  # pending|running|completed|error|skipped
+            'error': None,
+            'started_at': None,
+            'ended_at': None
+        }
+
+    def _run():
+        with _tasks_lock:
+            t = _load_tasks.get(task_id)
+            if not t:
+                return
+            t['status'] = 'running'
+            t['started_at'] = time.time()
+        try:
+            whisper_service.load_model(model_name)
+            with _tasks_lock:
+                t = _load_tasks.get(task_id)
+                if t:
+                    t['status'] = 'completed'
+                    t['ended_at'] = time.time()
+        except Exception as e:  # noqa
+            with _tasks_lock:
+                t = _load_tasks.get(task_id)
+                if t:
+                    t['status'] = 'error'
+                    t['error'] = str(e)
+                    t['ended_at'] = time.time()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return task_id
+
 @router.post("/transcribe")
 async def transcribe_audio(
     audio: UploadFile = File(...),
     provider: str = "small"
 ):
-    """Trascrivi un file audio usando Whisper locale."""
-    import time as _time
-    import uuid as _uuid
-    start = _time.perf_counter()
-    request_id = f"req_{_uuid.uuid4().hex}"
+    """Trascrivi un file audio usando Whisper locale.
+
+    Comportamento asincrono:
+      - Se il modello non è scaricato: avvia/riusa task di download => 202 (status=downloading).
+      - Se scaricato ma non caricato: avvia/riusa task di load => 202 (status=loading).
+      - Quando pronto: esegue trascrizione => 200.
+    """
+    start = time.perf_counter()
+    request_id = f"req_{uuid.uuid4().hex}"
     try:
         if not audio.content_type or not audio.content_type.startswith('audio/'):
             raise HTTPException(status_code=400, detail="File must be an audio file")
         audio_content = await audio.read()
+        model_name = provider
+
+        # 1. Modello non scaricato: download asincrono
+        if not whisper_service.is_model_downloaded(model_name):
+            existing_task_id = None
+            with _tasks_lock:
+                for tid, t in _download_tasks.items():
+                    if t['model'] == model_name and t['status'] in ('pending', 'running'):
+                        existing_task_id = tid
+                        break
+            task_id = existing_task_id or _spawn_download_task(model_name)
+            return JSONResponse(status_code=202, content={
+                "status": "downloading",
+                "model": model_name,
+                "task_id": task_id
+            })
+
+        # 2. Modello scaricato ma non caricato in RAM
+        if whisper_service.current_model_name != model_name or whisper_service.current_model is None:
+            existing_load_id = None
+            with _tasks_lock:
+                for tid, t in _load_tasks.items():
+                    if t['model'] == model_name and t['status'] in ('pending', 'running'):
+                        existing_load_id = tid
+                        break
+            load_task_id = existing_load_id or _spawn_load_task(model_name)
+            return JSONResponse(status_code=202, content={
+                "status": "loading",
+                "model": model_name,
+                "task_id": load_task_id
+            })
+
+        # 3. Modello pronto: trascrivi
         log_interaction({
             "event": "transcribe_start",
             "request_id": request_id,
@@ -275,7 +351,7 @@ async def transcribe_audio(
             "file_bytes": len(audio_content)
         })
         text = await whisper_service.transcribe_audio(audio_content, provider)
-        dur_ms = int((_time.perf_counter() - start) * 1000)
+        dur_ms = int((time.perf_counter() - start) * 1000)
         log_interaction({
             "event": "transcribe",
             "request_id": request_id,
@@ -429,11 +505,20 @@ async def whisper_model_status(model_name: str):
 
         # Se esiste un task attivo per questo modello includilo
         active_task_id = None
+        active_load_id = None
         with _tasks_lock:
             for tid, t in _download_tasks.items():
                 if t['model'] == model_name and t['status'] in ('pending','running'):
                     active_task_id = tid
                     break
+            for tid, t in _load_tasks.items():
+                if t['model'] == model_name and t['status'] in ('pending','running'):
+                    active_load_id = tid
+                    break
+
+        # Stato caricamento in RAM
+        model_loaded = whisper_service.current_model_name == model_name and whisper_service.current_model is not None
+        loading = active_load_id is not None and not model_loaded
 
         return {
             "model": model_name,
@@ -442,7 +527,10 @@ async def whisper_model_status(model_name: str):
             "expected_size_bytes": expected_bytes,
             "progress_pct": round(progress, 2),
             "disk_space_label": disk_label,
-            "active_task_id": active_task_id
+            "active_task_id": active_task_id,
+            "active_load_task_id": active_load_id,
+            "loaded": model_loaded,
+            "loading": loading
         }
     except HTTPException:
         raise

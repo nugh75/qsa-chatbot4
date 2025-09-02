@@ -249,6 +249,23 @@ def get_summary_provider():
     
     return provider if enabled else "openrouter"  # Fallback sicuro
 
+def get_summary_model():
+    """Restituisce il modello configurato per i summary o un default coerente col provider."""
+    config = load_config()
+    ss = config.get("summary_settings", {})
+    model = ss.get("model")
+    if model:
+        return model
+    provider = ss.get("provider", "openrouter")
+    defaults = {
+        "openrouter": "anthropic/claude-3.5-sonnet",
+        "claude": "claude-3-5-sonnet-20241022",
+        "openai": "gpt-4o-mini",
+        "gemini": "gemini-1.5-pro",
+        "ollama": "llama3.1:8b"
+    }
+    return defaults.get(provider, "anthropic/claude-3.5-sonnet")
+
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
     arena_public: bool
@@ -587,6 +604,7 @@ async def reset_summary_prompt_seed():
 class SummarySettingsIn(BaseModel):
     provider: str
     enabled: bool
+    model: str | None = None
 
 # ---- Summary prompts (multi) endpoints ----
 class SummaryPromptIn(BaseModel):
@@ -632,6 +650,8 @@ async def get_summary_settings():
     try:
         config = load_config()
         summary_settings = config.get("summary_settings", {"provider": "openrouter", "enabled": True})
+        if "model" not in summary_settings:
+            summary_settings["model"] = None
         return {"settings": summary_settings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento impostazioni summary: {str(e)}")
@@ -647,7 +667,8 @@ async def update_summary_settings(payload: SummarySettingsIn):
         config = load_config()
         config["summary_settings"] = {
             "provider": payload.provider,
-            "enabled": payload.enabled
+            "enabled": payload.enabled,
+            "model": payload.model
         }
         save_config(config)
         return {"success": True, "message": "Impostazioni summary aggiornate"}

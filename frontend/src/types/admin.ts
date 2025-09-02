@@ -15,7 +15,7 @@ export interface AdminConfig {
   }
   default_provider: string
   default_tts: string
-  summary_settings?: { provider: string; enabled: boolean }
+  summary_settings?: { provider: string; enabled: boolean; model?: string | null }
   memory_settings?:  { max_messages_per_session: number }
 }
 

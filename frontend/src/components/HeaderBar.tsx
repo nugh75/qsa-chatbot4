@@ -1,11 +1,6 @@
 import React from 'react'
 import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar } from '@mui/material'
-import MenuIcon from '@mui/icons-material/Menu'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
-import GuideIcon from './icons/GuideIcon'
-import ArenaIcon from './icons/ArenaIcon'
-import LogoutIcon from '@mui/icons-material/Logout'
-import LoginIcon from '@mui/icons-material/Login'
 
 // Simple inline SVG icons (uniform style)
 const PersonalitySvg = (props:any)=> (
@@ -14,27 +9,16 @@ const PersonalitySvg = (props:any)=> (
     <path d="M4 20c1.4-4 4.6-6 8-6s6.6 2 8 6" />
   </svg>
 )
-const VoiceSvg = (props:any)=> (
-  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <rect x="9" y="4" width="6" height="12" rx="3" />
-    <path d="M5 11v1a7 7 0 0 0 14 0v-1" />
-    <path d="M12 19v3" />
-  </svg>
-)
-const DownloadSvg = (props:any)=> (
-  <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <path d="M7 10l5 5 5-5" />
-    <path d="M12 15V3" />
-  </svg>
-)
+// Rimosse icone non utilizzate (VoiceSvg, DownloadSvg, GuideIcon, ArenaIcon, Login/Logout imports)
 
 export interface HeaderBarProps {
   personalities: {id:string; name:string; provider:string; avatar_url?: string | null}[]
   selectedPersonalityId: string
   onChangePersonality: (id:string)=> void
   onOpenSidebar?: () => void
-  onDownloadChat?: ()=> void
+  onDownloadPdf?: ()=> void
+  onDownloadTxt?: ()=> void
+  onDownloadReport?: ()=> void
   onNewChat?: ()=> void
   onShowGuide?: ()=> void
   onOpenArena?: ()=> void
@@ -46,7 +30,7 @@ export interface HeaderBarProps {
   isAdmin?: boolean
 }
 
-const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalityId, onChangePersonality, onOpenSidebar, onDownloadChat, onNewChat, onShowGuide, onOpenArena, showArena, isAuthenticated, onLogin, onLogout, dense, isAdmin }) => {
+const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalityId, onChangePersonality, onOpenSidebar, onDownloadPdf, onDownloadTxt, onDownloadReport, onNewChat, onShowGuide, onOpenArena, showArena, isAuthenticated, onLogin, onLogout, dense, isAdmin }) => {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const [menuAnchor, setMenuAnchor] = React.useState<null | HTMLElement>(null)
@@ -101,7 +85,9 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
               transformOrigin={{ vertical:'top', horizontal:'right' }}
             >
               {onNewChat && <MenuItem onClick={()=> { handleCloseDesktop(); onNewChat() }}>Nuova conversazione</MenuItem>}
-              {onDownloadChat && <MenuItem disabled={!onDownloadChat} onClick={()=> { handleCloseDesktop(); onDownloadChat && onDownloadChat() }}>Scarica chat</MenuItem>}
+              <MenuItem disabled={!onDownloadPdf} onClick={()=> { handleCloseDesktop(); onDownloadPdf && onDownloadPdf() }}>Scarica PDF</MenuItem>
+              <MenuItem disabled={!onDownloadTxt} onClick={()=> { handleCloseDesktop(); onDownloadTxt && onDownloadTxt() }}>Scarica TXT</MenuItem>
+              <MenuItem disabled={!onDownloadReport} onClick={()=> { handleCloseDesktop(); onDownloadReport && onDownloadReport() }}>Scarica report AI</MenuItem>
               {onOpenSidebar && <MenuItem onClick={()=> { handleCloseDesktop(); onOpenSidebar() }}>Chat salvate</MenuItem>}
               {onShowGuide && <MenuItem onClick={()=> { handleCloseDesktop(); onShowGuide() }}>Guida</MenuItem>}
               {showArena && onOpenArena && <MenuItem onClick={()=> { handleCloseDesktop(); onOpenArena() }}>Arena</MenuItem>}
@@ -125,7 +111,9 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
               transformOrigin={{ vertical:'top', horizontal:'right' }}
             >
               {onNewChat && <MenuItem onClick={()=> { handleCloseMenu(); onNewChat() }}>Nuova conversazione</MenuItem>}
-              {onDownloadChat && <MenuItem disabled={!onDownloadChat} onClick={()=> { handleCloseMenu(); onDownloadChat && onDownloadChat() }}>Scarica chat</MenuItem>}
+              <MenuItem disabled={!onDownloadPdf} onClick={()=> { handleCloseMenu(); onDownloadPdf && onDownloadPdf() }}>Scarica PDF</MenuItem>
+              <MenuItem disabled={!onDownloadTxt} onClick={()=> { handleCloseMenu(); onDownloadTxt && onDownloadTxt() }}>Scarica TXT</MenuItem>
+              <MenuItem disabled={!onDownloadReport} onClick={()=> { handleCloseMenu(); onDownloadReport && onDownloadReport() }}>Scarica report AI</MenuItem>
               {onOpenSidebar && <MenuItem onClick={()=> { handleCloseMenu(); onOpenSidebar() }}>Chat salvate</MenuItem>}
               {onShowGuide && <MenuItem onClick={()=> { handleCloseMenu(); onShowGuide() }}>Guida</MenuItem>}
               {showArena && onOpenArena && <MenuItem onClick={()=> { handleCloseMenu(); onOpenArena() }}>Arena</MenuItem>}

@@ -330,10 +330,10 @@ class ApiService {
   async resetSummaryPrompt(): Promise<ApiResponse<{ prompt: string }>> {
     return this.makeRequest<{ prompt: string }>('/admin/summary-prompt/reset', { method: 'POST' });
   }
-  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean } }>> {
-    return this.makeRequest<{ settings: { provider: string; enabled: boolean } }>('/admin/summary-settings');
+  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean; model?: string | null } }>> {
+    return this.makeRequest<{ settings: { provider: string; enabled: boolean; model?: string | null } }>('/admin/summary-settings');
   }
-  async updateSummarySettings(settings: { provider: string; enabled: boolean }): Promise<ApiResponse> {
+  async updateSummarySettings(settings: { provider: string; enabled: boolean; model?: string | null }): Promise<ApiResponse> {
     return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
   }
   // New multi summary prompts endpoints
@@ -426,6 +426,41 @@ class ApiService {
       console.error('Download conversation with report failed:', error);
       throw error;
     }
+  }
+  async downloadConversationPdf(conversationId: string): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}` };
+    const resp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=pdf`, { headers });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        const retry = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=pdf`, { headers: { 'Authorization': `Bearer ${CredentialManager.getAccessToken()}` } });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+    return resp.blob();
+  }
+  async downloadConversationTxt(conversationId: string): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}` };
+    const url = `${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=txt`;
+    const resp = await fetch(url, { headers });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        const retry = await fetch(url, { headers: { 'Authorization': `Bearer ${CredentialManager.getAccessToken()}` } });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+    return resp.blob();
   }
 
   // RAG management (existing methods may be elsewhere; adding search quick method)
@@ -616,11 +651,18 @@ class ApiService {
     try {
       const resp = await fetch(`${API_BASE_URL}/transcribe`, { method: 'POST', headers, body: form });
       const data = await resp.json();
+      // 202 => modello in download/caricamento
+      if (resp.status === 202) {
+        return { success: false, error: data.status || 'Model not ready', data } as any;
+      }
       if (resp.ok) return { success: true, data };
       return { success: false, error: data.detail || 'Transcription failed' };
     } catch (e:any) {
       return { success: false, error: e?.message || 'Network error' };
     }
+  }
+  async whisperModelStatus(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/whisper/models/${encodeURIComponent(model)}/status`);
   }
   async getWhisperHealth(): Promise<ApiResponse<any>> {
     return this.makeRequest('/whisper/health');

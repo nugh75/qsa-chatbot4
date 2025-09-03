@@ -1261,7 +1261,16 @@ const AppContent: React.FC = () => {
         onDownloadPdf={currentConversationId ? async ()=>{
           try {
             const { apiService } = await import('./apiService')
-            const blob = await apiService.downloadConversationPdf(currentConversationId)
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({ role: m.role, content: m.content, timestamp: new Date(m.ts).toISOString() }))
+            let blob: Blob
+            try {
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'pdf')
+            } catch (e) {
+              console.warn('[export] POST pdf fallback GET', e)
+              blob = await apiService.downloadConversationPdf(currentConversationId)
+            }
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
@@ -1273,7 +1282,16 @@ const AppContent: React.FC = () => {
         onDownloadTxt={currentConversationId ? async ()=>{
           try {
             const { apiService } = await import('./apiService')
-            const blob = await apiService.downloadConversationTxt(currentConversationId)
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({ role: m.role, content: m.content, timestamp: new Date(m.ts).toISOString() }))
+            let blob: Blob
+            try {
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'txt')
+            } catch (e) {
+              console.warn('[export] POST txt fallback GET', e)
+              blob = await apiService.downloadConversationTxt(currentConversationId)
+            }
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url
@@ -1285,7 +1303,24 @@ const AppContent: React.FC = () => {
         onDownloadReport={currentConversationId ? async ()=>{
           try {
             const { apiService } = await import('./apiService')
-            const blob = await apiService.downloadConversationWithReport(currentConversationId)
+            // Costruisci la history plaintext corrente (esclude eventuali messaggi system e placeholder streaming)
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({
+                role: m.role,
+                content: m.content,
+                // timestamp ISO per futura estensione (il backend lo ignora se non usato)
+                timestamp: new Date(m.ts).toISOString()
+              }))
+            let blob: Blob
+            try {
+              // Tenta prima il nuovo endpoint POST con history in chiaro
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'zip')
+            } catch (e) {
+              console.warn('[export] POST export-with-report fallito, fallback GET legacy', e)
+              // Fallback al metodo legacy (GET) – potrebbe produrre report vuoto se DB ha ciphertext
+              blob = await apiService.downloadConversationWithReport(currentConversationId)
+            }
             const url = URL.createObjectURL(blob)
             const a = document.createElement('a')
             a.href = url

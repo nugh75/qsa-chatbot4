@@ -153,6 +153,12 @@ interface AdminPanelProps {
   onClose: () => void;
 }
 
+interface SummarySettings {
+  provider: string;
+  enabled: boolean;
+  model?: string | null;
+}
+
 const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [currentTab, setCurrentTab] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -276,6 +282,74 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
   const [editTitle, setEditTitle] = useState<string>('');
   const [editContent, setEditContent] = useState<string>('');
 
+  // Summary settings state
+  const [summarySettings, setSummarySettings] = useState<SummarySettings | null>(null);
+  const [summaryProviders, setSummaryProviders] = useState<string[]>([]);
+  const [summaryModels, setSummaryModels] = useState<string[]>([]);
+  const [summarySaveMessage, setSummarySaveMessage] = useState<string | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  // ---- Summary Settings Helpers ----
+  const loadSummarySettings = async () => {
+    try {
+      setSummarySaveMessage(null);
+      const res = await apiService.get('/admin/summary-settings');
+      if (res?.data?.settings) {
+        setSummarySettings(res.data.settings);
+      }
+      // Load providers/models from config if endpoint exists
+      try {
+        const cfg = await apiService.get('/config');
+        if (cfg?.data?.ai_providers) {
+          const providers = Object.keys(cfg.data.ai_providers).filter(p => p !== 'local');
+            setSummaryProviders(providers);
+            const currentProv = (res?.data?.settings?.provider) || providers[0];
+            if (currentProv && cfg.data.ai_providers[currentProv]?.models) {
+              setSummaryModels(cfg.data.ai_providers[currentProv].models || []);
+            } else {
+              setSummaryModels([]);
+            }
+        }
+      } catch (e) {
+        // Silently ignore if /config not available
+      }
+    } catch (e) {
+      setSummarySaveMessage('Errore caricamento impostazioni riassunto');
+    }
+  };
+
+  const handleChangeSummaryProvider = async (prov: string) => {
+    setSummarySettings(s => s ? { ...s, provider: prov, model: '' } : { provider: prov, enabled: true, model: '' });
+    try {
+      const cfg = await apiService.get('/config');
+      if (cfg?.data?.ai_providers?.[prov]?.models) {
+        setSummaryModels(cfg.data.ai_providers[prov].models || []);
+      } else {
+        setSummaryModels([]);
+      }
+    } catch {
+      setSummaryModels([]);
+    }
+  };
+
+  const handleSaveSummarySettings = async () => {
+    if (!summarySettings) return;
+    setSummaryLoading(true);
+    setSummarySaveMessage(null);
+    try {
+      await apiService.post('/admin/summary-settings', {
+        provider: summarySettings.provider,
+        enabled: summarySettings.enabled,
+        model: summarySettings.model || null
+      });
+      setSummarySaveMessage('Impostazioni riassunto salvate');
+    } catch (e: any) {
+      setSummarySaveMessage(e?.response?.data?.detail || 'Errore salvataggio impostazioni riassunto');
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
   // Carica dati iniziali
   useEffect(() => {
     if (isOpen) {
@@ -283,6 +357,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       loadPrompts();
       loadPipelineData();
       loadWelcomeGuides();
+      loadSummarySettings();
     }
   }, [isOpen]);
 
@@ -556,6 +631,61 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
           </Card>
         </Grid>
       </Grid>
+
+      {/* Summary Settings Card */}
+      <Card sx={{ mt:3 }}>
+        <CardHeader title="Impostazioni Riassunto" subheader="Provider e modello per generare il riassunto esportazioni" />
+        <CardContent>
+          {summarySaveMessage && (
+            <Alert severity={summarySaveMessage.includes('Errore') ? 'error':'success'} sx={{ mb:2 }}>{summarySaveMessage}</Alert>
+          )}
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Provider</InputLabel>
+                <Select
+                  label="Provider"
+                  value={summarySettings?.provider || ''}
+                  onChange={e => handleChangeSummaryProvider(e.target.value)}
+                >
+                  {summaryProviders.map(p => (
+                    <MenuItem key={p} value={p}>{p}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth size="small" disabled={!summaryModels.length}>
+                <InputLabel>Modello</InputLabel>
+                <Select
+                  label="Modello"
+                  value={summarySettings?.model || ''}
+                  onChange={e => setSummarySettings(s => s ? { ...s, model: e.target.value } : s)}
+                >
+                  {summaryModels.map(m => (
+                    <MenuItem key={m} value={m}>{m}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControlLabel
+                control={<Switch checked={summarySettings?.enabled || false} onChange={e => setSummarySettings(s => s ? { ...s, enabled: e.target.checked } : s)} />}
+                label="Riassunto Abilitato"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <Box display="flex" gap={1}>
+                <Button variant="contained" startIcon={<SaveIcon />} onClick={handleSaveSummarySettings} disabled={summaryLoading || !summarySettings?.provider}>Salva</Button>
+                <Button variant="outlined" onClick={loadSummarySettings} disabled={summaryLoading}>Ricarica</Button>
+              </Box>
+            </Grid>
+          </Grid>
+          <Typography variant="caption" color="text.secondary" display="block" mt={2}>
+            Il provider 'local' è escluso automaticamente. Inclusi: openrouter, openai, gemini, ollama se configurati.
+          </Typography>
+        </CardContent>
+      </Card>
     </Box>
   );
 

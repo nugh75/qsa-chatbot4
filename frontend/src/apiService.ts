@@ -672,6 +672,11 @@ class ApiService {
     return this.makeRequest('/whisper/warm' + (model && !body ? `?model=${encodeURIComponent(model)}` : ''), { method: 'POST', body });
   }
 
+  // === Available Models for Providers ===
+  async getAvailableModels(provider: string): Promise<ApiResponse<{ models: string[] }>> {
+    return this.makeRequest(`/admin/models/${encodeURIComponent(provider)}`);
+  }
+
   // === Pipeline (Regex Routes & File Mappings) ===
   async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
     return this.makeRequest('/admin/pipeline');
@@ -810,6 +815,35 @@ class ApiService {
   }
   async getPublicWelcomeGuide(): Promise<ApiResponse<{ welcome: any; guide: any }>> {
     return this.makeRequest('/welcome-guides/public');
+  }
+  async downloadConversationWithReportPost(conversationId: string, history: { id?: string; role: string; content: string; timestamp?: string }[], format?: 'zip'|'pdf'|'txt'): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+    const body = {
+      format: format || 'zip',
+      conversation_history: history
+    };
+    const resp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        headers['Authorization'] = `Bearer ${CredentialManager.getAccessToken()}`;
+        const retry = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`Download failed: ${resp.status} - ${txt}`);
+    }
+    return resp.blob();
   }
 }
 

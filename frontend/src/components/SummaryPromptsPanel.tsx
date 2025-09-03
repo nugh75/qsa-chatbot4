@@ -29,6 +29,9 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
   const [summaryModel, setSummaryModel] = useState<string>('')
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [settingsLoaded, setSettingsLoaded] = useState<boolean>(false)
+  // Available models state
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [loadingModels, setLoadingModels] = useState<boolean>(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -56,6 +59,36 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
   }, [])
 
   useEffect(() => { loadSummarySettings() }, [loadSummarySettings])
+
+  // Load available models when provider changes
+  const loadAvailableModels = useCallback(async (provider: string) => {
+    if (!provider) {
+      setAvailableModels([])
+      return
+    }
+    setLoadingModels(true)
+    try {
+      const res = await apiService.getAvailableModels(provider)
+      if (res.success && res.data) {
+        setAvailableModels(res.data.models || [])
+      } else {
+        setAvailableModels([])
+      }
+    } catch (error) {
+      console.error('Error loading available models:', error)
+      setAvailableModels([])
+    } finally {
+      setLoadingModels(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (summaryProvider) {
+      loadAvailableModels(summaryProvider)
+    } else {
+      setAvailableModels([])
+    }
+  }, [summaryProvider, loadAvailableModels])
 
   const saveSummarySettings = async () => {
     setSavingSettings(true)
@@ -129,7 +162,8 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
               provider={summaryProvider}
               model={summaryModel}
               onChange={setSummaryModel}
-              config={config}
+              availableModels={availableModels}
+              loading={loadingModels}
             />
           </FormControl>
           <FormControlLabel control={<Switch size="small" checked={summaryEnabled} onChange={e=> setSummaryEnabled(e.target.checked)} />} label={summaryEnabled? 'Abilitato':'Disabilitato'} />
@@ -174,20 +208,29 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
 export default SummaryPromptsPanel
 
 // Helper component for model select (fallback to simple text field if no list)
-interface ModelSelectProps { provider: string; model: string; onChange: (m:string)=>void; config?: AdminConfig | null }
-const TextFieldSelectModel: React.FC<ModelSelectProps> = ({ provider, model, onChange, config }) => {
-  const provCfg: any = provider && config ? (config.ai_providers as any)[provider] : null
-  const models: string[] = provCfg?.models || []
-  if (!models.length) {
+interface ModelSelectProps { 
+  provider: string; 
+  model: string; 
+  onChange: (m:string)=>void; 
+  availableModels: string[];
+  loading?: boolean;
+}
+const TextFieldSelectModel: React.FC<ModelSelectProps> = ({ provider, model, onChange, availableModels, loading }) => {
+  if (loading) {
     return (
-      <TextField size="small" label="Model" value={model} onChange={e=> onChange(e.target.value)} placeholder="nome modello" />
+      <TextField size="small" label="Modello" value="" disabled placeholder="Caricamento..." />
+    )
+  }
+  if (!availableModels.length) {
+    return (
+      <TextField size="small" label="Modello" value={model} onChange={e=> onChange(e.target.value)} placeholder="nome modello" />
     )
   }
   return (
     <FormControl size="small" fullWidth>
       <InputLabel id="summary-model-label">Modello</InputLabel>
       <Select labelId="summary-model-label" label="Modello" value={model} onChange={e=> onChange(e.target.value)}>
-        {models.map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+        {availableModels.map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
       </Select>
     </FormControl>
   )

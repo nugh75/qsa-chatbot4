@@ -312,12 +312,90 @@ async def summarize_conversation(
     summary_prompt = load_summary_prompt()
     summary_provider = get_summary_provider()
     summary_model = get_summary_model()
+    
+    # Detailed logging for summary generation debugging
+    try:
+        from .logging_utils import log_interaction as _li
+        _li({
+            "event": "summary_generation_debug_get",
+            "conversation_id": conversation_id,
+            "user_id": current_user.get('id'),
+            "summary_prompt_length": len(summary_prompt or ''),
+            "summary_prompt_preview": (summary_prompt or '')[:100] + '...' if summary_prompt and len(summary_prompt) > 100 else summary_prompt,
+            "summary_provider": summary_provider,
+            "summary_model": summary_model,
+            "message_count": len(messages),
+            "has_messages": bool(messages)
+        })
+    except Exception as log_err:
+        print(f"Logging error in summary debug GET: {log_err}")
+    
     llm_messages = [{"role": "system", "content": summary_prompt}] + [
         {"role": m['role'], "content": m['content_encrypted']} for m in messages
     ]
+    
+    # Log the messages being sent to LLM
     try:
-        summary_text = await chat_with_provider(llm_messages, provider=summary_provider, model=summary_model)
+        from .logging_utils import log_interaction as _li
+        _li({
+            "event": "llm_messages_debug_get",
+            "conversation_id": conversation_id,
+            "user_id": current_user.get('id'),
+            "llm_message_count": len(llm_messages),
+            "system_prompt_length": len(summary_prompt or ''),
+            "user_messages_count": len([m for m in llm_messages if m['role'] != 'system']),
+            "first_user_message_preview": next((m['content'][:100] + '...' for m in llm_messages if m['role'] != 'system'), 'No user messages')
+        })
+    except Exception as log_err:
+        print(f"Logging error in LLM messages debug GET: {log_err}")
+    
+    try:
+        print(f"[DEBUG] Starting summary generation for conversation {conversation_id} (GET)")
+        print(f"[DEBUG] Provider: {summary_provider}, Model: {summary_model}")
+        print(f"[DEBUG] Prompt length: {len(summary_prompt or '')}")
+        print(f"[DEBUG] Messages to process: {len(messages)}")
+        
+        summary_text = await chat_with_provider(llm_messages, provider=summary_provider, model=summary_model, is_summary_request=True)
+        
+        print(f"[DEBUG] Summary generation completed successfully (GET)")
+        print(f"[DEBUG] Summary length: {len(summary_text or '')}")
+        print(f"[DEBUG] Summary preview: {(summary_text or '')[:200]}...")
+        
+        # Log successful summary generation
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "summary_generation_success_get",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "summary_length": len(summary_text or ''),
+                "summary_provider": summary_provider,
+                "summary_model": summary_model
+            })
+        except Exception as log_err:
+            print(f"Logging error in summary success GET: {log_err}")
+            
     except Exception as e:
+        print(f"[ERROR] Summary generation failed for conversation {conversation_id} (GET): {e}")
+        print(f"[ERROR] Exception type: {type(e).__name__}")
+        import traceback
+        print(f"[ERROR] Traceback: {traceback.format_exc()}")
+        
+        # Log the failure
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "summary_generation_failed_get",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "error_message": str(e),
+                "error_type": type(e).__name__,
+                "summary_provider": summary_provider,
+                "summary_model": summary_model
+            })
+        except Exception as log_err:
+            print(f"Logging error in summary failure GET: {log_err}")
+        
         raise HTTPException(status_code=500, detail=f"Summary generation failed: {e}")
 
     return ConversationSummaryResponse(
@@ -353,13 +431,95 @@ async def export_conversation_with_report(
         summary_prompt = load_summary_prompt()
         summary_provider = get_summary_provider()
         summary_model = get_summary_model()
+        
+        # Detailed logging for summary generation debugging
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "summary_generation_debug_export",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "summary_prompt_length": len(summary_prompt or ''),
+                "summary_prompt_preview": (summary_prompt or '')[:100] + '...' if summary_prompt and len(summary_prompt) > 100 else summary_prompt,
+                "summary_provider": summary_provider,
+                "summary_model": summary_model,
+                "message_count": len(messages),
+                "has_messages": bool(messages)
+            })
+        except Exception as log_err:
+            print(f"Logging error in summary debug export: {log_err}")
+        
         llm_messages = [{"role": "system", "content": summary_prompt}] + [
             {"role": m['role'], "content": m['content_encrypted']} for m in messages
         ]
+        
+        # Log the messages being sent to LLM
         try:
-            summary_text = await chat_with_provider(llm_messages, provider=summary_provider, model=summary_model)
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "llm_messages_debug_export",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "llm_message_count": len(llm_messages),
+                "system_prompt_length": len(summary_prompt or ''),
+                "user_messages_count": len([m for m in llm_messages if m['role'] != 'system']),
+                "first_user_message_preview": next((m['content'][:100] + '...' for m in llm_messages if m['role'] != 'system'), 'No user messages')
+            })
+        except Exception as log_err:
+            print(f"Logging error in LLM messages debug export: {log_err}")
+        
+        try:
+            print(f"[DEBUG] Starting summary generation for conversation {conversation_id} (EXPORT)")
+            print(f"[DEBUG] Provider: {summary_provider}, Model: {summary_model}")
+            print(f"[DEBUG] Prompt length: {len(summary_prompt or '')}")
+            print(f"[DEBUG] Messages to process: {len(messages)}")
+
+            summary_text = await chat_with_provider(
+                llm_messages,
+                provider=summary_provider,
+                model=summary_model,
+                is_summary_request=True
+            )
+
+            print(f"[DEBUG] Summary generation completed successfully (EXPORT)")
+            print(f"[DEBUG] Summary length: {len(summary_text or '')}")
+            print(f"[DEBUG] Summary preview: {(summary_text or '')[:200]}...")
+
+            # Log successful summary generation
+            try:
+                from .logging_utils import log_interaction as _li
+                _li({
+                    "event": "summary_generation_success_export",
+                    "conversation_id": conversation_id,
+                    "user_id": current_user.get('id'),
+                    "summary_length": len(summary_text or ''),
+                    "summary_provider": summary_provider,
+                    "summary_model": summary_model
+                })
+            except Exception as log_err:
+                print(f"Logging error in summary success export: {log_err}")
+            
         except Exception as e:
-            print(f"Summary generation failed for conversation {conversation_id}: {e}")
+            print(f"[ERROR] Summary generation failed for conversation {conversation_id} (EXPORT): {e}")
+            print(f"[ERROR] Exception type: {type(e).__name__}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            
+            # Log the failure
+            try:
+                from .logging_utils import log_interaction as _li
+                _li({
+                    "event": "summary_generation_failed_export",
+                    "conversation_id": conversation_id,
+                    "user_id": current_user.get('id'),
+                    "error_message": str(e),
+                    "error_type": type(e).__name__,
+                    "summary_provider": summary_provider,
+                    "summary_model": summary_model
+                })
+            except Exception as log_err:
+                print(f"Logging error in summary failure export: {log_err}")
+            
             summary_text = (
                 f"Errore generazione summary: {e}\n\n"
                 f"Conversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
@@ -508,3 +668,314 @@ async def export_conversation_with_report(
     except Exception as e:
         print(f"Unexpected error in export_conversation_with_report: {e}")
         raise HTTPException(status_code=500, detail=f"Internal error during export: {str(e)}")
+
+
+class ExportWithReportIn(BaseModel):
+    format: Optional[str] = None
+    # conversation_history expects a list of items like {"role": "user"|"assistant", "content": "...", "timestamp": "...", "id": "..."}
+    conversation_history: Optional[List[Dict[str, Any]]] = None
+
+
+@router.post("/{conversation_id}/export-with-report")
+async def export_conversation_with_report_post(
+    conversation_id: str,
+    payload: ExportWithReportIn,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Export that accepts decrypted conversation history in the request body.
+
+    This is useful when messages are encrypted client-side: the frontend can POST the plaintext
+    conversation history and let the backend generate the AI report and export bundle.
+    Behavior mirrors the GET handler, preferring `payload.conversation_history` when provided.
+    """
+    try:
+        # Basic logging start
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "export_with_report_post_start",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "provided_history": bool(payload.conversation_history),
+                "format": payload.format or 'zip'
+            })
+        except Exception:
+            pass
+
+        # Validate conversation ownership
+        conversation = ConversationModel.get_conversation(conversation_id, current_user['id'])
+        if not conversation:
+            raise HTTPException(status_code=404, detail=f"Conversation {conversation_id} not found for user {current_user['id']}")
+
+        # Decide source of messages: payload.history (plaintext from frontend) or DB
+        if payload.conversation_history:
+            # Normalize provided history to the same shape used elsewhere
+            messages = []
+            for m in payload.conversation_history:
+                messages.append({
+                    'id': m.get('id'),
+                    'role': m.get('role'),
+                    # treat provided content as plaintext (LLM expects 'content' field)
+                    'content_encrypted': m.get('content') or m.get('content_encrypted') or '',
+                    'timestamp': m.get('timestamp')
+                })
+        else:
+            messages = MessageModel.get_conversation_messages(conversation_id, limit=1000)
+            if not messages:
+                raise HTTPException(status_code=400, detail=f"Conversation {conversation_id} has no messages to export")
+
+        summary_prompt = load_summary_prompt()
+        summary_provider = get_summary_provider()
+        summary_model = get_summary_model()
+        
+        # Detailed logging for summary generation debugging
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "summary_generation_debug",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "summary_prompt_length": len(summary_prompt or ''),
+                "summary_prompt_preview": (summary_prompt or '')[:100] + '...' if summary_prompt and len(summary_prompt) > 100 else summary_prompt,
+                "summary_provider": summary_provider,
+                "summary_model": summary_model,
+                "message_count": len(messages),
+                "has_messages": bool(messages)
+            })
+        except Exception as log_err:
+            print(f"Logging error in summary debug: {log_err}")
+        
+        llm_messages = [{"role": "system", "content": summary_prompt}] + [
+            {"role": m['role'], "content": m.get('content_encrypted')}
+            for m in messages
+        ]
+        
+        # Log the messages being sent to LLM
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "llm_messages_debug",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "llm_message_count": len(llm_messages),
+                "system_prompt_length": len(summary_prompt or ''),
+                "user_messages_count": len([m for m in llm_messages if m['role'] != 'system']),
+                "first_user_message_preview": next((m['content'][:100] + '...' for m in llm_messages if m['role'] != 'system'), 'No user messages'),
+                "full_system_prompt": summary_prompt,
+                "full_messages": llm_messages
+            })
+        except Exception as log_err:
+            print(f"Logging error in LLM messages debug: {log_err}")
+            print(f"[DEBUG] System prompt: {summary_prompt}")
+            print(f"[DEBUG] LLM messages count: {len(llm_messages)}")
+            for i, msg in enumerate(llm_messages):
+                print(f"[DEBUG] Msg {i}: {msg['role']} - {msg['content'][:100]}...")
+        
+        try:
+            print(f"[DEBUG] Starting summary generation for conversation {conversation_id}")
+            print(f"[DEBUG] Provider: {summary_provider}, Model: {summary_model}")
+            print(f"[DEBUG] Prompt length: {len(summary_prompt or '')}")
+            print(f"[DEBUG] Messages to process: {len(messages)}")
+            
+            summary_text = await chat_with_provider(llm_messages, provider=summary_provider, model=summary_model, is_summary_request=True)
+            
+            print(f"[DEBUG] Summary generation completed successfully")
+            print(f"[DEBUG] Summary length: {len(summary_text or '')}")
+            print(f"[DEBUG] Summary preview: {(summary_text or '')[:200]}...")
+            
+            # Log successful summary generation
+            try:
+                from .logging_utils import log_interaction as _li
+                _li({
+                    "event": "summary_generation_success",
+                    "conversation_id": conversation_id,
+                    "user_id": current_user.get('id'),
+                    "summary_length": len(summary_text or ''),
+                    "summary_provider": summary_provider,
+                    "summary_model": summary_model
+                })
+            except Exception as log_err:
+                print(f"Logging error in summary success: {log_err}")
+                
+        except Exception as e:
+            print(f"[ERROR] Summary generation failed for conversation (POST) {conversation_id}: {e}")
+            print(f"[ERROR] Exception type: {type(e).__name__}")
+            import traceback
+            print(f"[ERROR] Traceback: {traceback.format_exc()}")
+            
+            # Log the failure
+            try:
+                from .logging_utils import log_interaction as _li
+                _li({
+                    "event": "summary_generation_failed",
+                    "conversation_id": conversation_id,
+                    "user_id": current_user.get('id'),
+                    "error_message": str(e),
+                    "error_type": type(e).__name__,
+                    "summary_provider": summary_provider,
+                    "summary_model": summary_model
+                })
+            except Exception as log_err:
+                print(f"Logging error in summary failure: {log_err}")
+            
+            summary_text = (
+                f"Errore generazione summary: {e}\n\n"
+                f"Conversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
+            )
+
+        chat_payload = {
+            "conversation": {
+                "id": conversation['id'],
+                "title_encrypted": conversation['title_encrypted'],
+                "created_at": conversation['created_at'],
+                "updated_at": conversation['updated_at'],
+                "message_count": conversation['message_count']
+            },
+            "summary": summary_text,
+            "messages": [
+                {
+                    "id": m.get('id'),
+                    "role": m['role'],
+                    "content": m.get('content_encrypted'),
+                    "timestamp": m.get('timestamp')
+                } for m in messages
+            ]
+        }
+
+        report_md = (
+            f"# Report Conversazione {conversation['id']}\n\n"
+            f"## Informazioni Generali\n"
+            f"- Creata: {conversation['created_at']}\n"
+            f"- Ultimo aggiornamento: {conversation['updated_at']}\n"
+            f"- Numero messaggi: {len(messages)}\n\n"
+            f"## Riassunto\n\n{summary_text}\n"
+        )
+
+        metadata = {
+            "exported_at": datetime.utcnow().isoformat() + 'Z',
+            "user_id": current_user['id'],
+            "conversation_id": conversation_id,
+            "files": ["chat.json", "report.md", "metadata.json"],
+            "message_count": len(messages),
+            "summary_provider": summary_provider,
+            "summary_model": summary_model,
+            "summary_chars": len(summary_text or ''),
+            "has_summary": bool(summary_text),
+            "export_version": "1.2"
+        }
+
+        fmt = (payload.format or '').lower()
+        if fmt == 'txt':
+            from typing import List as _List
+            lines: _List[str] = []
+            lines.append(f"Conversation ID: {conversation['id']}")
+            lines.append(f"Creato: {conversation['created_at']}")
+            lines.append(f"Ultimo aggiornamento: {conversation['updated_at']}")
+            lines.append(f"Messaggi: {len(messages)}")
+            lines.append(f"Provider summary: {summary_provider}")
+            if summary_model:
+                lines.append(f"Model summary: {summary_model}")
+            lines.append("")
+            lines.append("=== SUMMARY ===")
+            lines.append(summary_text or '(nessun riassunto)')
+            lines.append("\n=== MESSAGGI ===")
+            for msg in messages:
+                lines.append(f"[{msg.get('timestamp')}] {msg['role']}: {msg.get('content_encrypted')}")
+            txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
+            filename_txt = f"conversation_{conversation_id}_report.txt"
+            return StreamingResponse(
+                txt_buffer,
+                media_type='text/plain; charset=utf-8',
+                headers={'Content-Disposition': f'attachment; filename={filename_txt}'}
+            )
+
+        if fmt == 'pdf':
+            try:
+                import fitz  # type: ignore
+                pdf_buffer = io.BytesIO()
+                doc = fitz.open()
+
+                def _add_wrapped_text(page, text: str, top: float = 50, left: float = 50, max_width: float = 500, line_height: float = 14, font_size: float = 11):
+                    words = text.split()
+                    line = ''
+                    y = top
+                    max_chars = int(max_width / (font_size * 0.55))
+                    for w in words:
+                        candidate = (line + ' ' + w).strip()
+                        if len(candidate) > max_chars and line:
+                            page.insert_text((left, y), line, fontsize=font_size)
+                            y += line_height
+                            line = w
+                        else:
+                            line = candidate
+                        if y > page.rect.height - 60:
+                            page = doc.new_page()
+                            y = 50
+                    if line:
+                        page.insert_text((left, y), line, fontsize=font_size)
+                        y += line_height
+                    return page, y
+
+                page = doc.new_page()
+                page.insert_text((50, 40), f"Report Conversazione {conversation['id']}", fontsize=16)
+                meta_block = (
+                    f"Creato: {conversation['created_at']}\n"
+                    f"Ultimo aggiornamento: {conversation['updated_at']}\n"
+                    f"Messaggi: {len(messages)}\n"
+                    f"Provider summary: {summary_provider}\n"
+                    + (f"Model summary: {summary_model}\n" if summary_model else '')
+                )
+                page.insert_text((50, 70), meta_block, fontsize=11)
+                page.insert_text((50, 120), "Riassunto:", fontsize=13)
+                page, y_cursor = _add_wrapped_text(page, summary_text or '(nessun riassunto)', top=140)
+                page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
+                y_cursor += 30
+                for msg in messages:
+                    block = f"[{msg.get('timestamp')}] {msg['role']}:\n{msg.get('content_encrypted')}\n"
+                    page, y_cursor = _add_wrapped_text(page, block, top=y_cursor)
+                    y_cursor += 4
+                    if y_cursor > page.rect.height - 80:
+                        page = doc.new_page()
+                        y_cursor = 50
+                doc.save(pdf_buffer)
+                doc.close()
+                pdf_buffer.seek(0)
+                filename_pdf = f"conversation_{conversation_id}_report.pdf"
+                return StreamingResponse(
+                    pdf_buffer,
+                    media_type='application/pdf',
+                    headers={'Content-Disposition': f'attachment; filename={filename_pdf}'}
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Errore generazione PDF: {e}")
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('chat.json', json.dumps(chat_payload, ensure_ascii=False, indent=2))
+            zf.writestr('report.md', report_md)
+            zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+        zip_buffer.seek(0)
+        filename_zip = f"conversation_{conversation_id}_export.zip"
+        resp = StreamingResponse(
+            zip_buffer,
+            media_type='application/zip',
+            headers={'Content-Disposition': f'attachment; filename={filename_zip}'}
+        )
+        try:
+            from .logging_utils import log_interaction as _li
+            _li({
+                "event": "export_with_report_post_done",
+                "conversation_id": conversation_id,
+                "user_id": current_user.get('id'),
+                "message_count": len(messages),
+                "summary_chars": len(summary_text or ''),
+                "format": payload.format or 'zip'
+            })
+        except Exception:
+            pass
+        return resp
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error in export_conversation_with_report (POST): {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error during export (POST): {str(e)}")

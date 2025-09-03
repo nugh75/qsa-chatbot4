@@ -444,6 +444,9 @@ async def get_config():
         if provider in masked_config["ai_providers"]:
             masked_config["ai_providers"][provider]["api_key_status"] = "configured" if api_key else "missing"
             masked_config["ai_providers"][provider]["api_key_masked"] = "••••••••••••••••" if api_key else ""
+            # Abilita automaticamente il provider se la chiave API è configurata
+            if api_key:
+                masked_config["ai_providers"][provider]["enabled"] = True
     
     # Sovrascrivi l'URL di Ollama con quello dalle variabili di ambiente
     if "ollama" in masked_config["ai_providers"]:
@@ -660,9 +663,10 @@ async def get_summary_settings():
 async def update_summary_settings(payload: SummarySettingsIn):
     """Aggiorna le impostazioni per la generazione dei summary"""
     try:
-        # Valida che il provider non sia "local"
+        # Permetti tutti i provider tranne 'local'. In precedenza anche 'ollama' risultava escluso indirettamente lato UI.
+        # Manteniamo solo il blocco per 'local' che è un fallback sintetico.
         if payload.provider == "local":
-            raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary")
+            raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary. Scegli un provider AI reale (es: openrouter, openai, gemini, ollama)")
         
         config = load_config()
         config["summary_settings"] = {

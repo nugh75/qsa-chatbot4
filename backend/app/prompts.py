@@ -287,7 +287,11 @@ def load_summary_prompt() -> str:
     for p in data.get('prompts', []):
         if p.get('id') == active:
             txt = p.get('text', DEFAULT_SUMMARY_TEXT)
-            return txt or DEFAULT_SUMMARY_TEXT
+            final_text = txt or DEFAULT_SUMMARY_TEXT
+            print(f"[DEBUG] Loaded summary prompt id='{active}' length={len(final_text)}")
+            print(f"[DEBUG] Summary prompt preview: {final_text[:200]}...")
+            return final_text
+    print(f"[DEBUG] No active summary prompt found, using default")
     return DEFAULT_SUMMARY_TEXT
 
 def save_summary_prompt(text: str) -> None:

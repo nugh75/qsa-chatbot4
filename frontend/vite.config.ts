@@ -6,7 +6,7 @@ export default defineConfig(({ command, mode }) => ({
   server: {
     host: true,
     port: 5175,
-    allowedHosts: ['cb.ai4educ.org'],
+    allowedHosts: ['cbp.ai4educ.org'],
     proxy: {
       '/api': {
         target: 'http://backend:8005',

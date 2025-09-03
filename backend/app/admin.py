@@ -1148,7 +1148,7 @@ async def reset_summary_prompt():
 async def reset_summary_prompt_seed():
     """Forza il reset copiando il seed (backend/config/seed/summary_prompt.md) se presente.
 
-    Mantiene solo per compatibilità un fallback di lettura ai vecchi percorsi (/app/data/SUMMARY_PROMPT.md o lowercase) se il nuovo seed manca.
+    Fallback legacy /app/data rimosso: se il seed manca usa il testo di default.
     """
     try:
         text = reset_summary_prompt_from_seed()
@@ -2136,17 +2136,25 @@ async def restore_config(file: UploadFile = File(...), allow_seed: bool = False,
         raise HTTPException(status_code=500, detail=f"Errore restore: {e}")
 
 @router.get('/admin/config/status')
-async def config_status(include_seed: bool = False, include_optional: bool = True):
-    """Ritorna hash SHA256 dei file di configurazione conosciuti + hash aggregato.
+async def config_status(include_seed: bool = False, include_optional: bool = True, include_uppercase_variants: bool = True):
+    """Ritorna hash SHA256 dei file di configurazione + hash aggregato.
 
-    include_seed: se True include i seed (senza forzare la loro esistenza).
-    include_optional: se True include file opzionali se presenti (es. mcp_config, summary_prompts.json, regex guide).
+    include_seed: include i seed.
+    include_optional: include opzionali se presenti.
+    include_uppercase_variants: se True rileva varianti UPPERCASE dei file runtime (compat legacy) e le mostra.
     """
     try:
         from . import config_backup
         file_defs = config_backup._file_list()  # type: ignore (internal use)
         entries = []
         hasher = hashlib.sha256()
+        # Tracciamo canonical runtime per evitare duplicazioni
+        canonical_runtime_map = {
+            'system_prompts.json': ('runtime_system_prompts', 'prompts'),
+            'summary_prompts.json': ('runtime_summary_prompts', 'summary'),
+            'personalities.json': ('runtime_personalities', 'personalities')
+        }
+        seen_upper = []
         for f in file_defs:
             if f.kind == 'seed' and not include_seed:
                 continue
@@ -2160,7 +2168,7 @@ async def config_status(include_seed: bool = False, include_optional: bool = Tru
                 'required': f.required,
                 'exists': exists,
                 'filename': f.path.name,
-                'relative': f.path.name,  # legacy frontend field
+                'relative': f.path.name,
             }
             if exists:
                 try:
@@ -2172,6 +2180,55 @@ async def config_status(include_seed: bool = False, include_optional: bool = Tru
                 except Exception as e:
                     info['error'] = str(e)
             entries.append(info)
+            # Uppercase variant detection (runtime only)
+            if include_uppercase_variants and f.kind == 'runtime':
+                base = f.path.name
+                if base in canonical_runtime_map:
+                    upper_candidate = f.path.parent / base.upper()
+                    if (not exists) and upper_candidate.exists():
+                        # canonical missing, uppercase present → treat as active variant
+                        try:
+                            data_u = upper_candidate.read_bytes()
+                            h_u = hashlib.sha256(data_u).hexdigest()
+                            hasher.update(h_u.encode('utf-8'))
+                            entries.append({
+                                'id': f"{f.id}_uppercase_variant",
+                                'path': str(upper_candidate),
+                                'kind': f.kind,
+                                'required': False,
+                                'exists': True,
+                                'filename': upper_candidate.name,
+                                'relative': upper_candidate.name,
+                                'sha256': h_u,
+                                'bytes': len(data_u),
+                                'uppercase_fallback_for': base,
+                                'note': 'uppercase variant in uso (canonical lowercase assente)'
+                            })
+                            seen_upper.append(str(upper_candidate))
+                        except Exception as ue:
+                            entries.append({
+                                'id': f"{f.id}_uppercase_variant_error",
+                                'path': str(upper_candidate),
+                                'kind': f.kind,
+                                'required': False,
+                                'exists': True,
+                                'filename': upper_candidate.name,
+                                'relative': upper_candidate.name,
+                                'error': str(ue)
+                            })
+                    elif exists and upper_candidate.exists():
+                        # Both exist (inconsistency) -> report uppercase as shadowed
+                        entries.append({
+                            'id': f"{f.id}_uppercase_shadowed",
+                            'path': str(upper_candidate),
+                            'kind': f.kind,
+                            'required': False,
+                            'exists': True,
+                            'filename': upper_candidate.name,
+                            'relative': upper_candidate.name,
+                            'shadowed_by': f.path.name,
+                            'note': 'variant uppercase presente ma ignorata (usa lowercase)'
+                        })
         aggregate = hasher.hexdigest()
         return {"success": True, "aggregate_sha256": aggregate, "files": entries}
     except Exception as e:
@@ -2222,8 +2279,8 @@ async def list_avatars():
 # ---------------- Pipeline (routing + files) -----------------
 PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 # Prefer storage copy (editable/persisted) for regex guide; fallback to root project file.
-PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "PIPELINE_REGEX_GUIDE.md"
-PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / "PIPELINE_REGEX_GUIDE.md"
+PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "pipeline_regex_guide.json"
+PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / "pipeline_regex_guide.json"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -2665,39 +2722,15 @@ async def get_available_files():
         raise HTTPException(status_code=500, detail=f"Errore nel recupero file disponibili: {str(e)}")
 
 # ---- Pipeline file content edit/upload ----
-import shutil
 def _pipeline_data_dir() -> Path:
-    """Restituisce la directory pipeline_files persistente, con migrazione automatica e log diagnostico."""
+    """Directory pipeline_files persistente (niente più migrazione /data)."""
     import os
     env_dir = os.getenv("PIPELINE_FILES_DIR")
     here = Path(__file__).resolve()
     storage_dir = here.parent.parent / "storage" / "pipeline_files"
-    legacy_data_dir = here.parent.parent.parent / "data"
-    # Priorità: env, storage, legacy
-    if env_dir:
-        d = Path(env_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        print(f"[Pipeline] PIPELINE_FILES_DIR attivo: {d}")
-        return d
-    migrated = 0
-    if not storage_dir.exists():
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        # Migrazione automatica
-        if legacy_data_dir.exists():
-            for f in legacy_data_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
-                    target = storage_dir / f.name
-                    if not target.exists():
-                        try:
-                            shutil.copy2(f, target)
-                            migrated += 1
-                        except Exception as e:
-                            print(f"[Pipeline] Errore migrazione file: {e}")
-            # Marker file
-            marker = storage_dir / ".pipeline_migrated"
-            marker.write_text(f"Migrati {migrated} file da {legacy_data_dir} all'avvio\n", encoding="utf-8")
-    print(f"[Pipeline] pipeline_files dir: {storage_dir} (migrati {migrated} nuovi file)")
-    return storage_dir
+    target = Path(env_dir) if env_dir else storage_dir
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 def _safe_pipeline_file(filename: str) -> Path:
     if not filename or any(sep in filename for sep in ["..", "/", "\\"]):

@@ -30,7 +30,13 @@ STORAGE_BASE = Path('/app/storage')  # runtime persistente
 PROMPTS_RUNTIME_DIR = STORAGE_BASE / 'prompts'
 SUMMARY_RUNTIME_DIR = STORAGE_BASE / 'summary'
 PERSONALITIES_RUNTIME_DIR = STORAGE_BASE / 'personalities'
-PIPELINE_STORAGE_DIR = BASE_DIR / 'storage' / 'pipeline'
+"""NOTE su pipeline storage:
+Prima puntava a BASE_DIR / 'storage' / 'pipeline' (non persistente). Ora usiamo lo
+storage runtime persistente sotto /app/storage/pipeline così il file regex guide
+viene incluso nel backup e sopravvive ai rebuild.
+"""
+PIPELINE_STORAGE_DIR = STORAGE_BASE / 'pipeline'
+ADMIN_GUIDE_RUNTIME_PATH = STORAGE_BASE / 'admin' / 'ADMIN_GUIDE.md'
 
 
 @dataclass
@@ -55,10 +61,12 @@ def _file_list() -> List[ListedFile]:
         ListedFile('seed_summary_prompt', SEED_DIR / 'summary_prompt.md', 'seed', required=False, include_by_default=False),
         ListedFile('seed_personalities', SEED_DIR / 'personalities.json', 'seed', required=False, include_by_default=False),
         # Runtime
-        ListedFile('runtime_system_prompts', PROMPTS_RUNTIME_DIR / 'system_prompts.json', 'runtime'),
-        ListedFile('runtime_summary_prompts', SUMMARY_RUNTIME_DIR / 'summary_prompts.json', 'runtime', required=False),
-        ListedFile('runtime_personalities', PERSONALITIES_RUNTIME_DIR / 'personalities.json', 'runtime'),
-        ListedFile('pipeline_regex_guide', PIPELINE_STORAGE_DIR / 'PIPELINE_REGEX_GUIDE.md', 'runtime', required=False, include_by_default=False),
+    # Runtime principali (lowercase canonical). L'esistenza verrà verificata insieme a fallback uppercase.
+    ListedFile('runtime_system_prompts', PROMPTS_RUNTIME_DIR / 'system_prompts.json', 'runtime'),
+    ListedFile('runtime_summary_prompts', SUMMARY_RUNTIME_DIR / 'summary_prompts.json', 'runtime', required=False),
+    ListedFile('runtime_personalities', PERSONALITIES_RUNTIME_DIR / 'personalities.json', 'runtime'),
+        ListedFile('pipeline_regex_guide', PIPELINE_STORAGE_DIR / 'pipeline_regex_guide.json', 'runtime', required=False, include_by_default=False),
+    ListedFile('admin_guide', ADMIN_GUIDE_RUNTIME_PATH, 'runtime', required=False, include_by_default=True),
     ]
 
 
@@ -70,14 +78,37 @@ def create_backup_zip(
     include_seed: bool = False,
     include_optional: bool = False,
     include_regex_guide: bool = False,
+    include_admin_guide: bool = True,
     include_avatars: bool = False,
 ) -> bytes:
     files = _file_list()
+    # Gestione fallback uppercase (compatibilità). Se il file canonical lowercase NON esiste ma esiste la variante uppercase
+    # la includiamo usando il path reale e nei metadati segnaliamo canonical_lowercase.
+    uppercase_fallbacks: List[Dict] = []
+    def _maybe_upper(real_dir: Path, lower_name: str):
+        lower_path = real_dir / lower_name
+        upper_path = real_dir / lower_name.upper()
+        if (not lower_path.exists()) and upper_path.exists():
+            # Creiamo un ListedFile ad-hoc con id consistente ma path uppercase.
+            # Non modifichiamo l'oggetto originale; aggiungiamo dopo.
+            lf_id = f"{lower_name.replace('.','_')}__uppercase_fallback"
+            uppercase_fallbacks.append({
+                'id': lf_id,
+                'lower_id': lower_name,
+                'path': upper_path,
+                'canonical': str(lower_path)
+            })
+
+    _maybe_upper(PROMPTS_RUNTIME_DIR, 'system_prompts.json')
+    _maybe_upper(SUMMARY_RUNTIME_DIR, 'summary_prompts.json')
+    _maybe_upper(PERSONALITIES_RUNTIME_DIR, 'personalities.json')
     selection: List[ListedFile] = []
     for f in files:
         if f.kind == 'seed' and not include_seed:
             continue
         if f.id == 'pipeline_regex_guide' and not include_regex_guide:
+            continue
+        if f.id == 'admin_guide' and not include_admin_guide:
             continue
         if not f.include_by_default and f.kind not in ('seed',):
             # runtime optional non richiesti
@@ -88,6 +119,14 @@ def create_backup_zip(
             # se manca un core richiesto saltiamo ma segnaliamo nel manifest
             pass
         selection.append(f)
+
+    # Aggiungiamo i fallback uppercase come pseudo ListedFile dinamici
+    dynamic_upper_listed: List[ListedFile] = []
+    for fb in uppercase_fallbacks:
+        path = fb['path']
+        lf = ListedFile(fb['id'], path, 'runtime', required=False, include_by_default=True)
+        dynamic_upper_listed.append(lf)
+        selection.append(lf)
 
     avatar_files: List[Path] = []
     if include_avatars:
@@ -112,14 +151,20 @@ def create_backup_zip(
             data = lf.path.read_bytes()
             rel = f"files/{lf.id}__{lf.path.name}"  # simple unique mapping
             zf.writestr(rel, data)
-            manifest_entries.append({
+            entry = {
                 'id': lf.id,
                 'path': str(lf.path),
                 'archive_path': rel,
                 'kind': lf.kind,
                 'bytes': len(data),
                 'sha256': _hash_bytes(data)
-            })
+            }
+            # Se entry è un fallback uppercase arricchiamo i metadati
+            for fb in uppercase_fallbacks:
+                if fb['path'] == lf.path and fb['id'] == lf.id:
+                    entry['uppercase_fallback_for'] = fb['lower_id']
+                    entry['canonical_lowercase'] = fb['canonical']
+            manifest_entries.append(entry)
         if avatar_files:
             for av in avatar_files:
                 try:

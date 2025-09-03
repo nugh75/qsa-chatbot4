@@ -6,7 +6,7 @@ from functools import lru_cache
 from .rag_engine import rag_engine
 from .rag_routes import get_user_context
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+RAG_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "rag_data"
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 @lru_cache(maxsize=1)
@@ -22,7 +22,7 @@ def refresh_files_cache():
 
 def load_text(name: str) -> str:
     file_map = load_files_mapping()
-    fp = DATA_DIR / file_map[name]
+    fp = RAG_STORAGE_DIR / file_map[name]
     return fp.read_text(encoding="utf-8")
 
 def get_context(topic: Optional[str], query: str = "", personality_enabled_groups: Optional[List[int]] = None) -> str:

@@ -28,7 +28,7 @@ Flusso alto livello di un messaggio utente:
 | Admin backend | `backend/app/admin.py` | Endpoint admin, pipeline, guide | Include validatore pattern |
 | Routing regex | `pipeline_config.json` (in storage se presente) | Mappa pattern→topic | Gestito via UI |
 | File contenuto topic | `storage/pipeline/*.md` | Materiale didattico associato | Editabile in UI File Editor |
-| Guida regex | `PIPELINE_REGEX_GUIDE.md` (root + storage copia) | Best practice pattern | Auto-sync root→storage |
+| Guida regex | `pipeline_regex_guide.json` (root + storage copia) | Best practice pattern | Auto-sync root→storage |
 | RAG data | `storage/rag_data/` | Documenti indicizzati | Alimentare periodicamente |
 | Personalità | `storage/personalities/` | Profili persona/bot | Coerenza tono risposta |
 | Log | `storage/logs/` | Tracce richieste/risposte | Rotazione manuale se cresce |

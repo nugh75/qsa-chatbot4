@@ -13,12 +13,10 @@ Standard 2025-09:
     Seed versionati (lowercase): backend/config/seed/personalities.json
     Runtime persistente: /app/storage/personalities/personalities.json
 
-Compatibilità legacy solo lettura: vecchi file PERSONALITIES.json (nuovo seed pre-migrazione o vecchio mount /app/data).
-I file legacy non vengono più aggiornati e possono essere rimossi quando sicuro.
+Compat legacy rimossa: eliminati fallback /app/data. Solo seed lowercase e runtime persistente.
 """
 
 SEED_BASE = Path(__file__).resolve().parent.parent / 'config' / 'seed'
-LEGACY_SEED_BASE = Path('/app/data')
 # Runtime storage base (rimane invariato)
 RUNTIME_BASE = Path('/app/storage')
 RUNTIME_PERSONALITIES_DIR = RUNTIME_BASE / 'personalities'
@@ -28,11 +26,7 @@ SEED_PERSONALITIES_DIR = SEED_BASE
 PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "personalities.json"
 TOPIC_DESCRIPTIONS_FILE = SEED_BASE / 'system_prompts.json'
 # Legacy fallback list
-LEGACY_PERSONALITIES_CANDIDATES = [
-    SEED_BASE / 'PERSONALITIES.json',  # legacy uppercase new seed loc
-    LEGACY_SEED_BASE / 'PERSONALITIES.json',  # legacy old path uppercase
-    LEGACY_SEED_BASE / 'personalities.json'  # legacy lowercase old path
-]
+LEGACY_PERSONALITIES_CANDIDATES: list[Path] = []  # legacy support rimosso
 
 _cached_topic_descriptions = None
 
@@ -59,15 +53,15 @@ def load_topic_descriptions() -> dict:
 
 def _bootstrap_personalities():
     RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
+    # Se manca il runtime e c'è seed standard lo copia
     if not PERSONALITIES_FILE.exists():
-        for cand in LEGACY_PERSONALITIES_CANDIDATES:
-            if cand.exists():
-                try:
-                    shutil.copy2(cand, PERSONALITIES_FILE)
-                    logging.info('[personalities] Copiato seed personalities.json nel runtime (source=%s)', cand)
-                    break
-                except Exception as e:
-                    logging.warning('[personalities] Impossibile copiare seed da %s: %s', cand, e)
+        seed_std = SEED_BASE / 'personalities.json'
+        if seed_std.exists():
+            try:
+                shutil.copy2(seed_std, PERSONALITIES_FILE)
+                logging.info('[personalities] Copiato seed personalities.json nel runtime (source=%s)', seed_std)
+            except Exception as e:
+                logging.warning('[personalities] Impossibile copiare seed personalities.json: %s', e)
 
 
 def _slugify(name: str) -> str:

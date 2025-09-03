@@ -344,7 +344,7 @@ const PipelinePanel: React.FC = () => {
           <CardContent sx={{ pb:1 }}>
             <Alert severity="info" sx={{ mb:2 }}>
               <Typography variant="body2">
-                Guida rapida regex disponibile nel file <strong>PIPELINE_REGEX_GUIDE.md</strong> (root progetto). Evita pattern con alternativa vuota (es. <code>|</code> finale) o troppo generici. Usa <code>\\b</code> per limitare le parole. I log mostrano <code>topics_patterns</code> per audit.
+                Guida rapida regex disponibile nel file <strong>pipeline_regex_guide.json</strong> (root progetto). Evita pattern con alternativa vuota (es. <code>|</code> finale) o troppo generici. Usa <code>\\b</code> per limitare le parole. I log mostrano <code>topics_patterns</code> per audit.
               </Typography>
             </Alert>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb:1 }}>

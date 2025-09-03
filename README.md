@@ -1027,7 +1027,7 @@ pip install -r backend/requirements.txt
 
 # Multi Summary Prompts
 
-Il sistema supporta ora più profili di summary prompt memorizzati in `backend/storage/summary/SUMMARY_PROMPTS.json`.
+Il sistema supporta ora più profili di summary prompt memorizzati in `backend/storage/summary/summary_prompts.json`.
 Struttura file:
 ```
 {

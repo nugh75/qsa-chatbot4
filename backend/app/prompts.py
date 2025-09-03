@@ -16,13 +16,11 @@ File principali:
     - summary_prompt.md (seed sorgente iniziale) -> migrazione in summary_prompts.json (runtime multi)
     - summary_prompts.json (runtime multi-varianti)
 
-Compatibilità legacy solo in lettura (fallback): vecchi nomi maiuscoli o mount /app/data
-    (SYSTEM_PROMPTS.json, SUMMARY_PROMPT.md, system-prompt.md, CLAUDE.md).
-I file legacy non vengono più aggiornati; possono essere rimossi dopo verifica.
+Compat legacy rimossa: eliminati fallback /app/data e varianti uppercase seed. Il sistema usa solo
+seed lowercase in backend/config/seed e runtime persistente in /app/storage.
 """
 
 SEED_DIR = Path(__file__).resolve().parent.parent / 'config' / 'seed'
-LEGACY_DATA_DIR = Path('/app/data')  # solo fallback lettura legacy (non usato per nuovi seed)
 RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "prompts"
 SUMMARY_RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "summary"
 
@@ -31,7 +29,7 @@ DATA_DIR = RUNTIME_DIR
 
 # Aggiorna percorso runtime system prompts (lowercase)
 SYSTEM_PROMPTS_JSON = DATA_DIR / "system_prompts.json"
-SUMMARY_PROMPTS_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPTS.json"
+SUMMARY_PROMPTS_JSON = SUMMARY_RUNTIME_DIR / "summary_prompts.json"
 LEGACY_SUMMARY_MD = SUMMARY_RUNTIME_DIR / "summary_prompt.md"  # lowercase nuovo
 LEGACY_SUMMARY_JSON = SUMMARY_RUNTIME_DIR / "summary_prompt.json"
 LEGACY_OLD_UPPER_MD = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"  # legacy
@@ -66,9 +64,6 @@ def _bootstrap_runtime():
 
     seed_candidates = [
         SEED_DIR / 'system_prompts.json',
-        SEED_DIR / 'SYSTEM_PROMPTS.json',
-        LEGACY_DATA_DIR / 'system_prompts.json',
-        LEGACY_DATA_DIR / 'SYSTEM_PROMPTS.json'
     ]
     seed_json = next((p for p in seed_candidates if p.exists()), None)
     if seed_json and not SYSTEM_PROMPTS_JSON.exists():
@@ -101,14 +96,13 @@ def _load_legacy_text() -> str:
                 return candidate_runtime.read_text(encoding="utf-8")
             except Exception:
                 pass
-    for base in (SEED_DIR, LEGACY_DATA_DIR):
-        for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
-            candidate_seed = base / name
-            if candidate_seed.exists():
-                try:
-                    return candidate_seed.read_text(encoding='utf-8')
-                except Exception:
-                    pass
+    for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
+        candidate_seed = SEED_DIR / name
+        if candidate_seed.exists():
+            try:
+                return candidate_seed.read_text(encoding='utf-8')
+            except Exception:
+                pass
     return DEFAULT_SYSTEM_TEXT
 
 def load_system_prompts() -> dict:
@@ -236,7 +230,7 @@ DEFAULT_SUMMARY_TEXT = (
 def _migrate_legacy_summary_prompt():
     """Migra vecchio file singolo SUMMARY_PROMPT (md/json) alla struttura multi JSON.
 
-    Esegue una sola volta se SUMMARY_PROMPTS.json non esiste.
+    Esegue una sola volta se summary_prompts.json non esiste.
     """
     if SUMMARY_PROMPTS_JSON.exists():
         return
@@ -275,7 +269,7 @@ def _migrate_legacy_summary_prompt():
                 LEGACY_SUMMARY_JSON.rename(LEGACY_SUMMARY_JSON.with_suffix('.json.legacy'))
         except Exception:
             pass
-        logging.info("[summary-prompts] Migrazione completata -> SUMMARY_PROMPTS.json (len=%d)", len(legacy_text))
+        logging.info("[summary-prompts] Migrazione completata -> summary_prompts.json (len=%d)", len(legacy_text))
     except Exception as e:
         logging.error(f"[summary-prompts] Errore scrittura struttura migrata: {e}")
 
@@ -287,7 +281,7 @@ def load_summary_prompts() -> dict:
             data = json.loads(SUMMARY_PROMPTS_JSON.read_text(encoding='utf-8'))
             # Validazione minima
             if not isinstance(data, dict) or 'prompts' not in data:
-                raise ValueError('Struttura SUMMARY_PROMPTS.json non valida')
+                raise ValueError('Struttura summary_prompts.json non valida')
             return data
     except Exception as e:
         logging.error(f"[summary-prompts] Errore load: {e}")
@@ -367,10 +361,7 @@ def delete_summary_prompt(prompt_id: str) -> None:
 def reset_summary_prompt_from_seed() -> str:
     """Reset basato su seed file, sostituisce (o crea) il prompt 'default' e lo rende attivo."""
     seed_candidates = [
-        SEED_DIR / 'summary_prompt.md',
-        SEED_DIR / 'SUMMARY_PROMPT.md',
-        LEGACY_DATA_DIR / 'summary_prompt.md',
-        LEGACY_DATA_DIR / 'SUMMARY_PROMPT.md'
+        SEED_DIR / 'summary_prompt.md'
     ]
     seed_file = next((p for p in seed_candidates if p.exists()), None)
     text = DEFAULT_SUMMARY_TEXT

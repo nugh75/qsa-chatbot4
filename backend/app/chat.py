@@ -34,6 +34,102 @@ class ChatIn(BaseModel):
     message_encrypted: Optional[str] = None  # Messaggio crittografato per salvataggio database
     attachments: Optional[List[FileAttachment]] = None  # File allegati
 
+# ----------------- Helper interni (nessuna modifica agli import) -----------------
+def _safe_log_interaction(payload: Dict[str, Any]):
+    try:
+        log_interaction(payload)
+    except Exception:
+        pass
+
+def _safe_log_system(level: int, msg: str):
+    try:
+        log_system(level, msg)
+    except Exception:
+        pass
+
+def _resolve_personality(personality_id: Optional[str]):
+    """Ritorna (system_prompt, provider_override, model_override, personality_meta)."""
+    system = load_system_prompt()
+    provider_override = None
+    model_override = None
+    personality_meta = None
+    if personality_id:
+        try:
+            p = get_personality(personality_id)
+            personality_meta = p
+            if p:
+                if p.get("system_prompt_id"):
+                    system_prompt_candidate = get_system_prompt_by_id(p["system_prompt_id"]) or system
+                    if system_prompt_candidate:
+                        system = system_prompt_candidate
+                if p.get("provider"):
+                    provider_override = p["provider"].lower()
+                if p.get("model"):
+                    model_override = p["model"]
+        except Exception as e:
+            print(f"Personality load failed: {e}")
+    return system, provider_override, model_override, personality_meta
+
+def _resolve_temperature(header_temp: Optional[float], personality_id: Optional[str]) -> float:
+    temp_value = 0.3
+    if header_temp is not None:
+        try:
+            return float(header_temp)
+        except Exception:
+            return temp_value
+    if personality_id:
+        try:
+            p = get_personality(personality_id)
+            if p and p.get('temperature') is not None:
+                return float(p['temperature'])
+        except Exception:
+            return temp_value
+    return temp_value
+
+def _process_attachments(attachments: List[FileAttachment]) -> str:
+    if not attachments:
+        return ""
+    out_parts = []
+    print(f"📎 Processing {len(attachments)} attachments")
+    for attachment in attachments:
+        if attachment.content:
+            out_parts.append(f"\n\n[Contenuto di {attachment.filename}]:\n{attachment.content}")
+        elif attachment.base64_data and attachment.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
+            out_parts.append(f"\n\n[Immagine allegata: {attachment.filename}]")
+    return ''.join(out_parts)
+
+def _filter_topics_jaccard(topics_multi: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not topics_multi:
+        return topics_multi
+    import re as _re
+    def _normalize_words(s: str) -> set:
+        return {w for w in _re.findall(r"[a-zA-ZàèéìòùA-Z0-9]+", s.lower()) if len(w) > 2}
+    filtered = []
+    seen_sets = []
+    JACCARD_THRESHOLD = 0.8
+    for tinfo in topics_multi:
+        nm = tinfo.get('topic')
+        if not nm:
+            continue
+        wset = _normalize_words(nm)
+        if not wset:
+            filtered.append(tinfo)
+            seen_sets.append(wset)
+            continue
+        duplicate = False
+        for sset in seen_sets:
+            if not sset:
+                continue
+            inter = len(wset & sset)
+            union = len(wset | sset) or 1
+            if inter / union >= JACCARD_THRESHOLD:
+                duplicate = True
+                break
+        if not duplicate:
+            filtered.append(tinfo)
+            seen_sets.append(wset)
+    return filtered
+
 def generate_content_hash(content: str) -> str:
     """Generate hash for search indexing"""
     return hashlib.sha256(content.encode()).hexdigest()
@@ -72,6 +168,8 @@ async def chat(
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
+    x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
+    x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -112,19 +210,8 @@ async def chat(
     except Exception:
         pass
     
-    # Processa gli allegati per aggiungere il contenuto al messaggio
-    attachment_content = ""
-    if attachments:
-        print(f"📎 Processing {len(attachments)} attachments")
-        for attachment in attachments:
-            if attachment.content:  # Testo estratto da PDF/Word
-                attachment_content += f"\n\n[Contenuto di {attachment.filename}]:\n{attachment.content}"
-            elif attachment.base64_data and attachment.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
-                # Per le immagini, aggiungiamo una nota che l'immagine è allegata
-                attachment_content += f"\n\n[Immagine allegata: {attachment.filename}]"
-    
-    # Combina messaggio utente con contenuto allegati
-    full_user_message = user_msg + attachment_content
+    # Processa gli allegati e combina nel messaggio utente
+    full_user_message = user_msg + _process_attachments(attachments)
     
     # Ottieni l'istanza della memoria solo se NON c'è conversation_id
     # Se c'è conversation_id usiamo solo il database per evitare conflitti
@@ -170,45 +257,16 @@ async def chat(
     personality_enabled_rag_groups = None
     if x_personality_id:
         try:
-            p = get_personality(x_personality_id)
-            if p:
-                personality_enabled_topics = p.get("enabled_pipeline_topics")
-                personality_enabled_rag_groups = p.get("enabled_rag_groups")
+            p_meta = get_personality(x_personality_id)
+            if p_meta:
+                personality_enabled_topics = p_meta.get("enabled_pipeline_topics")
+                personality_enabled_rag_groups = p_meta.get("enabled_rag_groups")
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
     # Rileva TUTTI i topic (max_topics=None -> illimitato)
-    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None)
-    # Filtra topic quasi duplicati (Jaccard similarity su set parole >= soglia)
-    def _normalize_words(s: str) -> set:
-        import re as _re
-        return {w for w in _re.findall(r"[a-zA-ZàèéìòùA-Z0-9]+", s.lower()) if len(w) > 2}
-    filtered_topics = []
-    seen_sets = []
-    JACCARD_THRESHOLD = 0.8
-    for tinfo in (topics_multi or []):
-        nm = tinfo.get('topic')
-        if not nm:
-            continue
-        wset = _normalize_words(nm)
-        if not wset:
-            filtered_topics.append(tinfo)
-            seen_sets.append(wset)
-            continue
-        duplicate = False
-        for sset in seen_sets:
-            if not sset:
-                continue
-            inter = len(wset & sset)
-            union = len(wset | sset) or 1
-            if inter / union >= JACCARD_THRESHOLD:
-                duplicate = True
-                break
-        if not duplicate:
-            filtered_topics.append(tinfo)
-            seen_sets.append(wset)
-    topics_multi = filtered_topics
+    topics_multi = _filter_topics_jaccard(detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None))
     # --- Dynamic context assembly (topics priority + RAG by similarity) ---
     import os as _os
     from .rag import load_files_mapping, load_text
@@ -386,22 +444,9 @@ async def chat(
         
     # Personality override
     effective_provider = (x_llm_provider or "local").lower()
-    model_override: Optional[str] = None
-    system = load_system_prompt()
-    if x_personality_id:
-        try:
-            from .personalities import get_personality
-            from .prompts import get_system_prompt_by_id
-            p = get_personality(x_personality_id)
-            if p:
-                if p.get("system_prompt_id"):
-                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
-                if p.get("provider"):
-                    effective_provider = p["provider"].lower()
-                if p.get("model"):
-                    model_override = p["model"]
-        except Exception as e:
-            print(f"Personality load failed: {e}")
+    system, provider_override, model_override, _pmeta = _resolve_personality(x_personality_id)
+    if provider_override:
+        effective_provider = provider_override
     # Log risoluzione provider/modello
     try:
         log_interaction({
@@ -466,21 +511,17 @@ async def chat(
     import time, datetime
     start_time = time.perf_counter()
     # Determina temperatura: header ha priorità, poi personalità, poi default 0.3
-    temp_value = 0.3
-    if x_llm_temperature is not None:
-        try:
-            temp_value = float(x_llm_temperature)
-        except Exception:
-            pass
-    else:
-        try:
-            if x_personality_id:
-                _p = get_personality(x_personality_id)
-                if _p and _p.get('temperature') is not None:
-                    temp_value = float(_p.get('temperature'))
-        except Exception:
-            pass
-    answer = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
+    temp_value = _resolve_temperature(x_llm_temperature, x_personality_id)
+    # Se header X-LLM-Model è presente, ha priorità rispetto a personality (solo per test)
+    effective_model_override = x_llm_model or model_override
+    answer = await chat_with_provider(
+        messages,
+        provider=effective_provider,
+        context_hint=topic or 'generale',
+        model=effective_model_override,
+        temperature=temp_value,
+        ollama_base_url=x_ollama_base_url
+    )
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -690,6 +731,8 @@ async def chat_stream(
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
+    x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
+    x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -844,7 +887,17 @@ async def chat_stream(
             if provider == 'ollama':
                 # Streaming reale da Ollama
                 import httpx, json as _json, os as _os
-                base_url = _os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+                base_url_env = x_ollama_base_url or _os.getenv('OLLAMA_BASE_URL')
+                base_url_cfg = None
+                try:
+                    from .admin import load_config as _load_cfg  # type: ignore
+                    _cfg_tmp = _load_cfg()
+                    base_url_cfg = _cfg_tmp.get('ai_providers', {}).get('ollama', {}).get('base_url') if isinstance(_cfg_tmp, dict) else None
+                except Exception:
+                    base_url_cfg = None
+                base_url = base_url_env or base_url_cfg or 'http://localhost:11434'
+                origin = 'ENV' if base_url_env else ('CONFIG' if base_url_cfg else 'DEFAULT')
+                print(f"🦙 [stream] Ollama URL: {base_url} (origin={origin})")
                 model_env = _os.getenv('OLLAMA_MODEL')
                 if not model_env:
                     try:

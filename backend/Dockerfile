@@ -31,19 +31,22 @@ RUN mkdir -p storage/databases storage/rag_data storage/feedback storage/usage s
 ENV SENTENCE_TRANSFORMERS_HOME=/app/models/sentence-transformers \
     HF_HOME=/app/models/sentence-transformers/hf_cache
 
-# Opzionalmente pre-download dei modelli (controllato da build arg)
-ARG DOWNLOAD_MODELS=true
+# Opzionalmente pre-download dei modelli (disabilitato di default per evitare download Whisper durante build)
+ARG DOWNLOAD_MODELS=false
 RUN if [ "$DOWNLOAD_MODELS" = "true" ]; then \
+            echo "[build] Pre-download dei modelli abilitato" && \
             python app/scripts/download_models.py --whisper small \
+                --embeddings sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 \
                 --piper it_IT-riccardo-x_low \
-                --embeddings sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 || true ; \
+                --piper it_IT-paola-medium || true ; \
         else \
-            echo "Skipping model pre-download during build" ; \
+            echo "[build] Skipping model pre-download (DOWNLOAD_MODELS=false)" ; \
         fi
 
 # Imposta variabili d'ambiente
 ENV PYTHONUNBUFFERED=1 \
-    WHISPER_AUTO_DOWNLOAD=1
+    WHISPER_AUTO_DOWNLOAD=0 \
+    WHISPER_WARMUP=0
 ENV PYTHONPATH=/app
 
 EXPOSE 8005

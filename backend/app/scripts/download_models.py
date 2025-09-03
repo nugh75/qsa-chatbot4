@@ -104,7 +104,7 @@ def warmup_sentence_transformers(model_name: str, cache_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download local models for QSA Chatbot")
     parser.add_argument("--whisper", default="small", help="Whisper model name (tiny|base|small|medium|large)")
-    parser.add_argument("--piper", default="it_IT-riccardo-x_low", help="Piper voice id")
+    parser.add_argument("--piper", action="append", default=["it_IT-riccardo-x_low"], help="Piper voice id (repeatable)")
     parser.add_argument(
         "--embeddings",
         default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -129,10 +129,11 @@ def main() -> int:
     except Exception as e:
         print(f"WARN: Embeddings warmup failed: {e}")
 
-    try:
-        download_piper(args.piper, piper_dir)
-    except Exception as e:
-        print(f"WARN: Piper download failed: {e}")
+    for voice in args.piper:
+        try:
+            download_piper(voice, piper_dir)
+        except Exception as e:
+            print(f"WARN: Piper download failed ({voice}): {e}")
 
     return 0
 

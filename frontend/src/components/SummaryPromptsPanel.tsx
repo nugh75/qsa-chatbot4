@@ -29,6 +29,12 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
   const [summaryModel, setSummaryModel] = useState<string>('')
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [settingsLoaded, setSettingsLoaded] = useState<boolean>(false)
+  // New advanced settings
+  const [minMessages, setMinMessages] = useState<number>(4)
+  const [minChars, setMinChars] = useState<number>(200)
+  const [autoOnExport, setAutoOnExport] = useState<boolean>(true)
+  const [testingSummary, setTestingSummary] = useState<boolean>(false)
+  const [testResult, setTestResult] = useState<string>('')
   // Available models state
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [loadingModels, setLoadingModels] = useState<boolean>(false)
@@ -54,6 +60,9 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
         setSummaryProvider(res.data!.settings.provider)
         setSummaryEnabled(res.data!.settings.enabled)
         setSummaryModel(res.data!.settings.model || '')
+        if (typeof res.data!.settings.min_messages === 'number') setMinMessages(res.data!.settings.min_messages as number)
+        if (typeof res.data!.settings.min_chars === 'number') setMinChars(res.data!.settings.min_chars as number)
+        if (typeof res.data!.settings.auto_on_export === 'boolean') setAutoOnExport(res.data!.settings.auto_on_export as boolean)
       }
     } finally { setSettingsLoaded(true) }
   }, [])
@@ -92,7 +101,7 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
 
   const saveSummarySettings = async () => {
     setSavingSettings(true)
-    const payload = { provider: summaryProvider, enabled: summaryEnabled, model: summaryModel || null }
+    const payload = { provider: summaryProvider, enabled: summaryEnabled, model: summaryModel || null, min_messages: minMessages, min_chars: minChars, auto_on_export: autoOnExport }
     const res = await apiService.updateSummarySettings(payload)
     if (res.success) {
       setMsg('Impostazioni summary aggiornate')
@@ -167,7 +176,17 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
             />
           </FormControl>
           <FormControlLabel control={<Switch size="small" checked={summaryEnabled} onChange={e=> setSummaryEnabled(e.target.checked)} />} label={summaryEnabled? 'Abilitato':'Disabilitato'} />
+          <TextField size="small" type="number" label="Min messaggi" value={minMessages} onChange={e=> setMinMessages(Number(e.target.value)||0)} sx={{ width:130 }} />
+          <TextField size="small" type="number" label="Min caratteri" value={minChars} onChange={e=> setMinChars(Number(e.target.value)||0)} sx={{ width:140 }} />
+          <FormControlLabel control={<Switch size="small" checked={autoOnExport} onChange={e=> setAutoOnExport(e.target.checked)} />} label="Auto export" />
           <Button size="small" variant="contained" disabled={savingSettings || !summaryProvider} onClick={saveSummarySettings}>{savingSettings? 'Salvo…':'Salva impostazioni'}</Button>
+          <Button size="small" variant="outlined" disabled={testingSummary || !summaryProvider} onClick={async()=>{
+            setTestingSummary(true); setTestResult('')
+            const r = await apiService.testSummary({ provider: summaryProvider, model: summaryModel || undefined })
+            if (r.success && r.data) setTestResult(r.data.summary)
+            else setTestResult(r.error || 'Errore test summary')
+            setTestingSummary(false)
+          }}>{testingSummary? 'Test…':'Test summary'}</Button>
         </Stack>
       </Box>
       {loading && <LinearProgress sx={{ my: 1 }} />}
@@ -201,6 +220,7 @@ const SummaryPromptsPanel: React.FC<Props> = ({ config }) => {
         </DialogActions>
       </Dialog>
       {msg && <Alert severity="success" onClose={()=>setMsg(null)} sx={{ mt:1 }}>{msg}</Alert>}
+      {testResult && <Alert severity="info" sx={{ mt:1, whiteSpace:'pre-wrap' }} onClose={()=>setTestResult('')}>{testResult.slice(0,1500)}</Alert>}
     </Paper>
   )
 }

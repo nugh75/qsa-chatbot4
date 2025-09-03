@@ -14,6 +14,7 @@ from .chat import router as chat_router
 from .tts import router as tts_router
 from .transcribe import router as asr_router
 from .admin import router as admin_router
+from .admin import ensure_default_ai_provider
 from .auth_routes import router as auth_router
 from .conversation_routes import router as conversation_router
 from .search_routes import router as search_router
@@ -45,6 +46,11 @@ print('[env] Loaded .env at', _env_path.exists(), 'OPENAI_API_KEY=', _mask(os.ge
 async def lifespan(app: FastAPI):
     # On startup
     import os as _os
+    # Seed default provider/model if needed
+    try:
+        ensure_default_ai_provider(seed=True)
+    except Exception as _e:
+        print(f"[startup] default provider seed skipped: {_e}")
     if _os.environ.get("WHISPER_WARMUP", "1").lower() in ("1","true","yes","on"):
         try:
             from .transcribe import whisper_service

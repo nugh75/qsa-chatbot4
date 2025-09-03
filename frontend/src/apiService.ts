@@ -330,11 +330,14 @@ class ApiService {
   async resetSummaryPrompt(): Promise<ApiResponse<{ prompt: string }>> {
     return this.makeRequest<{ prompt: string }>('/admin/summary-prompt/reset', { method: 'POST' });
   }
-  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean; model?: string | null } }>> {
-    return this.makeRequest<{ settings: { provider: string; enabled: boolean; model?: string | null } }>('/admin/summary-settings');
+  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean } }>> {
+    return this.makeRequest<{ settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean } }>('/admin/summary-settings');
   }
-  async updateSummarySettings(settings: { provider: string; enabled: boolean; model?: string | null }): Promise<ApiResponse> {
+  async updateSummarySettings(settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean }): Promise<ApiResponse> {
     return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
+  }
+  async testSummary(payload: { messages?: string[]; provider?: string; model?: string; prompt_override?: string }): Promise<ApiResponse<{ summary: string; provider: string; model: string; chars: number }>> {
+    return this.makeRequest<{ summary: string; provider: string; model: string; chars: number }>('/admin/summary-test', { method: 'POST', body: JSON.stringify(payload) });
   }
   // New multi summary prompts endpoints
   async listSummaryPrompts(): Promise<ApiResponse<{ active_id: string; prompts: SummaryPrompt[] }>> {

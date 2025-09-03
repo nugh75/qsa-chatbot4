@@ -14,7 +14,7 @@ from .database import ConversationModel, MessageModel, DeviceModel
 from .prompts import load_summary_prompt
 from .llm import chat_with_provider
 from .admin import get_summary_provider, get_summary_model
-import io, json, zipfile
+import io, json, zipfile, re
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -544,8 +544,10 @@ async def export_conversation_with_report(
             ]
         }
 
+        # Include title in report header if available
+        _conv_title = conversation.get('title_encrypted') or ''
         report_md = (
-            f"# Report Conversazione {conversation['id']}\n\n"
+            f"# Report Conversazione {conversation['id']}{f' - {_conv_title}' if _conv_title else ''}\n\n"
             f"## Informazioni Generali\n"
             f"- Creata: {conversation['created_at']}\n"
             f"- Ultimo aggiornamento: {conversation['updated_at']}\n"
@@ -567,24 +569,50 @@ async def export_conversation_with_report(
         }
 
         fmt = (format or '').lower()
+
+        def _strip_markdown(text: str) -> str:
+            if not text:
+                return ''
+            text = re.sub(r"```([\s\S]*?)```", lambda m: m.group(1).strip(), text)
+            text = text.replace('**', '').replace('__', '')
+            text = re.sub(r"`([^`]+)`", r"\1", text)
+            text = re.sub(r"^\s{0,3}#+\s*", "", text, flags=re.MULTILINE)
+            text = re.sub(r"!\[([^\]]*)\]\([^\)]+\)", r"\1", text)
+            text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+            text = re.sub(r"^\|.*\|$", lambda m: ' '.join(p.strip() for p in m.group(0).strip('|').split('|')), text, flags=re.MULTILINE)
+            text = re.sub(r"^(-{3,}|\*{3,}|_{3,})$", "", text, flags=re.MULTILINE)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
+        raw_title = conversation.get('title_encrypted') or ''
+        safe_title = re.sub(r'[^A-Za-z0-9_-]+','-', raw_title.strip())[:40].strip('-') if raw_title else ''
+        title_part = f"_{safe_title}" if safe_title else ''
+        title_for_header = conversation.get('title_encrypted') or conversation['id']
+
         if fmt == 'txt':
             from typing import List as _List
             lines: _List[str] = []
-            lines.append(f"Conversation ID: {conversation['id']}")
-            lines.append(f"Creato: {conversation['created_at']}")
+            lines.append(
+                f"Chat: {conversation['id']}" + (
+                    f" - {title_for_header}" if title_for_header and title_for_header != conversation['id'] else ''
+                )
+            )
+            lines.append(f"Creata: {conversation['created_at']}")
             lines.append(f"Ultimo aggiornamento: {conversation['updated_at']}")
             lines.append(f"Messaggi: {len(messages)}")
-            lines.append(f"Provider summary: {summary_provider}")
+            lines.append(f"Provider riassunto: {summary_provider}")
             if summary_model:
-                lines.append(f"Model summary: {summary_model}")
+                lines.append(f"Modello riassunto: {summary_model}")
             lines.append("")
             lines.append("=== SUMMARY ===")
-            lines.append(summary_text or '(nessun riassunto)')
+            lines.append(_strip_markdown(summary_text or '(nessun riassunto)'))
             lines.append("\n=== MESSAGGI ===")
             for msg in messages:
-                lines.append(f"[{msg['timestamp']}] {msg['role']}: {msg['content_encrypted']}")
+                lines.append(f"[{msg['timestamp']}] {msg['role']}: {_strip_markdown(msg['content_encrypted'])}")
             txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
-            filename_txt = f"conversation_{conversation_id}_report.txt"
+            created_short = conversation['created_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+            exported_short = metadata['exported_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+            filename_txt = f"chat_{conversation_id}{title_part}_{created_short}_exported_{exported_short}.txt"
             return StreamingResponse(
                 txt_buffer,
                 media_type='text/plain; charset=utf-8',
@@ -619,21 +647,33 @@ async def export_conversation_with_report(
                     return page, y
 
                 page = doc.new_page()
-                page.insert_text((50, 40), f"Report Conversazione {conversation['id']}", fontsize=16)
-                meta_block = (
-                    f"Creato: {conversation['created_at']}\n"
-                    f"Ultimo aggiornamento: {conversation['updated_at']}\n"
-                    f"Messaggi: {len(messages)}\n"
-                    f"Provider summary: {summary_provider}\n"
-                    + (f"Model summary: {summary_model}\n" if summary_model else '')
+                title_text = (
+                    f"Chat {conversation['id']}" + (
+                        f" - {title_for_header}" if title_for_header and title_for_header != conversation['id'] else ''
+                    ) + f" - creata {conversation['created_at']} - export {metadata['exported_at']}"
                 )
-                page.insert_text((50, 70), meta_block, fontsize=11)
-                page.insert_text((50, 120), "Riassunto:", fontsize=13)
-                page, y_cursor = _add_wrapped_text(page, summary_text or '(nessun riassunto)', top=140)
+                # Title
+                page.insert_text((50, 40), title_text, fontsize=14)
+                # Meta block lines, then compute next y dynamically
+                meta_lines = [
+                    f"Creato: {conversation['created_at']}",
+                    f"Ultimo aggiornamento: {conversation['updated_at']}",
+                    f"Messaggi: {len(messages)}",
+                    f"Provider summary: {summary_provider}" + (f" / model: {summary_model}" if summary_model else '')
+                ]
+                y_meta = 70
+                for ml in meta_lines:
+                    page.insert_text((50, y_meta), ml, fontsize=11)
+                    y_meta += 14
+                # Section: Summary
+                y_meta += 10
+                page.insert_text((50, y_meta), "Riassunto:", fontsize=13)
+                y_meta += 20
+                page, y_cursor = _add_wrapped_text(page, _strip_markdown(summary_text or '(nessun riassunto)'), top=y_meta)
                 page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
                 y_cursor += 30
                 for msg in messages:
-                    block = f"[{msg['timestamp']}] {msg['role']}:\n{msg['content_encrypted']}\n"
+                    block = f"[{msg['timestamp']}] {msg['role']}:\n{_strip_markdown(msg['content_encrypted'])}\n"
                     page, y_cursor = _add_wrapped_text(page, block, top=y_cursor)
                     y_cursor += 4
                     if y_cursor > page.rect.height - 80:
@@ -642,7 +682,9 @@ async def export_conversation_with_report(
                 doc.save(pdf_buffer)
                 doc.close()
                 pdf_buffer.seek(0)
-                filename_pdf = f"conversation_{conversation_id}_report.pdf"
+                created_short = conversation['created_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+                exported_short = metadata['exported_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+                filename_pdf = f"chat_{conversation_id}{title_part}_{created_short}_exported_{exported_short}.pdf"
                 return StreamingResponse(
                     pdf_buffer,
                     media_type='application/pdf',
@@ -651,13 +693,16 @@ async def export_conversation_with_report(
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Errore generazione PDF: {e}")
 
+        # Default ZIP export
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('chat.json', json.dumps(chat_payload, ensure_ascii=False, indent=2))
             zf.writestr('report.md', report_md)
             zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
         zip_buffer.seek(0)
-        filename_zip = f"conversation_{conversation_id}_export.zip"
+        created_short = conversation['created_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+        exported_short = metadata['exported_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
+        filename_zip = f"chat_{conversation_id}{title_part}_{created_short}_exported_{exported_short}.zip"
         return StreamingResponse(
             zip_buffer,
             media_type='application/zip',
@@ -842,8 +887,10 @@ async def export_conversation_with_report_post(
             ]
         }
 
+        # Include title in POST report header if available
+        _conv_title_post = conversation.get('title_encrypted') or ''
         report_md = (
-            f"# Report Conversazione {conversation['id']}\n\n"
+            f"# Report Conversazione {conversation['id']}{f' - {_conv_title_post}' if _conv_title_post else ''}\n\n"
             f"## Informazioni Generali\n"
             f"- Creata: {conversation['created_at']}\n"
             f"- Ultimo aggiornamento: {conversation['updated_at']}\n"
@@ -865,24 +912,48 @@ async def export_conversation_with_report_post(
         }
 
         fmt = (payload.format or '').lower()
+        def _strip_markdown(text: str) -> str:
+            if not text:
+                return ''
+            text = re.sub(r"```([\s\S]*?)```", lambda m: m.group(1).strip(), text)
+            text = text.replace('**','').replace('__','')
+            text = re.sub(r"`([^`]+)`", r"\1", text)
+            text = re.sub(r"^\s{0,3}#+\s*","", text, flags=re.MULTILINE)
+            text = re.sub(r"!\[([^\]]*)\]\([^\)]+\)", r"\1", text)
+            text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+            text = re.sub(r"^\|.*\|$", lambda m: ' '.join(p.strip() for p in m.group(0).strip('|').split('|')), text, flags=re.MULTILINE)
+            text = re.sub(r"^(-{3,}|\*{3,}|_{3,})$","", text, flags=re.MULTILINE)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+        # Sanitize title for filenames and headers
+        raw_title_post = conversation.get('title_encrypted') or ''
+        safe_title_post = re.sub(r'[^A-Za-z0-9_-]+','-', raw_title_post.strip())[:40].strip('-') if raw_title_post else ''
+        title_part_post = f"_{safe_title_post}" if safe_title_post else ''
+        title_for_header_post = conversation.get('title_encrypted') or conversation['id']
         if fmt == 'txt':
             from typing import List as _List
             lines: _List[str] = []
-            lines.append(f"Conversation ID: {conversation['id']}")
-            lines.append(f"Creato: {conversation['created_at']}")
+            lines.append(
+                f"Chat: {conversation['id']}" + (
+                    f" - {title_for_header_post}" if title_for_header_post and title_for_header_post != conversation['id'] else ''
+                )
+            )
+            lines.append(f"Creata: {conversation['created_at']}")
             lines.append(f"Ultimo aggiornamento: {conversation['updated_at']}")
             lines.append(f"Messaggi: {len(messages)}")
-            lines.append(f"Provider summary: {summary_provider}")
+            lines.append(f"Provider riassunto: {summary_provider}")
             if summary_model:
-                lines.append(f"Model summary: {summary_model}")
+                lines.append(f"Modello riassunto: {summary_model}")
             lines.append("")
             lines.append("=== SUMMARY ===")
-            lines.append(summary_text or '(nessun riassunto)')
+            lines.append(_strip_markdown(summary_text or '(nessun riassunto)'))
             lines.append("\n=== MESSAGGI ===")
             for msg in messages:
-                lines.append(f"[{msg.get('timestamp')}] {msg['role']}: {msg.get('content_encrypted')}")
+                lines.append(f"[{msg.get('timestamp')}] {msg['role']}: {_strip_markdown(msg.get('content_encrypted'))}")
             txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
-            filename_txt = f"conversation_{conversation_id}_report.txt"
+            created_short = conversation['created_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+            exported_short = metadata['exported_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+            filename_txt = f"chat_{conversation_id}{title_part_post}_{created_short}_exported_{exported_short}.txt"
             return StreamingResponse(
                 txt_buffer,
                 media_type='text/plain; charset=utf-8',
@@ -917,21 +988,32 @@ async def export_conversation_with_report_post(
                     return page, y
 
                 page = doc.new_page()
-                page.insert_text((50, 40), f"Report Conversazione {conversation['id']}", fontsize=16)
-                meta_block = (
-                    f"Creato: {conversation['created_at']}\n"
-                    f"Ultimo aggiornamento: {conversation['updated_at']}\n"
-                    f"Messaggi: {len(messages)}\n"
-                    f"Provider summary: {summary_provider}\n"
-                    + (f"Model summary: {summary_model}\n" if summary_model else '')
+                title_text = (
+                    f"Chat {conversation['id']}" + (
+                        f" - {title_for_header_post}" if title_for_header_post and title_for_header_post != conversation['id'] else ''
+                    ) + f" - creata {conversation['created_at']} - export {metadata['exported_at']}"
                 )
-                page.insert_text((50, 70), meta_block, fontsize=11)
-                page.insert_text((50, 120), "Riassunto:", fontsize=13)
-                page, y_cursor = _add_wrapped_text(page, summary_text or '(nessun riassunto)', top=140)
+                # Title
+                page.insert_text((50, 40), title_text, fontsize=14)
+                # Meta lines dynamic layout
+                meta_lines = [
+                    f"Creato: {conversation['created_at']}",
+                    f"Ultimo aggiornamento: {conversation['updated_at']}",
+                    f"Messaggi: {len(messages)}",
+                    f"Provider summary: {summary_provider}" + (f" / model: {summary_model}" if summary_model else '')
+                ]
+                y_meta = 70
+                for ml in meta_lines:
+                    page.insert_text((50, y_meta), ml, fontsize=11)
+                    y_meta += 14
+                y_meta += 10
+                page.insert_text((50, y_meta), "Riassunto:", fontsize=13)
+                y_meta += 20
+                page, y_cursor = _add_wrapped_text(page, _strip_markdown(summary_text or '(nessun riassunto)'), top=y_meta)
                 page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
                 y_cursor += 30
                 for msg in messages:
-                    block = f"[{msg.get('timestamp')}] {msg['role']}:\n{msg.get('content_encrypted')}\n"
+                    block = f"[{msg.get('timestamp')}] {msg['role']}:\n{_strip_markdown(msg.get('content_encrypted'))}\n"
                     page, y_cursor = _add_wrapped_text(page, block, top=y_cursor)
                     y_cursor += 4
                     if y_cursor > page.rect.height - 80:
@@ -940,7 +1022,9 @@ async def export_conversation_with_report_post(
                 doc.save(pdf_buffer)
                 doc.close()
                 pdf_buffer.seek(0)
-                filename_pdf = f"conversation_{conversation_id}_report.pdf"
+                created_short = conversation['created_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+                exported_short = metadata['exported_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+                filename_pdf = f"chat_{conversation_id}{title_part_post}_{created_short}_exported_{exported_short}.pdf"
                 return StreamingResponse(
                     pdf_buffer,
                     media_type='application/pdf',
@@ -948,14 +1032,15 @@ async def export_conversation_with_report_post(
                 )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Errore generazione PDF: {e}")
-
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             zf.writestr('chat.json', json.dumps(chat_payload, ensure_ascii=False, indent=2))
             zf.writestr('report.md', report_md)
             zf.writestr('metadata.json', json.dumps(metadata, ensure_ascii=False, indent=2))
         zip_buffer.seek(0)
-        filename_zip = f"conversation_{conversation_id}_export.zip"
+        created_short = conversation['created_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+        exported_short = metadata['exported_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
+        filename_zip = f"chat_{conversation_id}{title_part_post}_{created_short}_exported_{exported_short}.zip"
         resp = StreamingResponse(
             zip_buffer,
             media_type='application/zip',

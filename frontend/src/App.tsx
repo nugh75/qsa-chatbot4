@@ -43,6 +43,7 @@ import SurveyForm from './SurveyForm'
 import SurveyResults from './SurveyResults'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
+import { sanitizeChatMarkdown } from './utils/markdownSanitizer'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { useTheme, useMediaQuery } from '@mui/material'
@@ -1460,7 +1461,7 @@ const AppContent: React.FC = () => {
                         }
                       }}
                     >
-                      {injectDocLinks(enhanceMarkdownTables(normalizeMarkdownForDisplay(m.content)), m.source_docs?.rag_chunks)}
+                      {injectDocLinks(enhanceMarkdownTables(normalizeMarkdownForDisplay(sanitizeChatMarkdown(m.content))), m.source_docs?.rag_chunks)}
                     </ReactMarkdown>
                   </Box>
                 

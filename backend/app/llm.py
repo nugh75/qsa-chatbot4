@@ -1,5 +1,34 @@
-import os, httpx, json, re
-from typing import List, Dict, Tuple, Optional
+import os, httpx, json, re, traceback
+from typing import List, Dict, Tuple, Optional, Any, Callable
+
+###############################
+# Constants & Helpers
+###############################
+
+DEFAULT_MODELS: Dict[str, str] = {
+    "openrouter": "anthropic/claude-3.5-sonnet",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-1.5-pro",
+    "ollama": "llama3.1:8b",
+    "claude": "claude-3-5-sonnet-20241022",
+}
+
+PROVIDER_TIMEOUTS: Dict[str, int] = {
+    "openrouter": 60,
+    "openai": 60,
+    "gemini": 60,
+    "claude": 60,
+    "ollama": int(os.getenv("OLLAMA_TIMEOUT", "120")),
+}
+
+VERBOSE = os.getenv("LLM_VERBOSE", "1").lower() in ("1","true","yes","on")
+
+def debug_log(*args, provider: Optional[str] = None):  # lightweight wrapper
+    if VERBOSE:
+        if provider:
+            print(f"[LLM][{provider}]", *args)
+        else:
+            print("[LLM]", *args)
 
 def estimate_tokens(text: str) -> int:
     """Stima semplice del numero di token (fallback se tiktoken non disponibile)."""
@@ -158,20 +187,54 @@ async def _summary_fallback_reply(messages: List[Dict], context_hint: str = "") 
     
     return "\n".join(summary_parts)
 
-async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3, is_summary_request: bool = False) -> str:
+async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3, is_summary_request: bool = False, ollama_base_url: Optional[str] = None) -> str:
     provider = (provider or 'local').lower()
-    print(f"🤖 Provider selezionato: {provider}")
+    strict = os.getenv('STRICT_PROVIDER', '0').lower() in ('1','true','yes','on')
+    debug_log(f"Provider selezionato: {provider} (strict={strict})")
 
-    # Ottieni la lista dei provider disponibili
+    if provider == 'local':  # early exit micro-optimization
+        return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+
     available_providers = _get_available_providers()
-    print(f"📋 Provider disponibili: {available_providers}")
-
-    # Se il provider richiesto non è disponibile, usa il primo disponibile
+    debug_log(f"Provider disponibili: {available_providers}")
     if provider not in available_providers:
-        print(f"⚠️ Provider {provider} non disponibile, uso {available_providers[0]}")
-        provider = available_providers[0]
+        # Runtime autodetect specifically for ollama if enabled in config or reachable
+        if provider == 'ollama':
+            try:
+                base_url = os.getenv('OLLAMA_BASE_URL')
+                if not base_url:
+                    # fallback config lookup (safe import)
+                    try:
+                        from .admin import load_config as _lc  # type: ignore
+                        _cfg = _lc()
+                        base_url = _cfg.get('ai_providers', {}).get('ollama', {}).get('base_url')
+                    except Exception:
+                        base_url = None
+                base_url = base_url or 'http://localhost:11434'
+                test_url = f"{base_url.rstrip('/')}/api/tags"
+                async def _probe(url: str) -> bool:
+                    try:
+                        async with httpx.AsyncClient(timeout=float(os.getenv('OLLAMA_AUTODETECT_TIMEOUT','1.5'))) as cx:
+                            r = await cx.get(url)
+                            return r.status_code == 200
+                    except Exception:
+                        return False
+                if os.getenv('DISABLE_OLLAMA_RUNTIME_PROBE','0').lower() not in ('1','true','yes','on'):
+                    if await _probe(test_url):
+                        available_providers = available_providers + ['ollama']
+                        debug_log(f"Rilevato runtime ollama su {base_url}, aggiunto ai provider disponibili")
+                if provider not in available_providers:
+                    debug_log(f"Provider {provider} non disponibile dopo probe, uso {available_providers[0]}")
+                    provider = available_providers[0]
+            except Exception as _e:
+                debug_log(f"Probe ollama fallito: {_e}")
+                debug_log(f"Provider {provider} non disponibile, uso {available_providers[0]}")
+                provider = available_providers[0]
+        else:
+            debug_log(f"Provider {provider} non disponibile, uso {available_providers[0]}")
+            provider = available_providers[0]
 
-    # Carica configurazione per estrarre modelli preferiti
+    # Load config models
     provider_models: Dict[str, Optional[str]] = {}
     try:
         from .admin import load_config  # type: ignore
@@ -181,267 +244,217 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             if isinstance(pdata, dict):
                 provider_models[p] = pdata.get("selected_model") or None
     except Exception as e:
-        print(f"⚠️ Impossibile leggere modelli da config: {e}")
+        debug_log(f"Impossibile leggere modelli da config: {e}")
 
-    # Helper per determinare il modello da usare per un provider specifico
-    def _resolve_model(p: str) -> Optional[str]:
-        # Ordine: parametro esplicito -> config.selected_model -> default hard-coded
+    def resolve_model(p: str) -> Optional[str]:
         if model and p == provider:
             return model
-        cfg_model = provider_models.get(p)
-        if cfg_model:
-            return cfg_model
-        # Default per alcuni provider
-        defaults = {
-            "openrouter": "anthropic/claude-3.5-sonnet",
-            "openai": "gpt-4o-mini",
-            "gemini": "gemini-1.5-pro",
-            "ollama": "llama3.1:8b",
-            "claude": "claude-3-5-sonnet-20241022"
+        if provider_models.get(p):
+            return provider_models[p]
+        return DEFAULT_MODELS.get(p)
+
+    providers_to_try = [provider] if strict else [provider] + _get_fallback_providers(provider, available_providers)
+    debug_log(f"Ordine tentativi: {providers_to_try}")
+
+    errors: Dict[str, str] = {}
+
+    # Provider adapter registry
+    async def adapter_openrouter(p_model: str) -> Optional[str]:
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        debug_log(f"OPENROUTER_API_KEY presente: {'Sì' if api_key else 'No'}", provider='openrouter')
+        if not api_key:
+            errors['openrouter'] = 'missing api key'
+            return None
+        payload = {
+            "model": p_model or DEFAULT_MODELS['openrouter'],
+            "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+            "temperature": float(temperature),
+            "max_tokens": 2500
         }
-        return defaults.get(p)
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openrouter']) as cx:
+            r = await cx.post("https://openrouter.ai/api/v1/chat/completions",
+                               headers={
+                                   "Authorization": f"Bearer {api_key}",
+                                   "HTTP-Referer": "https://qsa-chatbot.local",
+                                   "X-Title": "QSA Chatbot"
+                               }, json=payload)
+        if not r.is_success:
+            errors['openrouter'] = f"http {r.status_code} {r.text[:120]}"
+            return None
+        data = r.json()
+        choice = (data.get('choices') or [None])[0]
+        if not choice or 'message' not in choice:
+            errors['openrouter'] = 'no_message_field'
+            return None
+        content = choice['message'].get('content', '')
+        if not content or not content.strip():
+            errors['openrouter'] = 'empty_content'
+            return None
+        return content
 
-    # Lista dei provider da provare (inizia con quello richiesto)
-    providers_to_try = [provider] + _get_fallback_providers(provider, available_providers)
+    async def adapter_openai(p_model: str) -> Optional[str]:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            errors['openai'] = 'missing api key'
+            return None
+        openai_messages = _prepare_messages_for_provider(messages, 'openai')
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openai']) as cx:
+            r = await cx.post("https://api.openai.com/v1/chat/completions",
+                               headers={"Authorization": f"Bearer {api_key}"},
+                               json={
+                                   "model": p_model or DEFAULT_MODELS['openai'],
+                                   "messages": openai_messages,
+                                   "temperature": float(temperature)
+                               })
+        if not r.is_success:
+            errors['openai'] = f"http {r.status_code} {r.text[:120]}"
+            return None
+        data = r.json()
+        content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        if not content or not content.strip():
+            errors['openai'] = 'empty_content'
+            return None
+        return content
 
-    for attempt_provider in providers_to_try:
+    async def adapter_claude(p_model: str) -> Optional[str]:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            errors['claude'] = 'missing api key'
+            return None
+        claude_messages = _prepare_messages_for_provider(messages, 'claude')
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['claude']) as cx:
+            r = await cx.post("https://api.anthropic.com/v1/messages",
+                               headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                               json={
+                                   "model": p_model or DEFAULT_MODELS['claude'],
+                                   "max_tokens": 2500,
+                                   "messages": claude_messages,
+                                   "temperature": temperature
+                               })
+        if not r.is_success:
+            errors['claude'] = f"http {r.status_code} {r.text[:120]}"
+            return None
         try:
-            print(f"🔄 Tentativo con provider: {attempt_provider}")
-            attempt_model = _resolve_model(attempt_provider)
-            if attempt_model:
-                print(f"🧪 Modello scelto per {attempt_provider}: {attempt_model}")
-            
-            if attempt_provider == "local":
-                if is_summary_request:
-                    return await _summary_fallback_reply(messages, context_hint)
-                else:
-                    return await _local_reply(messages, context_hint)
+            return r.json()['content'][0]['text']
+        except Exception:
+            errors['claude'] = 'parse_error'
+            return None
 
-            # Gemini (testo‑solo)
-            if attempt_provider == "gemini":
-                api_key = os.getenv("GOOGLE_API_KEY")
-                print(f"🔑 GOOGLE_API_KEY presente: {'Sì' if api_key else 'No'}")
-                
-                if not api_key:
-                    print("⚠️ GOOGLE_API_KEY non trovata, provo prossimo provider")
-                    continue
-                
-                # Combina tutti i messaggi in un singolo prompt per Gemini
-                combined_prompt = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
-                payload = {"contents":[{"parts":[{"text": combined_prompt}]}], "generationConfig": {"temperature": temperature}}
-                
-                print(f"📤 Chiamata a Gemini con payload: {len(combined_prompt)} caratteri")
-                
-                gemini_model = attempt_model or "gemini-1.5-pro"
-                async with httpx.AsyncClient(timeout=60) as cx:
-                    r = await cx.post(
-                      f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
-                      params={"key": api_key}, json=payload)
-                
-                print(f"📥 Risposta Gemini: Status {r.status_code}")
-                
-                if not r.is_success:
-                    print(f"❌ Errore Gemini: {r.status_code} - {r.text}")
-                    continue
-                
-                data = r.json()
-                print(f"✅ Gemini risposta ricevuta")
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-                
-            # Claude
-            if attempt_provider == "claude" and os.getenv("ANTHROPIC_API_KEY"):
-                # Prepara i messaggi per Claude, supportando immagini
-                claude_messages = []
-                for m in messages:
-                    if isinstance(m.get("content"), str):
-                        # Messaggio di solo testo
-                        claude_messages.append({"role": m["role"], "content": m["content"]})
-                    elif "images" in m:
-                        # Messaggio con immagini
-                        content_parts = [{"type": "text", "text": m["content"]}]
-                        for img in m["images"]:
-                            content_parts.append({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": f"image/{img.get('type', 'jpeg')}",
-                                    "data": img["data"]
-                                }
-                            })
-                        claude_messages.append({"role": m["role"], "content": content_parts})
-                    else:
-                        claude_messages.append({"role": m["role"], "content": m["content"]})
-                
-                async with httpx.AsyncClient(timeout=60) as cx:
-                    r = await cx.post("https://api.anthropic.com/v1/messages",
-                        headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"], "anthropic-version":"2023-06-01"},
-                    json={"model": (model or "claude-3-5-sonnet-20241022"),
-                        "max_tokens":2500,  # Aumentato da 800 per risposte più dettagliate
-                        "messages": claude_messages,
-                        "temperature": temperature})
-                r.raise_for_status()
-                return r.json()["content"][0]["text"]
+    async def adapter_gemini(p_model: str) -> Optional[str]:
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            errors['gemini'] = 'missing api key'
+            return None
+        combined_prompt = "\n\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
+        payload = {"contents": [{"parts": [{"text": combined_prompt}]}], "generationConfig": {"temperature": temperature}}
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['gemini']) as cx:
+            r = await cx.post(f"https://generativelanguage.googleapis.com/v1beta/models/{p_model or DEFAULT_MODELS['gemini']}:generateContent",
+                               params={"key": api_key}, json=payload)
+        if not r.is_success:
+            errors['gemini'] = f"http {r.status_code} {r.text[:120]}"
+            return None
+        data = r.json()
+        try:
+            return data['candidates'][0]['content']['parts'][0]['text']
+        except Exception:
+            errors['gemini'] = 'parse_error'
+            return None
 
-            # OpenAI (facoltativo)
-            if attempt_provider == "openai" and os.getenv("OPENAI_API_KEY"):
-                # Prepara i messaggi per OpenAI, supportando immagini
-                openai_messages = []
-                for m in messages:
-                    if isinstance(m.get("content"), str):
-                        # Messaggio di solo testo
-                        openai_messages.append({"role": m["role"], "content": m["content"]})
-                    elif "images" in m:
-                        # Messaggio con immagini (formato OpenAI)
-                        content_parts = [{"type": "text", "text": m["content"]}]
-                        for img in m["images"]:
-                            content_parts.append({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/{img.get('type', 'jpeg')};base64,{img['data']}"
-                                }
-                            })
-                        openai_messages.append({"role": m["role"], "content": content_parts})
-                    else:
-                        openai_messages.append({"role": m["role"], "content": m["content"]})
-                
-                async with httpx.AsyncClient(timeout=60) as cx:
-                    r = await cx.post(
-                        "https://api.openai.com/v1/chat/completions",
-                        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-                        json={
-                            "model": (attempt_model or "gpt-4o-mini"),
-                            "messages": openai_messages,
-                            "temperature": float(temperature)
-                        }
-                    )
-                r.raise_for_status()
-                openai_content = r.json()["choices"][0]["message"].get("content", "")
-                if not openai_content or not openai_content.strip():
-                    print("⚠️ Content vuoto da OpenAI, passo al prossimo provider")
-                else:
-                    return openai_content
+    async def adapter_ollama(p_model: str) -> Optional[str]:
+        # base url precedence: explicit param -> env -> config -> default
+        base_url_env = ollama_base_url or os.getenv("OLLAMA_BASE_URL")
+        base_url_cfg = None
+        try:
+            from .admin import load_config as _load_cfg  # type: ignore
+            _cfg_tmp = _load_cfg()
+            base_url_cfg = _cfg_tmp.get('ai_providers', {}).get('ollama', {}).get('base_url') if isinstance(_cfg_tmp, dict) else None
+        except Exception:
+            base_url_cfg = None
+        base_url = base_url_env or base_url_cfg or "http://localhost:11434"
+        model_name = p_model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODELS['ollama']
+        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['ollama']) as cx:
+            r = await cx.post(f"{base_url}/api/chat", json={
+                "model": model_name,
+                "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+                "stream": False,
+                "options": {"temperature": float(temperature), "top_p": 0.9}
+            })
+        if not r.is_success:
+            msg = f"http {r.status_code}"
+            if r.status_code == 404 and 'model' in r.text.lower():
+                msg += ' missing_model'
+            errors['ollama'] = msg
+            return None
+        data = r.json()
+        out = data.get('message', {}).get('content', '')
+        if not out or not out.strip():
+            errors['ollama'] = 'empty_content'
+            return None
+        return out
 
-            # OpenRouter (supporta molti modelli)
-            if attempt_provider == "openrouter":
-                api_key = os.getenv("OPENROUTER_API_KEY")
-                print(f"🔑 OPENROUTER_API_KEY presente: {'Sì' if api_key else 'No'}")
-                
-                if not api_key:
-                    print("⚠️ OPENROUTER_API_KEY non trovata, provo prossimo provider")
-                    continue
-                
-                print(f"📤 Chiamata a OpenRouter")
-                print(f"[DEBUG] Messaggi inviati: {len(messages)}")
-                for i, msg in enumerate(messages):
-                    print(f"[DEBUG] Msg {i}: {msg['role']} - {msg['content'][:100]}...")
-                
-                async with httpx.AsyncClient(timeout=60) as cx:
-                    r = await cx.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "HTTP-Referer": "https://qsa-chatbot.local",  # Per analytics
-                            "X-Title": "QSA Chatbot"  # Nome app per analytics
-                        },
-                        json={
-                            "model": attempt_model or "anthropic/claude-3.5-sonnet",
-                            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-                            "temperature": float(temperature),
-                            "max_tokens": 2500
-                        }
-                    )
-                
-                print(f"📥 Risposta OpenRouter: Status {r.status_code}")
-                
-                if not r.is_success:
-                    print(f"❌ Errore OpenRouter: {r.status_code} - {r.text}")
-                    continue
-                
-                data = r.json()
-                print(f"✅ OpenRouter risposta ricevuta")
-                print(f"[DEBUG] Raw response data keys: {list(data.keys())}")
-                print(f"[DEBUG] Choices count: {len(data.get('choices', []))}")
-                
-                if 'choices' in data and len(data['choices']) > 0:
-                    choice = data['choices'][0]
-                    print(f"[DEBUG] Choice keys: {list(choice.keys())}")
-                    if 'message' in choice:
-                        message = choice['message']
-                        print(f"[DEBUG] Message keys: {list(message.keys())}")
-                        content = message.get('content', '')
-                        print(f"[DEBUG] Content type: {type(content)}")
-                        print(f"[DEBUG] Content length: {len(content) if content else 0}")
-                        print(f"[DEBUG] Content preview: '{content[:200]}'...")
-                        
-                        if not content or not content.strip():
-                            print("⚠️ Content vuoto dalla risposta OpenRouter, provo fallback")
-                            print(f"[DEBUG] Full response: {json.dumps(data, indent=2)}")
-                        else:
-                            return content
-                    else:
-                        print(f"❌ Nessun campo 'message' nella choice")
-                        print(f"[DEBUG] Choice content: {json.dumps(choice, indent=2)}")
-                else:
-                    print(f"❌ Nessuna choice nella risposta")
-                    print(f"[DEBUG] Full response: {json.dumps(data, indent=2)}")
-                
-                continue
-                
-            # Ollama (modelli locali)
-            if attempt_provider == "ollama":
-                base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-                print(f"🦙 Ollama URL: {base_url}")
+    adapter_map: Dict[str, Callable[[Optional[str]], Any]] = {
+        'openrouter': adapter_openrouter,
+        'openai': adapter_openai,
+        'claude': adapter_claude,
+        'gemini': adapter_gemini,
+        'ollama': adapter_ollama,
+    }
 
-                # Risolvi modello dinamicamente: 1) variabile d'ambiente OLLAMA_MODEL 2) admin_config selected_model 3) fallback hardcoded
-                model_name = attempt_model or os.getenv("OLLAMA_MODEL")
-                if not model_name:
-                    model_name = "llama3.1:8b"
-
-                print(f"🦙 Modello Ollama scelto: {model_name}")
-
-                print(f"📤 Chiamata a Ollama")
-
-                async with httpx.AsyncClient(timeout=120) as cx:  # Timeout più alto per modelli locali
-                    r = await cx.post(f"{base_url}/api/chat",
-                        json={
-                            "model": model_name,
-                            "messages": [{"role": m["role"], "content": m["content"]} for m in messages],
-                            "stream": False,
-                            "options": {
-                                "temperature": float(temperature),
-                                "top_p": 0.9,
-                            }
-                        })
-
-                print(f"📥 Risposta Ollama: Status {r.status_code}")
-
-                if not r.is_success:
-                    print(f"❌ Errore Ollama: {r.status_code} - {r.text}")
-                    # Se il modello non esiste, suggerisci il pull
-                    if r.status_code == 404 and 'model' in r.text.lower():
-                        print(f"💡 Suggerimento: esegui 'ollama pull {model_name}' sul server dove gira Ollama")
-                    continue
-
-                data = r.json()
-                print(f"✅ Ollama risposta ricevuta")
-                ollama_content = data.get("message", {}).get("content", "")
-                if not ollama_content or not ollama_content.strip():
-                    print("⚠️ Content vuoto da Ollama, provo fallback")
-                else:
-                    return ollama_content
-                
-        except Exception as e:
-            print(f"💥 Errore con provider {attempt_provider}: {e}")
-            import traceback
-            print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+    for attempt in providers_to_try:
+        debug_log(f"Tentativo con provider: {attempt}", provider=attempt)
+        attempt_model = resolve_model(attempt)
+        if attempt_model:
+            debug_log(f"Modello scelto: {attempt_model}", provider=attempt)
+        if attempt == 'local':
+            return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+        adapter = adapter_map.get(attempt)
+        if not adapter:
             continue
-    
-    # Se tutti i provider hanno fallito, usa il fallback finale
-    print("❌ Tutti i provider hanno fallito, uso fallback finale")
-    if is_summary_request:
-        return await _summary_fallback_reply(messages, context_hint)
-    else:
-        return await _local_reply(messages, context_hint)
+        try:
+            result = await adapter(attempt_model or DEFAULT_MODELS.get(attempt, ''))
+            if result:
+                return result
+        except Exception as e:
+            errors[attempt] = f"exception {type(e).__name__}: {e}"[:180]
+            debug_log(f"Errore {e}\n{traceback.format_exc()}", provider=attempt)
+            continue
+
+    debug_log(f"Tutti i provider hanno fallito: {errors}")
+    return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+
+def _prepare_messages_for_provider(messages: List[Dict], target: str) -> List[Dict]:
+    """Normalize messages structure for provider target (supports images)."""
+    prepared: List[Dict] = []
+    for m in messages:
+        if target == 'openai':
+            if isinstance(m.get('content'), str) and 'images' not in m:
+                prepared.append({"role": m['role'], "content": m['content']})
+            elif 'images' in m:
+                parts = [{"type": "text", "text": m['content']}] if isinstance(m.get('content'), str) else []
+                for img in m['images']:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/{img.get('type','jpeg')};base64,{img['data']}"}
+                    })
+                prepared.append({"role": m['role'], "content": parts})
+            else:
+                prepared.append({"role": m['role'], "content": m.get('content','')})
+        elif target == 'claude':
+            if isinstance(m.get('content'), str) and 'images' not in m:
+                prepared.append({"role": m['role'], "content": m['content']})
+            elif 'images' in m:
+                parts = [{"type": "text", "text": m['content']}] if isinstance(m.get('content'), str) else []
+                for img in m['images']:
+                    parts.append({
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": f"image/{img.get('type','jpeg')}", "data": img['data']}
+                    })
+                prepared.append({"role": m['role'], "content": parts})
+            else:
+                prepared.append({"role": m['role'], "content": m.get('content','')})
+        else:
+            prepared.append({"role": m['role'], "content": m.get('content','')})
+    return prepared
 
 def _get_available_providers() -> List[str]:
     """Restituisce la lista dei provider disponibili e abilitati, ordinati per priorità di fallback."""
@@ -456,46 +469,85 @@ def _get_available_providers() -> List[str]:
         debug = bool(os.getenv("DEBUG_PROVIDER_DISCOVERY"))
         debug_rows = []
         
+        allow_autodetect = os.getenv("ALLOW_OLLAMA_AUTODETECT", "0").lower() in ("1","true","yes","on")
+        autodetect_timeout = float(os.getenv("OLLAMA_AUTODETECT_TIMEOUT", "1.5"))
+        requested_provider = os.getenv('FORCE_PROVIDER')
         for provider in priority_order:
             provider_config = ai_providers.get(provider, {})
-            # Verifica se il provider è abilitato
-            if provider_config.get("enabled", False):
-                # Verifica se ha le credenziali necessarie
-                has_credentials = False
+            enabled_flag = provider_config.get("enabled", False)
+            status_note = ''
+            reason = ''
+            has_credentials = False
+            if enabled_flag:
                 if provider == "local":
                     has_credentials = True
                 elif provider == "gemini":
                     has_credentials = bool(os.getenv("GOOGLE_API_KEY"))
+                    if not has_credentials:
+                        reason = 'missing GOOGLE_API_KEY'
                 elif provider == "claude":
                     has_credentials = bool(os.getenv("ANTHROPIC_API_KEY"))
+                    if not has_credentials:
+                        reason = 'missing ANTHROPIC_API_KEY'
                 elif provider == "openai":
                     has_credentials = bool(os.getenv("OPENAI_API_KEY"))
+                    if not has_credentials:
+                        reason = 'missing OPENAI_API_KEY'
                 elif provider == "openrouter":
                     has_credentials = bool(os.getenv("OPENROUTER_API_KEY"))
+                    if not has_credentials:
+                        reason = 'missing OPENROUTER_API_KEY'
                 elif provider == "ollama":
-                    # Per Ollama, assumiamo sia disponibile se abilitato
+                    # Nessuna credenziale richiesta: consideriamo sempre valido se enabled
                     has_credentials = True
-                
                 if has_credentials:
                     available_providers.append(provider)
                     if debug:
-                        debug_rows.append((provider, 'ENABLED', 'OK creds'))
+                        debug_rows.append((provider, 'ENABLED', 'OK'))
                 else:
                     if debug:
-                        debug_rows.append((provider, 'ENABLED', 'MISSING creds'))
+                        debug_rows.append((provider, 'ENABLED', reason or 'MISSING'))
             else:
-                if debug:
-                    debug_rows.append((provider, 'DISABLED', '-'))
+                # Provider disabilitato
+                if provider == 'ollama' and allow_autodetect:
+                    try:
+                        import httpx
+                        base_url = provider_config.get('base_url') or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+                        url = f"{base_url.rstrip('/')}/api/tags"
+                        with httpx.Client(timeout=autodetect_timeout) as cx:
+                            r = cx.get(url)
+                            if r.status_code == 200:
+                                available_providers.append('ollama')
+                                if debug:
+                                    debug_rows.append(('ollama', 'AUTO', 'reachable'))
+                                continue
+                            else:
+                                if debug:
+                                    debug_rows.append(('ollama', 'DISABLED', f'http {r.status_code}'))
+                    except Exception:  # pragma: no cover
+                        if debug:
+                            debug_rows.append(('ollama', 'DISABLED', 'err'))
+                else:
+                    if debug:
+                        debug_rows.append((provider, 'DISABLED', '-'))
         
+        # Forza inclusione provider richiesto se definito e conosciuto
+        if requested_provider and requested_provider.lower() not in available_providers:
+            if requested_provider.lower() in priority_order:
+                available_providers.append(requested_provider.lower())
+                if debug:
+                    debug_rows.append((requested_provider.lower(), 'FORCED', 'env_FORCE_PROVIDER'))
+
         # Se nessun provider è disponibile, almeno local
         if not available_providers:
             available_providers = ["local"]
             if debug:
                 debug_rows.append(("local", 'FORCED', 'fallback'))
 
-        if debug:
+        if debug or os.getenv('FORCE_PROVIDER_DISCOVERY_LOG','0').lower() in ('1','true','yes','on'):
             print("[PROVIDERS] Discovery table:")
             for row in debug_rows:
+                # row = (name, status, note)
                 print(f"  - {row[0]:10s} status={row[1]:9s} note={row[2]}")
             
         return available_providers

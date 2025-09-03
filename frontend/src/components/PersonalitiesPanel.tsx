@@ -20,6 +20,8 @@ const PersonalitiesPanel: React.FC = () => {
   const [provider, setProvider] = useState('openai')
   const [model, setModel] = useState('')
   const [providerModels, setProviderModels] = useState<Record<string,string[]>>({})
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsNote, setModelsNote] = useState<string|null>(null)
   const [systemPromptId, setSystemPromptId] = useState('')
   const [ttsProvider, setTtsProvider] = useState<string>('')
   const [ttsVoice, setTtsVoice] = useState<string>('')
@@ -49,6 +51,11 @@ const PersonalitiesPanel: React.FC = () => {
   const [selectedMcpServers, setSelectedMcpServers] = useState<string[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
+  // Test inline LLM
+  const [testMessage, setTestMessage] = useState<string>('Ciao! Test rapido.')
+  const [testing, setTesting] = useState<boolean>(false)
+  const [testResult, setTestResult] = useState<any>(null)
+  const [ollamaBaseUrl, setOllamaBaseUrl] = useState<string>('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -138,6 +145,35 @@ const PersonalitiesPanel: React.FC = () => {
     } catch {}
   })() },[])
 
+  // Fetch models for a single provider on demand (used when user changes provider in dialog)
+  const fetchProviderModels = useCallback(async (prov: string, refresh = false) => {
+    if (!prov) return
+    setModelsLoading(true); setModelsNote(null)
+    try {
+      const url = `${BACKEND}/api/admin/provider-models/${prov}${refresh ? '?refresh=1':''}`
+      const r = await authFetch(url)
+      if (r.ok) {
+        const data = await r.json()
+        if (data.success) {
+          const models: string[] = Array.isArray(data.models) ? data.models : []
+          setProviderModels(prev => ({ ...prev, [prov]: models }))
+          if (data.note) setModelsNote(data.note)
+          // Auto-select first if current model empty or vanished
+          if (models.length && (!model || !models.includes(model))) {
+            setModel(models[0])
+          }
+        } else {
+          setModelsNote(data.error || 'errore')
+        }
+      } else {
+        setModelsNote('fetch_error')
+      }
+    } catch { setModelsNote('fetch_exception') } finally { setModelsLoading(false) }
+  }, [model])
+
+  // When provider changes in the dialog, fetch models list
+  useEffect(()=>{ if (dialogOpen) { fetchProviderModels(provider) } }, [provider, dialogOpen, fetchProviderModels])
+
   const openNew = () => { 
     setEditing(null); 
     setName(''); 
@@ -157,7 +193,14 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedPipelineTopics([]);
     setSelectedRagGroups([]);
     setSelectedMcpServers([]);
-    setDialogOpen(true) 
+    setDialogOpen(true)
+    setTestResult(null); setTestMessage('Ciao! Test rapido.')
+    if ((providers[0] || 'local') === 'ollama') {
+      fetch(`${BACKEND}/api/admin/config`).then(r=>r.json()).then(cfg => {
+        const url = cfg?.ai_providers?.ollama?.base_url
+        if (url) setOllamaBaseUrl(url)
+      }).catch(()=>{})
+    } else { setOllamaBaseUrl('') }
   }
   const openEdit = (p: PersonalityEntry) => {
     setEditing(p); setName(p.name); setProvider(p.provider); setModel(p.model); setSystemPromptId(p.system_prompt_id);
@@ -185,6 +228,13 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedRagGroups(p.enabled_rag_groups || []);
     setSelectedMcpServers(p.enabled_mcp_servers || []);
     setDialogOpen(true)
+    setTestResult(null); setTestMessage('Ciao! Test rapido.')
+    if (p.provider === 'ollama') {
+      fetch(`${BACKEND}/api/admin/config`).then(r=>r.json()).then(cfg => {
+        const url = cfg?.ai_providers?.ollama?.base_url
+        if (url) setOllamaBaseUrl(url)
+      }).catch(()=>{})
+    } else { setOllamaBaseUrl('') }
   }
 
   // Carica elenco voci quando cambia provider TTS selezionato (nel dialog)
@@ -328,6 +378,19 @@ const PersonalitiesPanel: React.FC = () => {
         
       } else { const d=await res.json(); setErr(d.detail || 'Errore salvataggio') }
     } catch { setErr('Errore rete') } finally { setSaving(false) }
+  }
+
+  const runTest = async () => {
+    if (!testMessage.trim()) return
+    setTesting(true); setTestResult(null)
+    try {
+      const headers: Record<string,string> = { 'Content-Type':'application/json', 'X-LLM-Provider': provider }
+      if (model) headers['X-LLM-Model'] = model
+      if (provider === 'ollama' && ollamaBaseUrl.trim()) headers['X-Ollama-Base-Url'] = ollamaBaseUrl.trim()
+      const r = await authFetch(`${BACKEND}/api/chat`, { method:'POST', headers, body: JSON.stringify({ message: testMessage }) })
+      const data = await r.json()
+      setTestResult(data)
+    } catch(e) { setTestResult({ error: 'Errore test' }) } finally { setTesting(false) }
   }
 
   const remove = async (id: string) => {
@@ -478,28 +541,71 @@ const PersonalitiesPanel: React.FC = () => {
             <TextField label="Nome" value={name} onChange={e=>setName(e.target.value)} fullWidth size="small" />
             <FormControl size="small" fullWidth>
               <InputLabel id="prov-label">Provider</InputLabel>
-              <Select labelId="prov-label" label="Provider" value={provider} onChange={e=>setProvider(e.target.value)}>
+              <Select labelId="prov-label" label="Provider" value={provider} onChange={e=>{ setProvider(e.target.value); setModel(''); }}>
                 {providers.map(pv => <MenuItem key={pv} value={pv}>{pv}</MenuItem>)}
               </Select>
             </FormControl>
-            {/* Model selector dinamico basato su provider */}
-            <FormControl size="small" fullWidth>
-              <InputLabel id="model-label">Modello</InputLabel>
-              <Select
-                labelId="model-label"
-                label="Modello"
+            {provider === 'ollama' && (
+              <TextField size="small" fullWidth label="Ollama Base URL" placeholder="http://192.168.x.x:11434" value={ollamaBaseUrl} onChange={e=> setOllamaBaseUrl(e.target.value)} />
+            )}
+            {/* Model selector dinamico basato su provider: se ci sono modelli => Select, altrimenti TextField per input manuale */}
+            { (providerModels[provider]?.length || 0) > 0 ? (
+              <FormControl size="small" fullWidth>
+                <InputLabel id="model-label">Modello</InputLabel>
+                <Select
+                  labelId="model-label"
+                  label="Modello"
+                  value={model}
+                  onChange={e=>setModel(e.target.value)}
+                  endAdornment={modelsLoading ? <LinearProgress sx={{ width: 60 }} /> : undefined}
+                >
+                  {providerModels[provider].map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                  {model && !providerModels[provider].includes(model) && (
+                    <MenuItem value={model}>{model} (personalizzato)</MenuItem>
+                  )}
+                </Select>
+              </FormControl>
+            ) : (
+              <TextField
+                size="small"
+                fullWidth
+                label={modelsLoading ? 'Caricamento modelli…' : 'Modello (inserisci manualmente)'}
                 value={model}
                 onChange={e=>setModel(e.target.value)}
-              >
-                {(() => {
-                  const dynamic = providerModels[provider] || []
-                  const list = [...dynamic]
-                  if (model && !list.includes(model)) list.push(model)
-                  if (!list.length) list.push('')
-                  return list.filter(Boolean).map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)
-                })()}
-              </Select>
-            </FormControl>
+                helperText={modelsLoading ? 'Recupero elenco modelli...' : (modelsNote === 'missing_api_key' ? 'Configura API key per elenco automatico' : 'Nessun elenco remoto, inserisci il nome esatto')}                
+              />
+            ) }
+            <Stack direction="row" spacing={1}>
+              <Button size="small" onClick={()=>fetchProviderModels(provider, true)} disabled={modelsLoading}>Aggiorna modelli</Button>
+              {modelsLoading && <LinearProgress sx={{ flex:1 }} />}
+            </Stack>
+            {modelsNote && modelsNote !== 'missing_api_key' && modelsNote !== 'fetch_error' && modelsNote !== 'fetch_exception' && (
+              <Typography variant="caption" color="text.secondary">Nota: {modelsNote}</Typography>
+            )}
+            {/* Test rapido LLM */}
+            <Paper variant="outlined" sx={{ p:1.5 }}>
+              <Stack spacing={1.2}>
+                <Typography variant="subtitle2">Test LLM</Typography>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="Messaggio di test"
+                  value={testMessage}
+                  onChange={e=> setTestMessage(e.target.value)}
+                  multiline
+                  minRows={2}
+                />
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Button size="small" variant="contained" disabled={testing || !testMessage.trim()} onClick={runTest}>Esegui</Button>
+                  {testing && <LinearProgress sx={{ flex:1, height:6, borderRadius:1 }} />}
+                </Stack>
+                {testResult && (
+                  <Paper variant="outlined" sx={{ p:1, maxHeight:160, overflow:'auto', fontFamily:'monospace', fontSize:12 }}>
+                    <pre style={{ margin:0, whiteSpace:'pre-wrap' }}>{JSON.stringify(testResult, null, 2)}</pre>
+                  </Paper>
+                )}
+              </Stack>
+            </Paper>
             <Box>
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Avatar</Typography>
               <Stack direction="row" spacing={2} alignItems="center">

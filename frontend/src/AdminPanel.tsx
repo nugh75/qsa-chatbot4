@@ -10,7 +10,7 @@ import Avatar from '@mui/material/Avatar'
 import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material'
 
 import UserManagement from './components/UserManagement'
-import ModelProvidersPanel from './components/ModelProvidersPanel'
+// Rimosso ModelProvidersPanel (tab provider) — test LLM spostato sotto Personalità
 import TTSProvidersPanel from './components/TTSProvidersPanel'
 import WhisperPanel from './components/WhisperPanel'
 import MemoryPanel from './components/MemoryPanel';
@@ -67,9 +67,8 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-    { id: 'provider', label: 'Modelli & Provider', panels: ['providers', 'tts'] },
     { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
-    { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
+    { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
@@ -77,11 +76,10 @@ const AdminPanel: React.FC = () => {
     { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
   ] as const
 
-  const [selectedCategory, setSelectedCategory] = useState<string>('provider')
+  const [selectedCategory, setSelectedCategory] = useState<string>('conversation')
 
   // UI stato locale
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
-    providers: true,
     tts: false,
   transcription: false,
     prompts: false,
@@ -112,11 +110,7 @@ const AdminPanel: React.FC = () => {
   const [startingDownload, setStartingDownload] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
-  // Memo per provider e voci disponibili
-  const providerNames = useMemo(() => {
-    if (!config) return []
-    return Object.keys(config.ai_providers)
-  }, [config])
+  // providerNames rimosso (tab provider eliminato)
 
   const ttsNames = useMemo(() => {
     if (!config) return []
@@ -318,20 +312,7 @@ const AdminPanel: React.FC = () => {
     }
   }
 
-  const updateDefaultProvider = async (value: string) => {
-    try {
-      const res = await authFetch(`${BACKEND}/api/admin/config/default-provider`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: value })
-      })
-      if (res.ok) {
-        setConfig(prev => prev ? { ...prev, default_provider: value } as AdminConfig : prev)
-      }
-    } catch {
-      /* noop */
-    }
-  }
+  // updateDefaultProvider rimosso (gestione spostata altrove o non necessaria nel pannello)
 
   const updateDefaultTTS = async (value: string) => {
     try {
@@ -434,89 +415,7 @@ const AdminPanel: React.FC = () => {
         </Alert>
       )}
 
-      {/* Providers */}
-      {/* Nota: quando si cambiano welcome/guides in altre sezioni (non ancora implementate qui), si potrebbe impostare: localStorage.setItem('welcome_guides_version', Date.now().toString()) per forzare il refresh lato chat. */}
-      {panelVisible('providers') && (
-      <Accordion expanded={expandedPanels.providers} onChange={handlePanelExpansion('providers')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AIIcon fontSize="small" />
-            <Typography variant="h6">Modelli e provider</Typography>
-            {config && <Chip size="small" label={config.default_provider ? `default: ${config.default_provider}` : 'default: -'} />}
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Card>
-            <CardContent>
-              {!config ? (
-                <Typography color="text.secondary">Caricamento configurazione…</Typography>
-              ) : (
-                <>
-                  <Grid container spacing={2} sx={{ mb: 2 }}>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <FormControl fullWidth size="small">
-                        <InputLabel id="default-provider-label">Provider predefinito</InputLabel>
-                        <Select
-                          labelId="default-provider-label"
-                          label="Provider predefinito"
-                          value={config.default_provider || ''}
-                          onChange={(e) => updateDefaultProvider(e.target.value)}
-                        >
-                          {providerNames.map(p => (
-                            <MenuItem key={p} value={p}>{p}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={5}>
-                      <TextField size="small" fullWidth label="Email contatto ricerca" value={contactEmail} onChange={e=> setContactEmail(e.target.value)} placeholder="es. ricerca@example.org" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={3} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, contactEmail)}>Salva contatto</Button>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Titolo progetto ricerca" value={researchProject} onChange={e=> setResearchProject(e.target.value)} placeholder="es. Progetto QSA" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Repository URL" value={repositoryUrl} onChange={e=> setRepositoryUrl(e.target.value)} placeholder="https://github.com/..." />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Sito Web" value={websiteUrl} onChange={e=> setWebsiteUrl(e.target.value)} placeholder="https://example.org" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6}>
-                      <TextField size="small" fullWidth label="Informativa PDF URL" value={infoPdfUrl} onChange={e=> setInfoPdfUrl(e.target.value)} placeholder="https://example.org/informativa.pdf" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {research_project: researchProject, repository_url: repositoryUrl, website_url: websiteUrl, info_pdf_url: infoPdfUrl})}>Salva campi ricerca</Button>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Footer titolo" value={footerTitle} onChange={e=> setFooterTitle(e.target.value)} placeholder="es. Informazioni" />
-                    </Grid>
-                    <Grid item xs={12} sm={12} md={8}>
-                      <TextField size="small" fullWidth multiline minRows={2} label="Footer testo" value={footerText} onChange={e=> setFooterText(e.target.value)} placeholder="Testo descrittivo (markdown semplice)" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {footer_title: footerTitle, footer_text: footerText})}>Salva footer</Button>
-                    </Grid>
-                    <Grid item xs={12}>
-                      <Divider sx={{ my:1 }} />
-                      <Typography variant="subtitle2" sx={{ mb:1 }}>Visibilità sezione questionario</Typography>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showFooterBlock} onChange={e=> saveUiSettings(undefined, undefined, {show_footer_block: e.target.checked})} />} label="Mostra blocco footer" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showResearchProject} onChange={e=> saveUiSettings(undefined, undefined, {show_research_project: e.target.checked})} />} label="Mostra progetto" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showRepositoryUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_repository_url: e.target.checked})} />} label="Mostra repository" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showWebsiteUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_website_url: e.target.checked})} />} label="Mostra sito web" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showInfoPdfUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_info_pdf_url: e.target.checked})} />} label="Mostra PDF" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showContactEmail} onChange={e=> saveUiSettings(undefined, undefined, {show_contact_email: e.target.checked})} />} label="Mostra email contatto" /></Grid>
-                  </Grid>
-                  <ModelProvidersPanel config={config as any} onConfigUpdate={(next) => setConfig(prev => prev ? ({ ...prev, ...next } as any) : prev)} />
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </AccordionDetails>
-      </Accordion>
-          )}
+      {/* Tab Provider rimosso */}
 
   {/* TTS */}
   {panelVisible('tts') && (
@@ -694,7 +593,33 @@ const AdminPanel: React.FC = () => {
           </Box>
         </AccordionSummary>
         <AccordionDetails>
-          <PersonalitiesPanel />
+          <Stack spacing={3}>
+            <PersonalitiesPanel />
+            {/* Sezione Test LLM (spostata dal tab provider) */}
+            <Card variant="outlined">
+              <CardContent>
+                <Typography variant="subtitle2" gutterBottom>Test rapido LLM (usa provider configurazione o personalità selezionata)</Typography>
+                <Stack direction={{ xs:'column', sm:'row' }} spacing={2} alignItems="flex-start">
+                  <TextField
+                    label="Messaggio di test"
+                    value={tokenTestInput}
+                    onChange={e=> setTokenTestInput(e.target.value)}
+                    size="small"
+                    fullWidth
+                    multiline
+                    minRows={2}
+                  />
+                  <Button variant="contained" size="small" onClick={runTokenTest} disabled={testingTokens || !tokenTestInput.trim()}>Invia</Button>
+                </Stack>
+                {testingTokens && <LinearProgress sx={{ mt:1 }} />}
+                {tokenTestResult && (
+                  <Paper variant="outlined" sx={{ p:1, mt:2, maxHeight:200, overflow:'auto', fontFamily:'monospace', fontSize:12 }}>
+                    <pre style={{ margin:0, whiteSpace:'pre-wrap' }}>{JSON.stringify(tokenTestResult, null, 2)}</pre>
+                  </Paper>
+                )}
+              </CardContent>
+            </Card>
+          </Stack>
         </AccordionDetails>
       </Accordion>
   )}

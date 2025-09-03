@@ -205,6 +205,206 @@ DEFAULT_CONFIG = {
     }
 }
 
+def ensure_default_ai_provider(seed: bool = True, force: bool = False):
+    """Ensure a sane default provider/model (OpenRouter + gpt-oss-20b:free) without overwriting explicit admin choices.
+
+    Rules:
+    - Only run if seed True.
+    - If force True (env RESEED_DEFAULTS=1) apply even if values already set.
+    - If openrouter block missing, create it disabled (admin can enable later).
+    - If selected_model empty (or forcing) set to gpt-oss-20b:free (do not touch if already non-empty unless force).
+    - If default_provider not set or == 'local', set to 'openrouter'.
+    - Leave claude selected_model blank (only wipe if forcing and model equals the specific seed model we previously injected – conservative).
+    """
+    if not seed:
+        return
+    try:
+        cfg = load_config()
+        ai = cfg.setdefault('ai_providers', {})
+        or_cfg = ai.setdefault('openrouter', {"enabled": False, "name": "OpenRouter", "models": [], "selected_model": ""})
+        target_model = "gpt-oss-20b:free"
+        reseed_env = os.getenv('RESEED_DEFAULTS', '0').lower() in ('1','true','yes','on')
+        _force = force or reseed_env
+        # Set default provider if missing or still local
+        if _force or cfg.get('default_provider') in (None, '', 'local'):
+            cfg['default_provider'] = 'openrouter'
+        # Seed model only if empty or forcing
+        if _force or not (or_cfg.get('selected_model') or '').strip():
+            or_cfg['selected_model'] = target_model
+            if target_model not in or_cfg.get('models', []):
+                # Prepend to models list for visibility without losing existing
+                models_list = or_cfg.get('models', [])
+                or_cfg['models'] = [target_model] + [m for m in models_list if m != target_model]
+        # Wipe Claude selected_model only if forcing and we explicitly want it blank
+        if _force:
+            claude_cfg = ai.get('claude')
+            if claude_cfg and claude_cfg.get('selected_model') and claude_cfg.get('selected_model') == 'claude-3-5-sonnet-20241022':
+                claude_cfg['selected_model'] = ''
+        save_config(cfg)
+    except Exception as e:  # pragma: no cover
+        try:
+            print(f"[ensure_default_ai_provider] skipped: {e}")
+        except Exception:
+            pass
+
+# ---- Dynamic provider models listing (remote fetch + cache) ----
+_PROVIDER_MODELS_CACHE: dict[str, dict] = {}
+_PROVIDER_MODELS_TTL_DEFAULT = 600  # seconds
+
+def _cache_get(key: str):
+    import time
+    item = _PROVIDER_MODELS_CACHE.get(key)
+    if not item:
+        return None
+    if item['expires_at'] < time.time():
+        _PROVIDER_MODELS_CACHE.pop(key, None)
+        return None
+    return item['value']
+
+def _cache_set(key: str, value, ttl: int):
+    import time
+    _PROVIDER_MODELS_CACHE[key] = { 'value': value, 'expires_at': time.time() + ttl }
+
+async def _fetch_openrouter_models(api_key: str) -> list[str]:
+    import httpx
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://openrouter.ai/api/v1/models", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        models = []
+        for m in data.get('data', []):
+            mid = m.get('id') or m.get('name')
+            if isinstance(mid, str):
+                models.append(mid)
+        return models
+
+async def _fetch_openai_models(api_key: str) -> list[str]:
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+        r.raise_for_status()
+        data = r.json()
+        keep = []
+        for m in data.get('data', []):
+            mid = m.get('id')
+            if not isinstance(mid, str):
+                continue
+            # Heuristic: include chat/capable new naming patterns
+            if any(tok in mid for tok in ["gpt-4", "gpt-4o", "gpt-4.1", "o3", "o1", "gpt-3.5", "mini"]):
+                keep.append(mid)
+        return sorted(set(keep))
+
+async def _fetch_ollama_models(base_url: str) -> list[str]:
+    import httpx
+    async with httpx.AsyncClient(timeout=20) as cx:
+        r = await cx.get(f"{base_url.rstrip('/')}/api/tags")
+        r.raise_for_status()
+        data = r.json()
+        out = []
+        for entry in data.get('models', []):
+            nm = entry.get('name')
+            if isinstance(nm, str):
+                out.append(nm)
+        return out
+
+def _static_models(provider: str) -> list[str]:
+    if provider == 'claude':
+        return [
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-sonnet-latest',
+            'claude-3-opus-latest',
+            'claude-3-haiku-20240307'
+        ]
+    if provider == 'gemini':
+        return [
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+            'gemini-1.5-pro-exp'
+        ]
+    if provider == 'local':
+        return ['local-fallback']
+    return []
+
+@router.get('/admin/provider-models/{provider}')
+async def get_provider_models(provider: str, refresh: bool = False):
+    """Return dynamic model list for a provider.
+    Fallback order: cache -> remote -> config -> static -> []."""
+    provider = provider.lower()
+    import os, time
+    ttl = int(os.getenv('REMOTE_MODEL_LIST_CACHE_SECONDS', str(_PROVIDER_MODELS_TTL_DEFAULT)))
+    cache_key = f"prov_models:{provider}"
+    if not refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return {"success": True, "provider": provider, "cached": True, "models": cached}
+    models: list[str] = []
+    note = None
+    try:
+        if provider == 'openrouter':
+            api_key = os.getenv('OPENROUTER_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openrouter_models(api_key)
+                except Exception as e:  # fallback
+                    note = f"openrouter_fetch_error:{e}"  # not exposed key
+            else:
+                note = 'missing_api_key'
+        elif provider == 'openai':
+            api_key = os.getenv('OPENAI_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openai_models(api_key)
+                except Exception as e:
+                    note = f"openai_fetch_error:{e}"
+            else:
+                note = 'missing_api_key'
+        elif provider == 'ollama':
+            base_url = load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+            try:
+                models = await _fetch_ollama_models(base_url)
+            except Exception as e:
+                note = f"ollama_fetch_error:{e}"
+        elif provider in ('claude','gemini','local'):
+            models = _static_models(provider)
+        else:
+            return {"success": False, "error": "provider_not_supported"}
+    except Exception as e:
+        note = f"generic_error:{e}"
+
+    # Fallback a config se remote vuoto
+    if not models:
+        try:
+            cfg = load_config()
+            cfg_models = cfg.get('ai_providers', {}).get(provider, {}).get('models') or []
+            if cfg_models:
+                models = [m for m in cfg_models if isinstance(m, str) and m.strip()]
+        except Exception:
+            pass
+    # Fallback static if ancora vuoto
+    if not models:
+        static = _static_models(provider)
+        if static:
+            models = static
+    # Dedup & sort (keep order for openrouter for curated ranking)
+    if provider == 'openrouter':
+        # preserve order
+        seen = set()
+        ordered = []
+        for m in models:
+            if m not in seen:
+                seen.add(m); ordered.append(m)
+        models = ordered
+    else:
+        models = sorted(set(models))
+
+    _cache_set(cache_key, models, ttl)
+    resp = {"success": True, "provider": provider, "cached": False, "models": models}
+    if note:
+        resp['note'] = note
+    return resp
+
 def get_config_file_path():
     """Ottieni il percorso del file di configurazione"""
     return os.path.join(os.path.dirname(__file__), "..", "config", "admin_config.json")
@@ -608,6 +808,18 @@ class SummarySettingsIn(BaseModel):
     provider: str
     enabled: bool
     model: str | None = None
+    min_messages: int | None = None  # soglia minima messaggi per generare summary
+    min_chars: int | None = None     # soglia minima caratteri (somma contenuti) per generare summary
+    auto_on_export: bool | None = None  # se false non tenta generazione automatica nell'export
+
+DEFAULT_SUMMARY_SETTINGS = {
+    "provider": "openrouter",
+    "enabled": True,
+    "model": None,
+    "min_messages": 4,
+    "min_chars": 200,
+    "auto_on_export": True,
+}
 
 # ---- Summary prompts (multi) endpoints ----
 class SummaryPromptIn(BaseModel):
@@ -649,12 +861,20 @@ async def remove_summary_prompt(prompt_id: str):
 
 @router.get("/admin/summary-settings")
 async def get_summary_settings():
-    """Ottiene le impostazioni correnti per la generazione dei summary"""
+    """Ottiene le impostazioni correnti per la generazione dei summary."""
     try:
         config = load_config()
-        summary_settings = config.get("summary_settings", {"provider": "openrouter", "enabled": True})
-        if "model" not in summary_settings:
-            summary_settings["model"] = None
+        raw = config.get("summary_settings", {}) or {}
+        summary_settings = DEFAULT_SUMMARY_SETTINGS.copy()
+        summary_settings.update({k: v for k, v in raw.items() if v is not None})
+        # Normalizza tipi / limiti
+        try:
+            if summary_settings.get("min_messages") is not None:
+                summary_settings["min_messages"] = max(0, int(summary_settings["min_messages"]))
+            if summary_settings.get("min_chars") is not None:
+                summary_settings["min_chars"] = max(0, int(summary_settings["min_chars"]))
+        except Exception:
+            pass
         return {"settings": summary_settings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento impostazioni summary: {str(e)}")
@@ -663,23 +883,75 @@ async def get_summary_settings():
 async def update_summary_settings(payload: SummarySettingsIn):
     """Aggiorna le impostazioni per la generazione dei summary"""
     try:
-        # Permetti tutti i provider tranne 'local'. In precedenza anche 'ollama' risultava escluso indirettamente lato UI.
-        # Manteniamo solo il blocco per 'local' che è un fallback sintetico.
         if payload.provider == "local":
             raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary. Scegli un provider AI reale (es: openrouter, openai, gemini, ollama)")
-        
+
+        # Validazioni soft
+        min_messages = payload.min_messages if payload.min_messages is not None else DEFAULT_SUMMARY_SETTINGS["min_messages"]
+        min_chars = payload.min_chars if payload.min_chars is not None else DEFAULT_SUMMARY_SETTINGS["min_chars"]
+        if min_messages < 0:
+            min_messages = 0
+        if min_chars < 0:
+            min_chars = 0
+        auto_on_export = payload.auto_on_export if payload.auto_on_export is not None else DEFAULT_SUMMARY_SETTINGS["auto_on_export"]
+
         config = load_config()
         config["summary_settings"] = {
             "provider": payload.provider,
             "enabled": payload.enabled,
-            "model": payload.model
+            "model": payload.model,
+            "min_messages": min_messages,
+            "min_chars": min_chars,
+            "auto_on_export": auto_on_export,
         }
         save_config(config)
         return {"success": True, "message": "Impostazioni summary aggiornate"}
     except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio impostazioni summary: {str(e)}")
+
+class SummaryTestIn(BaseModel):
+    messages: list[str] | None = None  # lista di messaggi utente/assistant alternati (semplice)
+    provider: str | None = None
+    model: str | None = None
+    prompt_override: str | None = None
+
+@router.post("/admin/summary-test")
+async def summary_test(payload: SummaryTestIn):
+    """Esegue una generazione di summary di test usando i settings correnti o override forniti.
+
+    Se non vengono passati messaggi, usa una breve conversazione di esempio.
+    """
+    try:
+        from .llm import chat_with_provider
+        from .prompts import load_summary_prompt
+        cfg = load_config()
+        settings = cfg.get("summary_settings", {})
+        provider = payload.provider or settings.get("provider") or DEFAULT_SUMMARY_SETTINGS["provider"]
+        model = payload.model or settings.get("model")
+        enabled = settings.get("enabled", True)
+        if not enabled:
+            return {"success": False, "error": "Summary disabilitato"}
+        base_prompt = payload.prompt_override or load_summary_prompt()
+        if not base_prompt:
+            base_prompt = "You are a helpful assistant generating a concise Italian summary of the following chat."
+        raw_messages = payload.messages or [
+            "Ciao, potresti spiegarmi come funziona il sistema di prenotazioni?",
+            "Certamente! Il sistema consente di prenotare risorse ...",
+            "Posso cancellare una prenotazione?",
+            "Sì, puoi cancellarla entro 24 ore prima dell'orario previsto." 
+        ]
+        # Costruisci struttura LLM: semplice sequenza alternata user/assistant a partire da primo user
+        llm_msgs = [ {"role":"system","content": base_prompt} ]
+        role = "user"
+        for txt in raw_messages:
+            llm_msgs.append({"role": role, "content": txt})
+            role = "assistant" if role == "user" else "user"
+        summary_text = await chat_with_provider(llm_msgs, provider=provider, model=model, is_summary_request=True)
+        return {"success": True, "provider": provider, "model": model, "summary": summary_text, "chars": len(summary_text or '')}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # ---- Personalities (presets) management ----
 class PersonalityIn(BaseModel):

@@ -22,6 +22,72 @@
 
 ---
 
+## Configuration & Backup (Seed vs Runtime)
+
+English:
+The project now distinguishes between versioned seed configuration (immutable defaults) and runtime mutable data.
+
+Seed directory (versioned): backend/config/seed
+  - system_prompts.json (default multi system prompts source)
+  - summary_prompt.md (initial summary prompt source; migrated into runtime summary_prompts.json)
+  - personalities.json (initial personalities set)
+
+Runtime directories (persistent volume):
+  - /app/storage/prompts (system_prompts.json, summary_prompts.json, summary_prompt.md migrated)
+  - /app/storage/summary (legacy summary prompt location; summary_prompts.json produced here)
+  - /app/storage/personalities (personalities.json)
+
+Lowercase naming is enforced. Legacy uppercase files (SYSTEM_PROMPTS.json, SUMMARY_PROMPT.md, PERSONALITIES.json) and the old /app/data mount are only read as fallback. They will never be updated and can be removed after migration.
+
+Backup endpoint (admin auth required):
+  GET /api/admin/config/backup?include_seed=true&include_avatars=false&dry_run=false
+    Returns a ZIP containing manifest.json + selected files with per-file sha256.
+
+Restore endpoint:
+  POST /api/admin/config/restore (multipart file=backup.zip, allow_seed=false, dry_run=true)
+    Validates structure & hashes; with dry_run=true nothing is written.
+    Set allow_seed=true to also restore seed files (normally you restore only runtime files).
+
+Integrity status endpoint:
+  GET /api/admin/config/status -> per-file hashes + aggregate hash for monitoring drift.
+
+Italiano:
+Il progetto distingue ora tra configurazione seed versionata (default immutabili) e dati runtime mutabili.
+
+Seed (versionato): backend/config/seed
+  - system_prompts.json
+  - summary_prompt.md (sorgente iniziale, poi migrata in summary_prompts.json runtime)
+  - personalities.json
+
+Runtime:
+  - /app/storage/prompts (system_prompts.json, summary_prompts.json, summary_prompt.md migrata)
+  - /app/storage/summary
+  - /app/storage/personalities
+
+Nomi lowercase obbligatori. File legacy maiuscoli e vecchio mount /app/data sono solo fallback in lettura e possono essere eliminati dopo la migrazione.
+
+Backup:
+  GET /api/admin/config/backup?include_seed=true&dry_run=false
+
+Ripristino:
+  POST /api/admin/config/restore (allow_seed=false, dry_run=true per simulazione)
+
+Stato/Integrità:
+  GET /api/admin/config/status (hash per file + hash aggregato) utile per monitoraggio o CI.
+
+---
+
+### Config Test Scripts (Optional)
+
+Esecuzione rapida script di verifica (da directory `backend`):
+
+```
+python -m app.scripts.test_config_status http://localhost:8000 <ADMIN_TOKEN>
+python -m app.scripts.test_config_backup_restore http://localhost:8000 <ADMIN_TOKEN>
+```
+
+Variabili alternative: impostare `ADMIN_BEARER` e omettere il token negli argomenti.
+
 ## 🚀 Features
 
 An advanced AI chatbot with comprehensive RAG (Retrieval-Augmented Generation) system, user management, and multi-provider AI support. Features a complete admin panel for content management and user administration.

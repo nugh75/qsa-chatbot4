@@ -207,7 +207,7 @@ const AppContent: React.FC = () => {
   const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
   const [error,setError] = useState<string|undefined>()
   const [loading,setLoading] = useState(false)
-  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'|'piper'>('edge')
+  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'|'piper'|'coqui'>('edge')
   const [ttsVoice, setTtsVoice] = useState<string | undefined>(undefined)
   const [playingMessageIndex, setPlayingMessageIndex] = useState<number | null>(null)
   const [isRecording, setIsRecording] = useState(false)
@@ -593,7 +593,8 @@ const AppContent: React.FC = () => {
     'edge': 'Edge',
     'elevenlabs': 'ElevenLabs',
     'openai': 'OpenAI',
-    'piper': 'Piper'
+    'piper': 'Piper',
+    'coqui': 'Coqui'
   }
 
   const asrLabels: Record<string, string> = {

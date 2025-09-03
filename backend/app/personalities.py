@@ -7,13 +7,32 @@ import shutil
 import logging
 from typing import Dict, List, Optional
 
-SEED_PERSONALITIES_DIR = Path('/app/data')  # seed read-only
-# Runtime storage: puntiamo alla directory montata persistente /app/storage
-# Evita il precedente mismatch (/app/backend/storage) utilizzando il path assoluto persistente.
+"""Gestione delle personalities (seed vs runtime).
+
+Standard 2025-09:
+    Seed versionati (lowercase): backend/config/seed/personalities.json
+    Runtime persistente: /app/storage/personalities/personalities.json
+
+Compatibilità legacy solo lettura: vecchi file PERSONALITIES.json (nuovo seed pre-migrazione o vecchio mount /app/data).
+I file legacy non vengono più aggiornati e possono essere rimossi quando sicuro.
+"""
+
+SEED_BASE = Path(__file__).resolve().parent.parent / 'config' / 'seed'
+LEGACY_SEED_BASE = Path('/app/data')
+# Runtime storage base (rimane invariato)
 RUNTIME_BASE = Path('/app/storage')
 RUNTIME_PERSONALITIES_DIR = RUNTIME_BASE / 'personalities'
-PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "PERSONALITIES.json"
-TOPIC_DESCRIPTIONS_FILE = Path('/app/data/SYSTEM_PROMPTS.json')  # riusa file esistente per descrizioni se presenti
+# Replace old constant usage
+SEED_PERSONALITIES_DIR = SEED_BASE
+# Lowercase runtime file
+PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "personalities.json"
+TOPIC_DESCRIPTIONS_FILE = SEED_BASE / 'system_prompts.json'
+# Legacy fallback list
+LEGACY_PERSONALITIES_CANDIDATES = [
+    SEED_BASE / 'PERSONALITIES.json',  # legacy uppercase new seed loc
+    LEGACY_SEED_BASE / 'PERSONALITIES.json',  # legacy old path uppercase
+    LEGACY_SEED_BASE / 'personalities.json'  # legacy lowercase old path
+]
 
 _cached_topic_descriptions = None
 
@@ -40,13 +59,15 @@ def load_topic_descriptions() -> dict:
 
 def _bootstrap_personalities():
     RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
-    seed_file = SEED_PERSONALITIES_DIR / 'PERSONALITIES.json'
-    if not PERSONALITIES_FILE.exists() and seed_file.exists():
-        try:
-            shutil.copy2(seed_file, PERSONALITIES_FILE)
-            logging.info('[personalities] Copiato seed PERSONALITIES.json nel runtime')
-        except Exception as e:
-            logging.warning(f'[personalities] Impossibile copiare seed PERSONALITIES.json: {e}')
+    if not PERSONALITIES_FILE.exists():
+        for cand in LEGACY_PERSONALITIES_CANDIDATES:
+            if cand.exists():
+                try:
+                    shutil.copy2(cand, PERSONALITIES_FILE)
+                    logging.info('[personalities] Copiato seed personalities.json nel runtime (source=%s)', cand)
+                    break
+                except Exception as e:
+                    logging.warning('[personalities] Impossibile copiare seed da %s: %s', cand, e)
 
 
 def _slugify(name: str) -> str:
@@ -64,7 +85,7 @@ def load_personalities() -> Dict:
             if isinstance(data, dict) and "personalities" in data:
                 return data
     except Exception:
-        logging.warning('[personalities] Errore caricamento PERSONALITIES.json', exc_info=True)
+        logging.warning('[personalities] Errore caricamento personalities.json', exc_info=True)
     return {"default_id": None, "personalities": []}
 
 

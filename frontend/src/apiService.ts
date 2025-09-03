@@ -848,6 +848,41 @@ class ApiService {
     }
     return resp.blob();
   }
+
+  // Config backup & integrity
+  async getConfigStatus(): Promise<ApiResponse<{ files: {id:string; relative:string; filename:string; kind:string; required:boolean; sha256?:string; exists:boolean}[]; aggregate_sha256: string }>> {
+    return this.makeRequest('/admin/config/status');
+  }
+  async downloadConfigBackup(params: { include_seed?: boolean; include_avatars?: boolean; dry_run?: boolean } = {}): Promise<Response> {
+    const q = new URLSearchParams();
+    if (params.include_seed) q.set('include_seed','true');
+    if (params.include_avatars) q.set('include_avatars','true');
+    if (params.dry_run) q.set('dry_run','true');
+    const url = `/admin/config/backup${q.toString()?`?${q.toString()}`:''}`;
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}${url}`, { headers });
+  }
+  async restoreConfigBackup(file: File, opts: { allow_seed?: boolean; dry_run?: boolean } = {}): Promise<ApiResponse<any>> {
+    const q = new URLSearchParams();
+    if (opts.allow_seed) q.set('allow_seed','true');
+    if (opts.dry_run !== false) q.set('dry_run','true'); // default dry_run true
+    const url = `/admin/config/restore${q.toString()?`?${q.toString()}`:''}`;
+    const form = new FormData();
+    form.append('file', file, file.name || 'backup.zip');
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    try {
+      const res = await fetch(`${API_BASE_URL}${url}`, { method: 'POST', headers, body: form });
+      const data = await res.json().catch(()=>({}));
+      if (res.ok) return { success: true, data };
+      return { success: false, error: (data.detail || data.error || 'Restore failed'), data };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
 }
 
 // Istanza singola del servizio API

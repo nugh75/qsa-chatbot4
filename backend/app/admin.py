@@ -54,9 +54,67 @@ import logging as _logging
 from fastapi.responses import FileResponse
 import glob
 import json as _json
+from fastapi import Response
+import hashlib
+import httpx
+import asyncio, uuid, time
+import threading
+
+# ---- TTS Download Task Persistence Helpers ----
+# We add lightweight JSON persistence so that async download tasks survive process restarts.
+# File format: JSON Lines, each line a task dict. On save we rewrite the full file atomically.
+_TTS_TASKS_LOCK = threading.RLock()
+_TTS_TASKS_FILE = Path(__file__).parent.parent / 'storage' / 'tts_download_tasks.jsonl'
+
+def _load_tts_tasks_from_disk() -> dict[str, dict]:
+    tasks: dict[str, dict] = {}
+    try:
+        if _TTS_TASKS_FILE.exists():
+            with open(_TTS_TASKS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        tid = obj.get('id') or obj.get('task_id')
+                        if isinstance(tid, str):
+                            tasks[tid] = obj
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    # Mark any running/pending tasks as 'stale' since we lost the in-flight coroutine on restart.
+    now = time.time()
+    for t in tasks.values():
+        if t.get('status') in ('running','pending'):
+            t['status'] = 'stale'
+            t.setdefault('ended_at', now)
+            t.setdefault('error', 'process_restarted')
+    return tasks
+
+def _save_tts_tasks_to_disk(tasks: dict[str, dict]):
+    try:
+        _TTS_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _TTS_TASKS_FILE.with_suffix('.tmp')
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            for t in tasks.values():
+                try:
+                    f.write(json.dumps(t, ensure_ascii=False) + '\n')
+                except Exception:
+                    continue
+        os.replace(tmp_path, _TTS_TASKS_FILE)
+    except Exception:
+        pass
 
 # Percorsi guida amministratore (root + storage copia)
-ADMIN_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent.parent / 'ADMIN_GUIDE.md'
+# Primary admin guide path moved into config directory (persistent & versioned)
+ADMIN_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / 'config' / 'ADMIN_GUIDE.md'
+# Legacy fallback locations (checked only if primary missing)
+_ADMIN_GUIDE_FALLBACKS = [
+    Path(__file__).resolve().parent.parent / 'ADMIN_GUIDE.md',                # previous backend copy
+    Path(__file__).resolve().parent.parent.parent / 'ADMIN_GUIDE.md'          # repository root
+]
 ADMIN_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / 'storage' / 'admin' / 'ADMIN_GUIDE.md'
 
 # Configurazione database - usa il percorso relativo alla directory backend
@@ -172,10 +230,22 @@ DEFAULT_CONFIG = {
             "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
             "selected_voice": "nova"
         },
+        "coqui": {
+            "enabled": False,
+            "models": [
+                "tts_models/it/mai_female/vits",
+                "tts_models/it/mai_male/vits"
+            ],
+            "voices": [
+                "tts_models/it/mai_female/vits",
+                "tts_models/it/mai_male/vits"
+            ],
+            "selected_voice": "tts_models/it/mai_female/vits"
+        },
         "piper": {
             "enabled": True,
-            "voices": ["it_IT-riccardo-x_low", "it_IT-paola-medium"],
-            "selected_voice": "it_IT-riccardo-x_low"
+            "voices": ["it_IT-riccardo-low", "it_IT-paola-medium"],
+            "selected_voice": "it_IT-riccardo-low"
         }
     },
     "default_provider": "local",
@@ -465,6 +535,286 @@ def get_summary_model():
         "ollama": "llama3.1:8b"
     }
     return defaults.get(provider, "anthropic/claude-3.5-sonnet")
+
+# ---- TTS providers / voices management ----
+class TTSVoicesRequest(BaseModel):
+    provider: str
+    refresh: bool = False
+
+@router.get("/admin/tts/voices")
+async def list_tts_voices(provider: str, refresh: bool = False):
+    """Ritorna elenco voci per un provider TTS.
+    Provider supportati: edge (static), elevenlabs (API), openai (static), piper (installed + static config).
+    Se refresh True forza refetch remoto dove applicabile.
+    """
+    provider = provider.lower()
+    cfg = load_config()
+    out = []
+    note = None
+    try:
+        if provider == 'edge':
+            out = cfg.get('tts_providers', {}).get('edge', {}).get('voices', [])
+        elif provider == 'openai':
+            out = cfg.get('tts_providers', {}).get('openai', {}).get('voices', [])
+        elif provider == 'elevenlabs':
+            api_key = os.getenv('ELEVENLABS_API_KEY')
+            if not api_key:
+                note = 'missing_api_key'
+                out = cfg.get('tts_providers', {}).get('elevenlabs', {}).get('voices', [])
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        r = await client.get('https://api.elevenlabs.io/v1/voices', headers={'xi-api-key': api_key})
+                        if r.status_code == 200:
+                            data = r.json()
+                            out = [v['name'] for v in data.get('voices', []) if v.get('name')]
+                        else:
+                            note = f"remote_status_{r.status_code}"
+                except Exception as e:
+                    note = f"remote_error:{e}"  # fallback static
+                    if not out:
+                        out = cfg.get('tts_providers', {}).get('elevenlabs', {}).get('voices', [])
+        elif provider == 'coqui':
+            block = cfg.get('tts_providers', {}).get('coqui', {})
+            out = block.get('voices') or block.get('models') or []
+        elif provider == 'piper':
+            # Installed voices = file .onnx nel models/piper + static config voices
+            models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'piper')
+            installed = []
+            try:
+                if os.path.isdir(models_dir):
+                    for fn in os.listdir(models_dir):
+                        if fn.endswith('.onnx'):
+                            installed.append(fn[:-5])
+            except Exception:
+                pass
+            static = cfg.get('tts_providers', {}).get('piper', {}).get('voices', [])
+            # Unione mantenendo ordine static e aggiungendo installed nuove
+            seen = set()
+            merged = []
+            for v in static + installed:
+                if v not in seen:
+                    seen.add(v); merged.append(v)
+            out = merged
+        else:
+            return {"success": False, "error": "provider_not_supported"}
+        return {"success": True, "provider": provider, "voices": out, "note": note}
+    except Exception as e:
+        return {"success": False, "error": str(e), "provider": provider}
+
+class PiperDownloadRequest(BaseModel):
+    voice: str
+
+@router.post("/admin/tts/piper/download")
+async def download_piper_voice(req: PiperDownloadRequest):
+    """Scarica (o conferma già presente) un modello Piper specifico."""
+    try:
+        from .tts import ensure_piper_voice_downloaded, resolve_piper_voice_id
+        voice_id = resolve_piper_voice_id(req.voice)
+        model_path, cfg_path = await ensure_piper_voice_downloaded(voice_id)
+        ok = os.path.exists(model_path) and os.path.exists(cfg_path)
+        return {"success": ok, "voice": voice_id, "model_path": model_path, "config_path": cfg_path}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/admin/tts/piper/installed")
+async def list_piper_installed():
+    try:
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'piper')
+        voices = []
+        if os.path.isdir(models_dir):
+            for fn in os.listdir(models_dir):
+                if fn.endswith('.onnx'):
+                    voices.append(fn[:-5])
+        voices.sort()
+        return {"success": True, "voices": voices}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ---- Generic async TTS model downloads (Piper + Coqui) ----
+class TTSDownloadStart(BaseModel):
+    provider: str  # piper | coqui
+    voice: str
+
+_TTS_DOWNLOAD_TASKS: dict[str, dict] = _load_tts_tasks_from_disk()
+
+@router.post("/admin/tts/download")
+async def start_tts_download(req: TTSDownloadStart):
+    provider = req.provider.lower()
+    voice = req.voice
+    task_id = uuid.uuid4().hex
+    started_at = time.time()
+    with _TTS_TASKS_LOCK:
+        _TTS_DOWNLOAD_TASKS[task_id] = {
+            "id": task_id,
+            "provider": provider,
+            "voice": voice,
+            "status": "pending",
+            "error": None,
+            "bytes": None,
+            "total_bytes": None,
+            "progress": 0.0,
+            "started_at": started_at,
+            "ended_at": None,
+        }
+        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    async def _run():
+        try:
+            with _TTS_TASKS_LOCK:
+                task = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if task:
+                    task["status"] = "running"
+                    _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+            if provider == 'piper':
+                from .tts import ensure_piper_voice_downloaded, resolve_piper_voice_id
+                v = resolve_piper_voice_id(voice)
+                bytes_holder = {"last": 0}
+                def _prog(b, total):
+                    with _TTS_TASKS_LOCK:
+                        t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                        if not t:
+                            return
+                        t['bytes'] = b
+                        if total and total > 0:
+                            t['total_bytes'] = total
+                            t['progress'] = min(1.0, b / total)
+                        else:
+                            # fallback unknown total (treat as indeterminate)
+                            if b and (t.get('progress',0) < 0.95):
+                                t['progress'] = 0.5  # mid as placeholder
+                        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+                m, c = await ensure_piper_voice_downloaded(v, progress_cb=_prog)
+                ok = os.path.exists(m) and os.path.exists(c)
+                if not ok:
+                    raise RuntimeError("download_incomplete")
+                sz = (os.path.getsize(m) if os.path.exists(m) else 0) + (os.path.getsize(c) if os.path.exists(c) else 0)
+                with _TTS_TASKS_LOCK:
+                    t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                    if t:
+                        t["bytes"] = sz
+                        t["total_bytes"] = sz or t.get('total_bytes')
+                        t['progress'] = 1.0 if sz else t.get('progress', 0.0)
+            elif provider == 'coqui':
+                # Caricamento modello Coqui (download implicito)
+                from TTS.api import TTS as _TTS
+                loop = asyncio.get_running_loop()
+                def _load():
+                    _ = _TTS(model_name=voice)
+                await loop.run_in_executor(None, _load)
+            else:
+                raise RuntimeError("provider_not_supported")
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["status"] = "done"
+                    t["progress"] = 1.0
+        except Exception as e:
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["status"] = "error"
+                    t["error"] = str(e)
+        finally:
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["ended_at"] = time.time()
+                _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    asyncio.create_task(_run())
+    return {"success": True, "task_id": task_id}
+
+@router.get("/admin/tts/download/{task_id}")
+async def get_tts_download_status(task_id: str):
+    with _TTS_TASKS_LOCK:
+        task = _TTS_DOWNLOAD_TASKS.get(task_id)
+        if not task:
+            return {"success": False, "error": "task_not_found"}
+        return {"success": True, "task": task}
+
+@router.get("/admin/tts/download")
+async def list_tts_downloads(limit: int = 50):
+    with _TTS_TASKS_LOCK:
+        items = list(_TTS_DOWNLOAD_TASKS.values())
+        items.sort(key=lambda x: x.get('started_at') or 0, reverse=True)
+        return {"success": True, "tasks": items[:limit], "total": len(items)}
+
+@router.delete("/admin/tts/download/{task_id}")
+async def delete_tts_download_task(task_id: str):
+    """Delete a finished (done/error/stale) task. Running/pending tasks are protected."""
+    with _TTS_TASKS_LOCK:
+        task = _TTS_DOWNLOAD_TASKS.get(task_id)
+        if not task:
+            return {"success": False, "error": "task_not_found"}
+        if task.get('status') in ('running','pending'):
+            return {"success": False, "error": "task_in_progress"}
+        _TTS_DOWNLOAD_TASKS.pop(task_id, None)
+        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+        return {"success": True, "deleted": task_id}
+
+class TTSDownloadCleanupRequest(BaseModel):
+    older_than_seconds: int | None = None  # remove tasks ended more than X seconds ago
+    statuses: list[str] | None = None      # default: ['done','error','stale']
+    limit: int | None = None               # max tasks to remove
+
+@router.post("/admin/tts/download/cleanup")
+async def cleanup_tts_download_tasks(req: TTSDownloadCleanupRequest):
+    now = time.time()
+    removed = []
+    statuses = req.statuses or ['done','error','stale']
+    with _TTS_TASKS_LOCK:
+        # Build list of candidates
+        items = list(_TTS_DOWNLOAD_TASKS.values())
+        # Sort oldest first by ended_at
+        items.sort(key=lambda x: x.get('ended_at') or x.get('started_at') or 0)
+        for t in items:
+            if t.get('status') not in statuses:
+                continue
+            ended = t.get('ended_at') or 0
+            if req.older_than_seconds is not None:
+                if (now - ended) < req.older_than_seconds:
+                    continue
+            removed.append(t['id'])
+            _TTS_DOWNLOAD_TASKS.pop(t['id'], None)
+            if req.limit and len(removed) >= req.limit:
+                break
+        if removed:
+            _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    return {"success": True, "removed": removed, "count": len(removed)}
+
+class TTSPreloadItem(BaseModel):
+    provider: str
+    voice: str
+
+class TTSPreloadRequest(BaseModel):
+    items: list[TTSPreloadItem]
+
+@router.post("/admin/tts/preload")
+async def preload_tts_models(req: TTSPreloadRequest):
+    """Start multiple download tasks (bulk). Returns list of {voice,provider,task_id}."""
+    results = []
+    for item in req.items:
+        # Reuse existing endpoint logic by calling start_tts_download
+        try:
+            r = await start_tts_download(TTSDownloadStart(provider=item.provider, voice=item.voice))
+            if r.get('success'):
+                results.append({
+                    'provider': item.provider,
+                    'voice': item.voice,
+                    'task_id': r.get('task_id')
+                })
+            else:
+                results.append({
+                    'provider': item.provider,
+                    'voice': item.voice,
+                    'error': r.get('error') or 'unknown'
+                })
+        except Exception as e:
+            results.append({
+                'provider': item.provider,
+                'voice': item.voice,
+                'error': str(e)
+            })
+    return {"success": True, "items": results}
 
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
@@ -796,7 +1146,10 @@ async def reset_summary_prompt():
 
 @router.post("/admin/summary-prompt/reset-seed")
 async def reset_summary_prompt_seed():
-    """Forza il reset copiando il file seed /app/data/SUMMARY_PROMPT.md (se presente)."""
+    """Forza il reset copiando il seed (backend/config/seed/summary_prompt.md) se presente.
+
+    Mantiene solo per compatibilità un fallback di lettura ai vecchi percorsi (/app/data/SUMMARY_PROMPT.md o lowercase) se il nuovo seed manca.
+    """
     try:
         text = reset_summary_prompt_from_seed()
         return {"success": True, "prompt": text, "seed": True}
@@ -1730,6 +2083,100 @@ async def download_interactions_log(date: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore download interactions log: {str(e)}")
 
+    # (fine funzione download_interactions_log)
+
+# ---- Config backup & restore ----
+@router.get('/admin/config/backup')
+async def backup_config(include_seed: bool = False, include_avatars: bool = False, include_regex_guide: bool = False, dry_run: bool = False):
+    """Esporta le configurazioni in un archivio ZIP.
+
+    Parametri:
+      include_seed: include anche i file seed (read-only) – di solito non necessario.
+      include_avatars: include avatar (può aumentare dimensione).
+      include_regex_guide: include guida regex pipeline copia runtime se presente.
+      dry_run: se True restituisce solo manifest simulato (no zip) con elenco file selezionati.
+    """
+    try:
+        from . import config_backup
+        if dry_run:
+            # Simula selezione
+            data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide)
+            import zipfile, io, json
+            buf = io.BytesIO(data)
+            with zipfile.ZipFile(buf, 'r') as zf:
+                manifest = json.loads(zf.read('manifest.json').decode('utf-8')) if 'manifest.json' in zf.namelist() else {}
+            return {"success": True, "dry_run": True, "manifest": manifest}
+        bin_data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide)
+        return Response(content=bin_data, media_type='application/zip', headers={
+            'Content-Disposition': 'attachment; filename="config-backup.zip"'
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore backup: {e}")
+
+class RestoreOptions(BaseModel):
+    allow_seed: bool = False
+    dry_run: bool = False
+
+@router.post('/admin/config/restore')
+async def restore_config(file: UploadFile = File(...), allow_seed: bool = False, dry_run: bool = False):
+    """Ripristina configurazioni da un archivio ZIP generato dal backup.
+
+    Parametri:
+      allow_seed: se True permette di sovrascrivere file seed.
+      dry_run: valida senza scrivere.
+    """
+    try:
+        from . import config_backup
+        data = await file.read()
+        result = config_backup.restore_from_zip(data, dry_run=dry_run, allow_seed=allow_seed)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore restore: {e}")
+
+@router.get('/admin/config/status')
+async def config_status(include_seed: bool = False, include_optional: bool = True):
+    """Ritorna hash SHA256 dei file di configurazione conosciuti + hash aggregato.
+
+    include_seed: se True include i seed (senza forzare la loro esistenza).
+    include_optional: se True include file opzionali se presenti (es. mcp_config, summary_prompts.json, regex guide).
+    """
+    try:
+        from . import config_backup
+        file_defs = config_backup._file_list()  # type: ignore (internal use)
+        entries = []
+        hasher = hashlib.sha256()
+        for f in file_defs:
+            if f.kind == 'seed' and not include_seed:
+                continue
+            if not include_optional and (not f.required):
+                continue
+            exists = f.path.exists()
+            info = {
+                'id': f.id,
+                'path': str(f.path),
+                'kind': f.kind,
+                'required': f.required,
+                'exists': exists,
+                'filename': f.path.name,
+                'relative': f.path.name,  # legacy frontend field
+            }
+            if exists:
+                try:
+                    data = f.path.read_bytes()
+                    h = hashlib.sha256(data).hexdigest()
+                    info['sha256'] = h
+                    info['bytes'] = len(data)
+                    hasher.update(h.encode('utf-8'))
+                except Exception as e:
+                    info['error'] = str(e)
+            entries.append(info)
+        aggregate = hasher.hexdigest()
+        return {"success": True, "aggregate_sha256": aggregate, "files": entries}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore status config: {e}")
+
 
 # ---- Avatar upload/list ----
 @router.post("/admin/avatars/upload")
@@ -1917,13 +2364,22 @@ async def get_admin_general_guide():
     """Restituisce la guida amministratore generale (auto-sync root→storage)."""
     try:
         try:
+            # Determine effective source: primary or first existing fallback
+            source_path = None
             if ADMIN_GUIDE_ROOT_PATH.exists():
-                root_mtime = ADMIN_GUIDE_ROOT_PATH.stat().st_mtime
+                source_path = ADMIN_GUIDE_ROOT_PATH
+            else:
+                for fp in _ADMIN_GUIDE_FALLBACKS:
+                    if fp.exists():
+                        source_path = fp
+                        break
+            if source_path:
+                root_mtime = source_path.stat().st_mtime
                 storage_exists = ADMIN_GUIDE_STORAGE_PATH.exists()
                 storage_mtime = ADMIN_GUIDE_STORAGE_PATH.stat().st_mtime if storage_exists else 0
                 if (not storage_exists) or root_mtime > storage_mtime:
                     ADMIN_GUIDE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    ADMIN_GUIDE_STORAGE_PATH.write_text(ADMIN_GUIDE_ROOT_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+                    ADMIN_GUIDE_STORAGE_PATH.write_text(source_path.read_text(encoding='utf-8'), encoding='utf-8')
         except Exception as sync_err:
             logging.getLogger(__name__).warning(f"Sync guida admin fallita: {sync_err}")
         path = ADMIN_GUIDE_STORAGE_PATH if ADMIN_GUIDE_STORAGE_PATH.exists() else (ADMIN_GUIDE_ROOT_PATH if ADMIN_GUIDE_ROOT_PATH.exists() else None)
@@ -2402,7 +2858,7 @@ async def get_available_voices(tts_provider: str):
             # Voci Piper per italiano
             return {
                 "voices": [
-                    "it_IT-riccardo-x_low",
+                    "it_IT-riccardo-low",
                     "it_IT-paola-medium"
                 ]
             }
@@ -2435,6 +2891,20 @@ async def get_available_voices(tts_provider: str):
             return {
                 "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
             }
+        elif tts_provider == "coqui":
+            # Coqui TTS: recupera dinamicamente le voci dalla configurazione admin se presenti,
+            # altrimenti fornisce un fallback statico.
+            try:
+                cfg = load_config()
+                voices = cfg.get("tts_providers", {}).get("coqui", {}).get("voices") or []
+            except Exception:
+                voices = []
+            if not voices:
+                voices = [
+                    "tts_models/it/mai_female/vits",
+                    "tts_models/multilingual/multi-dataset/your_tts"
+                ]
+            return {"voices": voices}
         else:
             return {"voices": []}
             

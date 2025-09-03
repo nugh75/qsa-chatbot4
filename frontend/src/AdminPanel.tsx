@@ -32,6 +32,7 @@ import type { AdminConfig, FeedbackStats } from './types/admin'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkSlugLocal from './utils/remarkSlugLocal'
+import BackupPanel from './components/BackupPanel'
 
 const AdminPanel: React.FC = () => {
   // Stato principale
@@ -74,6 +75,7 @@ const AdminPanel: React.FC = () => {
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
     { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
+    { id: 'backup', label: 'Backup', panels: ['backup_panel'] },
   ] as const
 
   const [selectedCategory, setSelectedCategory] = useState<string>('conversation')
@@ -95,6 +97,7 @@ const AdminPanel: React.FC = () => {
   welcome_guides: false,
   footer_settings: true,
   mcp_servers: true,
+  backup_panel: true,
   })
 
   // Token test
@@ -135,10 +138,20 @@ const AdminPanel: React.FC = () => {
 
   const loadUsage = async () => {
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/feedback/stats`)
+      // Endpoint corretto è /api/feedback/stats (non /api/admin/feedback/stats)
+      const res = await authFetch(`${BACKEND}/api/feedback/stats`)
       if (res.ok) {
         const data: FeedbackStats = await res.json()
         setFeedbackStats(data)
+      } else if (res.status === 404) {
+        // fallback retrocompatibilità (vecchie versioni?)
+        try {
+          const res2 = await authFetch(`${BACKEND}/api/admin/feedback/stats`)
+          if (res2.ok) {
+            const data: FeedbackStats = await res2.json()
+            setFeedbackStats(data)
+          }
+        } catch {/* ignore */}
       }
     } catch {
       /* opzionale: silenzioso */
@@ -747,6 +760,19 @@ const AdminPanel: React.FC = () => {
       </AccordionDetails>
     </Accordion>
   )}
+  {panelVisible('backup_panel') && (
+        <Accordion expanded={expandedPanels.backup_panel} onChange={handlePanelExpansion('backup_panel')} id="panel-backup" sx={{ mt:2 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+            <Stack direction="row" spacing={1} alignItems="center">
+              <StorageIcon fontSize="small" />
+              <Typography variant="subtitle1">Backup & Restore Config</Typography>
+            </Stack>
+          </AccordionSummary>
+          <AccordionDetails>
+            <BackupPanel />
+          </AccordionDetails>
+        </Accordion>
+      )}
   </Container>
     <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
       <DialogTitle>Guida Amministratore</DialogTitle>

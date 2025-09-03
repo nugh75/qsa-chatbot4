@@ -186,7 +186,16 @@ async def get_public_config():
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         enabled_providers = [p for p, s in config.get('ai_providers', {}).items() if s.get('enabled')]
+        # TTS abilitati esplicitamente
         enabled_tts_providers = [p for p, s in config.get('tts_providers', {}).items() if s.get('enabled')]
+        # Auto-abilitazione se presente API key ambiente anche se non ancora marcato enabled nel file
+        tts_env_map = {
+            'elevenlabs': 'ELEVENLABS_API_KEY',
+            'openai': 'OPENAI_API_KEY'
+        }
+        for prov, env_var in tts_env_map.items():
+            if prov not in enabled_tts_providers and os.getenv(env_var):
+                enabled_tts_providers.append(prov)
         enabled_asr_providers = [p for p, s in config.get('asr_providers', {}).items() if s.get('enabled')]
         ui_cfg = config.get('ui_settings', {}) or {}
         # Normalize visibility flags defaults True

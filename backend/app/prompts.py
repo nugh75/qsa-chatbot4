@@ -5,31 +5,43 @@ from typing import Optional
 import shutil
 import logging
 
-"""Gestione del prompt di sistema con distinzione tra seed (read-only) e runtime (scrivibile).
+"""Gestione dei system/summary prompts.
 
-Seed:   /app/data (montato read-only da docker-compose)
-Runtime:/app/storage/prompts (volume scrivibile persistente)
+Standard attuale (2025-09):
+    Seed versionati: backend/config/seed (lowercase)
+    Runtime persistente: /app/storage/prompts e /app/storage/summary
 
-Questo permette di aggiornare i prompt senza rebuild e mantenere un file seed
-versionato come riferimento iniziale.
+File principali:
+    - system_prompts.json (runtime + seed)
+    - summary_prompt.md (seed sorgente iniziale) -> migrazione in summary_prompts.json (runtime multi)
+    - summary_prompts.json (runtime multi-varianti)
+
+Compatibilità legacy solo in lettura (fallback): vecchi nomi maiuscoli o mount /app/data
+    (SYSTEM_PROMPTS.json, SUMMARY_PROMPT.md, system-prompt.md, CLAUDE.md).
+I file legacy non vengono più aggiornati; possono essere rimossi dopo verifica.
 """
 
-SEED_DIR = Path('/app/data')  # percorso seed esplicito nel container
+SEED_DIR = Path(__file__).resolve().parent.parent / 'config' / 'seed'
+LEGACY_DATA_DIR = Path('/app/data')  # solo fallback lettura legacy (non usato per nuovi seed)
 RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "prompts"
 SUMMARY_RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "summary"
 
 # Il DATA_DIR usato dal resto delle funzioni punta al runtime.
 DATA_DIR = RUNTIME_DIR
 
-SYSTEM_PROMPTS_JSON = DATA_DIR / "SYSTEM_PROMPTS.json"
+# Aggiorna percorso runtime system prompts (lowercase)
+SYSTEM_PROMPTS_JSON = DATA_DIR / "system_prompts.json"
 SUMMARY_PROMPTS_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPTS.json"
-LEGACY_SUMMARY_MD = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"
-LEGACY_SUMMARY_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.json"
+LEGACY_SUMMARY_MD = SUMMARY_RUNTIME_DIR / "summary_prompt.md"  # lowercase nuovo
+LEGACY_SUMMARY_JSON = SUMMARY_RUNTIME_DIR / "summary_prompt.json"
+LEGACY_OLD_UPPER_MD = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"  # legacy
+LEGACY_OLD_UPPER_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.json"  # legacy
 
 # File legacy e nuovo nome per il prompt singolo di default (seed)
 LEGACY_SINGLE_PROMPT_CANDIDATES = [
-    "system-prompt.md",  # nuovo nome
-    "CLAUDE.md",         # legacy
+    "system-prompt.md",
+    "claude.md",
+    "CLAUDE.md",
 ]
 
 DEFAULT_SYSTEM_TEXT = (
@@ -52,14 +64,19 @@ def _bootstrap_runtime():
     """
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copia SYSTEM_PROMPTS.json se mancante nel runtime ma presente nel seed
-    seed_json = SEED_DIR / "SYSTEM_PROMPTS.json"
-    if not SYSTEM_PROMPTS_JSON.exists() and seed_json.exists():
+    seed_candidates = [
+        SEED_DIR / 'system_prompts.json',
+        SEED_DIR / 'SYSTEM_PROMPTS.json',
+        LEGACY_DATA_DIR / 'system_prompts.json',
+        LEGACY_DATA_DIR / 'SYSTEM_PROMPTS.json'
+    ]
+    seed_json = next((p for p in seed_candidates if p.exists()), None)
+    if seed_json and not SYSTEM_PROMPTS_JSON.exists():
         try:
             shutil.copy2(seed_json, SYSTEM_PROMPTS_JSON)
-            logging.info("[prompts] Copiato seed SYSTEM_PROMPTS.json nel runtime")
+            logging.info("[prompts] Copiato seed system_prompts.json nel runtime (source=%s)", seed_json)
         except Exception as e:
-            logging.warning(f"[prompts] Impossibile copiare SYSTEM_PROMPTS.json seed: {e}")
+            logging.warning(f"[prompts] Impossibile copiare system_prompts.json seed: {e}")
 
     # Copia seed summary solo se nessuna struttura multi presente (gestito da migrazione successiva)
     # Manteniamo il file seed intatto; la migrazione lo leggerà se necessario.
@@ -84,14 +101,14 @@ def _load_legacy_text() -> str:
                 return candidate_runtime.read_text(encoding="utf-8")
             except Exception:
                 pass
-    # Seed
-    for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
-        candidate_seed = SEED_DIR / name
-        if candidate_seed.exists():
-            try:
-                return candidate_seed.read_text(encoding="utf-8")
-            except Exception:
-                pass
+    for base in (SEED_DIR, LEGACY_DATA_DIR):
+        for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
+            candidate_seed = base / name
+            if candidate_seed.exists():
+                try:
+                    return candidate_seed.read_text(encoding='utf-8')
+                except Exception:
+                    pass
     return DEFAULT_SYSTEM_TEXT
 
 def load_system_prompts() -> dict:
@@ -349,13 +366,19 @@ def delete_summary_prompt(prompt_id: str) -> None:
 
 def reset_summary_prompt_from_seed() -> str:
     """Reset basato su seed file, sostituisce (o crea) il prompt 'default' e lo rende attivo."""
-    seed_file = SEED_DIR / 'SUMMARY_PROMPT.md'
+    seed_candidates = [
+        SEED_DIR / 'summary_prompt.md',
+        SEED_DIR / 'SUMMARY_PROMPT.md',
+        LEGACY_DATA_DIR / 'summary_prompt.md',
+        LEGACY_DATA_DIR / 'SUMMARY_PROMPT.md'
+    ]
+    seed_file = next((p for p in seed_candidates if p.exists()), None)
     text = DEFAULT_SUMMARY_TEXT
-    if seed_file.exists():
+    if seed_file and seed_file.exists():
         try:
             text = seed_file.read_text(encoding='utf-8')
         except Exception as e:
-            logging.warning(f"[summary-prompts] Errore lettura seed per reset: {e}")
+            logging.warning(f"[summary-prompts] Errore lettura seed per reset (%s): %s", seed_file, e)
     data = load_summary_prompts()
     # Cerca default
     found = False

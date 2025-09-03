@@ -17,8 +17,75 @@ router = APIRouter()
 
 class TTSRequest(BaseModel):
     text: str
-    provider: str = "edge"  # edge, elevenlabs, openai, piper
+    provider: str = "edge"  # edge, elevenlabs, openai, piper, coqui
     voice: str = "it-IT-ElsaNeural"  # Voce italiana di default per edge-tts
+
+# --- Piper helpers ---
+PIPER_VOICE_ALIASES = {
+    # alias -> canonical voice id (folder name / base filename without extensions)
+    "it_IT-riccardo-x_low": "it_IT-riccardo-low",  # vecchio alias usato in config
+    "it_IT-riccardo-low": "it_IT-riccardo-low",
+    "it_IT-paola-medium": "it_IT-paola-medium",
+}
+
+def resolve_piper_voice_id(voice: str) -> str:
+    return PIPER_VOICE_ALIASES.get(voice, voice)
+
+async def ensure_piper_voice_downloaded(voice: str, progress_cb=None) -> tuple[str, str]:
+    """Ensure Piper voice model + config exist locally.
+
+    If missing, stream download with optional progress callback: progress_cb(bytes_downloaded,total_bytes or None).
+    Returns (model_path, config_path).
+    """
+    voice_id = resolve_piper_voice_id(voice)
+    models_dir = os.path.join(os.path.dirname(__file__), "..", "models", "piper")
+    os.makedirs(models_dir, exist_ok=True)
+    model_path = os.path.join(models_dir, f"{voice_id}.onnx")
+    config_path = os.path.join(models_dir, f"{voice_id}.onnx.json")
+    if os.path.exists(model_path) and os.path.exists(config_path):
+        return model_path, config_path
+    parts = voice_id.split("-")
+    lang = parts[0].split("_")[0] if parts and "_" in parts[0] else "it"
+    locale = parts[0] if parts else "it_IT"
+    base = "-".join(parts[:2]) if len(parts) >= 2 else voice_id
+    hf_base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang}/{locale}/{base}/{voice_id}"
+    gh_base = f"https://github.com/rhasspy/piper/releases/download/v0.0.2/{voice_id}"
+    model_urls = [hf_base + ".onnx", gh_base + ".onnx"]
+    cfg_urls = [hf_base + ".onnx.json", gh_base + ".onnx.json"]
+
+    async def _stream_download(url: str, target: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                r = await client.get(url, follow_redirects=True)
+                if r.status_code != 200:
+                    return False
+                total = int(r.headers.get('Content-Length') or 0) or None
+                # If not streaming (no iter), just write
+                data = r.content
+                # Provide single-shot callback
+                if progress_cb:
+                    try:
+                        progress_cb(len(data), total)
+                    except Exception:
+                        pass
+                with open(target, 'wb') as f:
+                    f.write(data)
+                return True
+        except Exception as e:
+            print(f"[piper] stream download failed {url}: {e}")
+            return False
+
+    # Try model
+    if not os.path.exists(model_path):
+        for u in model_urls:
+            if await _stream_download(u, model_path):
+                break
+    # Try config
+    if not os.path.exists(config_path):
+        for u in cfg_urls:
+            if await _stream_download(u, config_path):
+                break
+    return model_path, config_path
 
 def sanitize_text_for_tts(text: str) -> str:
     """Rimuove marcatori Markdown/HTML e normalizza il testo per la sintesi vocale.
@@ -85,8 +152,17 @@ async def text_to_speech(request: TTSRequest):
         
         # Ottieni la voce predefinita dalla configurazione admin
         tts_config = admin_config.get("tts_providers", {}).get(request.provider, {})
+        # Auto-enable fallback: se la config dice disabled ma esiste API key ambiente, permetti comunque.
         if not tts_config.get("enabled", True):
-            raise HTTPException(status_code=400, detail=f"Provider {request.provider} non abilitato")
+            env_keys_map = {
+                "elevenlabs": "ELEVENLABS_API_KEY",
+                "openai": "OPENAI_API_KEY",
+            }
+            env_var = env_keys_map.get(request.provider)
+            if not (env_var and os.getenv(env_var)):
+                raise HTTPException(status_code=400, detail=f"Provider {request.provider} non abilitato")
+            else:
+                print(f"[tts] Provider {request.provider} abilitato dinamicamente via presenza variabile {env_var}")
         
         # Usa la voce dalla configurazione admin se non specificata
         voice = request.voice
@@ -158,22 +234,43 @@ async def text_to_speech(request: TTSRequest):
             except Exception:
                 pass
             return resp
-        elif request.provider == "piper":
-            resp = await piper_tts_generate(clean_text, voice or "it_IT-riccardo-x_low")
+        elif request.provider == "coqui":
+            resp = await coqui_tts_generate(clean_text, voice)
             duration_ms = int((time.perf_counter() - _start) * 1000)
             try:
                 log_interaction({
                     "event": "tts_generate",
                     "request_id": request_id,
-                    "provider": "piper",
-                    "voice": voice or "it_IT-riccardo-x_low",
+                    "provider": "coqui",
+                    "voice": voice,
                     "text_chars": len(clean_text or ""),
                     "duration_ms": duration_ms,
                 })
             except Exception:
                 pass
             try:
-                log_system(20, f"REQUEST tts done: id={request_id} provider=piper voice={voice or 'it_IT-riccardo-x_low'} dur={duration_ms}ms")
+                log_system(20, f"REQUEST tts done: id={request_id} provider=coqui voice={voice} dur={duration_ms}ms")
+            except Exception:
+                pass
+            return resp
+        elif request.provider == "piper":
+            # Normalizza alias voce
+            voice_norm = resolve_piper_voice_id(voice or "it_IT-riccardo-low")
+            resp = await piper_tts_generate(clean_text, voice_norm)
+            duration_ms = int((time.perf_counter() - _start) * 1000)
+            try:
+                log_interaction({
+                    "event": "tts_generate",
+                    "request_id": request_id,
+                    "provider": "piper",
+                    "voice": voice_norm,
+                    "text_chars": len(clean_text or ""),
+                    "duration_ms": duration_ms,
+                })
+            except Exception:
+                pass
+            try:
+                log_system(20, f"REQUEST tts done: id={request_id} provider=piper voice={voice_norm} dur={duration_ms}ms")
             except Exception:
                 pass
             return resp
@@ -293,7 +390,7 @@ async def openai_tts_generate(text: str, voice: str = "nova", api_key: str = Non
         print(f"OpenAI TTS exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"OpenAI TTS error: {str(e)}")
 
-async def piper_tts_generate(text: str, voice: str = "it_IT-riccardo-x_low"):
+async def piper_tts_generate(text: str, voice: str = "it_IT-riccardo-low"):
     """Genera audio usando Piper TTS (gratuito, locale)"""
     if not PIPER_AVAILABLE:
         raise HTTPException(status_code=400, detail="Piper TTS non installato")
@@ -306,18 +403,10 @@ async def piper_tts_generate(text: str, voice: str = "it_IT-riccardo-x_low"):
         models_dir = os.path.join(os.path.dirname(__file__), "..", "models", "piper")
         os.makedirs(models_dir, exist_ok=True)
         
-        # Path del modello basato sulla voce
-        model_path = os.path.join(models_dir, f"{voice}.onnx")
-        config_path = os.path.join(models_dir, f"{voice}.onnx.json")
-        
-        # Se il modello non esiste, scarichiamolo (semplificato)
-        if not os.path.exists(model_path):
-            # In un'implementazione completa, qui scaricheresti i modelli da GitHub
-            # Per ora assumiamo che siano già presenti o usiamo una voce di fallback
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Modello Piper {voice} non trovato. Installa i modelli Piper separatamente."
-            )
+        # Assicura presenza file (download se mancano)
+        model_path, config_path = await ensure_piper_voice_downloaded(voice)
+        if not (os.path.exists(model_path) and os.path.exists(config_path)):
+            raise HTTPException(status_code=500, detail=f"Download modello Piper fallito per {voice}")
         
         # Carica la voce Piper
         voice_obj = PiperVoice.load(model_path, config_path)
@@ -344,6 +433,31 @@ async def piper_tts_generate(text: str, voice: str = "it_IT-riccardo-x_low"):
         # Fallback: usa Edge TTS se Piper fallisce
         print(f"Piper TTS fallito: {e}, usando Edge TTS come fallback")
         return await edge_tts_generate(text, "it-IT-DiegoNeural")
+
+_COQUI_MODEL_CACHE = {}
+
+async def coqui_tts_generate(text: str, model_id: str):
+    """Genera audio usando Coqui TTS (modelli VITS). model_id es: tts_models/it/mai_female/vits."""
+    # Lazy import & load (thread executor per CPU bound)
+    import asyncio, functools
+    loop = asyncio.get_running_loop()
+    from concurrent.futures import ThreadPoolExecutor
+    exec_pool = getattr(coqui_tts_generate, '_pool', None)
+    if exec_pool is None:
+        exec_pool = ThreadPoolExecutor(max_workers=1)
+        setattr(coqui_tts_generate, '_pool', exec_pool)
+    def _load_and_run_sync():
+        from TTS.api import TTS as _TTS
+        if model_id not in _COQUI_MODEL_CACHE:
+            _COQUI_MODEL_CACHE[model_id] = _TTS(model_name=model_id)
+        model = _COQUI_MODEL_CACHE[model_id]
+        import io, soundfile as sf
+        wav = model.tts(text)
+        buf = io.BytesIO()
+        sf.write(buf, wav, samplerate=22050, format='WAV')
+        return buf.getvalue()
+    data = await loop.run_in_executor(exec_pool, _load_and_run_sync)
+    return Response(content=data, media_type="audio/wav", headers={"Content-Disposition": "attachment; filename=speech.wav"})
 
 # Endpoint legacy per compatibilità
 @router.post("/tts/elevenlabs")

@@ -642,8 +642,8 @@ const PersonalitiesPanel: React.FC = () => {
               <InputLabel id="tts-label">Voce (TTS)</InputLabel>
               <Select labelId="tts-label" label="Voce (TTS)" value={ttsProvider} onChange={e=> setTtsProvider(e.target.value)} displayEmpty>
                 <MenuItem value=""><em>Default</em></MenuItem>
-                {/* Opzioni base: saranno sovrascritte se arricchite altrove */}
-                {['edge','elevenlabs','openai','piper'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}
+                {/* Opzioni base: aggiunto 'coqui' */}
+                {['edge','elevenlabs','openai','piper','coqui'].map(v => <MenuItem key={v} value={v}>{v}</MenuItem>)}
               </Select>
             </FormControl>
             {ttsProvider && (

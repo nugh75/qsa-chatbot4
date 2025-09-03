@@ -12,6 +12,7 @@ export interface AdminConfig {
     elevenlabs:  { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; voices: string[]; selected_voice: string }
     openai_voice:{ enabled: boolean; name: string; voices: string[]; selected_voice: string }
     piper:       { enabled: boolean; name: string; voices: string[]; selected_voice: string }
+  coqui?:      { enabled: boolean; name: string; voices: string[]; selected_voice: string }
   }
   default_provider: string
   default_tts: string

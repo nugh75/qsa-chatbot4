@@ -9,12 +9,12 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_super_secret_change_me} # Cambia in produzione
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.129.14:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:latest}
     ports:
       - "8005:8005"
     volumes:
-      - ./data:/app/data:ro                       # Dati di input (seed, read-only)
+
       - ./backend/storage:/app/storage            # Storage persistente generale
       - ./backend/storage/prompts:/app/storage/prompts           # System prompts runtime
       - ./backend/storage/personalities:/app/storage/personalities # Personalities runtime
@@ -22,6 +22,7 @@ services:
       - ./backend/storage/welcome-guide:/app/storage/welcome-guide # Welcome & guides runtime
       - ./backend/storage/avatars:/app/storage/avatars           # Avatars personalità
       - ./backend/storage/logs:/app/storage/logs                   # Log persistenti
+      - ./backend/storage/pipeline:/app/storage/pipeline           # Pipeline regex guide & assets
       - ./backend/models:/app/models              # Modelli
       - ./backend/config:/app/config              # Config
       - ./backend/.env:/app/.env:ro               # Env file

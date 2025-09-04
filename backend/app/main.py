@@ -23,6 +23,7 @@ from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
 from .survey_routes import router as survey_router
 from .welcome_guides import router as welcome_guides_router
+from .data_tables_routes import router as data_tables_router
 from .personalities import load_personalities
 from .welcome_guides import list_welcome_messages
 from .prompts import load_system_prompts, load_summary_prompt
@@ -166,6 +167,7 @@ app.include_router(file_processing_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
 app.include_router(survey_router, prefix="/api")
 app.include_router(welcome_guides_router, prefix="/api")
+app.include_router(data_tables_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():

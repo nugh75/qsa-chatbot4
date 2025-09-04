@@ -1327,7 +1327,7 @@ class PersonalityIn(BaseModel):
     enabled_pipeline_topics: Optional[List[str]] = None  # topics di pipeline abilitati
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
-    enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
+    enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -1377,6 +1377,7 @@ async def upsert_personality_admin(p: PersonalityIn):
             enabled_pipeline_topics=p.enabled_pipeline_topics,
             enabled_rag_groups=p.enabled_rag_groups,
             enabled_mcp_servers=p.enabled_mcp_servers,
+            enabled_data_tables=p.enabled_data_tables,
             max_tokens=p.max_tokens
         )
         return {"success": True, **res}
@@ -2087,7 +2088,7 @@ async def download_interactions_log(date: Optional[str] = None):
 
 # ---- Config backup & restore ----
 @router.get('/admin/config/backup')
-async def backup_config(include_seed: bool = False, include_avatars: bool = False, include_regex_guide: bool = False, dry_run: bool = False):
+async def backup_config(include_seed: bool = False, include_avatars: bool = False, include_regex_guide: bool = False, include_db: bool = True, dry_run: bool = False):
     """Esporta le configurazioni in un archivio ZIP.
 
     Parametri:
@@ -2100,18 +2101,33 @@ async def backup_config(include_seed: bool = False, include_avatars: bool = Fals
         from . import config_backup
         if dry_run:
             # Simula selezione
-            data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide)
+            data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide, include_db=include_db)
             import zipfile, io, json
             buf = io.BytesIO(data)
             with zipfile.ZipFile(buf, 'r') as zf:
                 manifest = json.loads(zf.read('manifest.json').decode('utf-8')) if 'manifest.json' in zf.namelist() else {}
             return {"success": True, "dry_run": True, "manifest": manifest}
-        bin_data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide)
+        bin_data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide, include_db=include_db)
         return Response(content=bin_data, media_type='application/zip', headers={
             'Content-Disposition': 'attachment; filename="config-backup.zip"'
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore backup: {e}")
+
+@router.get('/admin/db/dump')
+async def db_dump(tables: Optional[str] = None):
+    """Scarica solo il dump del database (JSONL + summary + personalities)."""
+    try:
+        from . import config_backup
+        table_list = None
+        if tables:
+            table_list = [t.strip() for t in tables.split(',') if t.strip()]
+        bin_data = config_backup.create_db_dump_zip(table_list)
+        return Response(content=bin_data, media_type='application/zip', headers={
+            'Content-Disposition': 'attachment; filename="db-dump.zip"'
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore DB dump: {e}")
 
 class RestoreOptions(BaseModel):
     allow_seed: bool = False

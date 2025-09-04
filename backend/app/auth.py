@@ -67,22 +67,35 @@ class TokenData(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
 
+from .password_utils import verify_password as _verify_pw_util, hash_password_bcrypt as _hash_bcrypt, is_legacy_sha256 as _is_legacy_sha256
+
 class AuthManager:
     """Gestisce autenticazione, JWT tokens e sicurezza password"""
     
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash password con bcrypt"""
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+        """Hash password (bcrypt)."""
+        return _hash_bcrypt(password)
     
     @staticmethod
     def verify_password(password: str, hashed: str) -> bool:
-        """Verifica password contro hash"""
-        try:
-            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-        except:
-            return False
+        """Verifica password e aggiorna (upgrade) se legacy SHA256.
+        NOTA: l'upgrade va gestito dal chiamante dopo aver verificato con successo.
+        """
+        ok, needs_upgrade = _verify_pw_util(password, hashed)
+        if ok and needs_upgrade:
+            # Esegue upgrade hash salvando bcrypt
+            try:
+                from .database import db_manager
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    new_hash = _hash_bcrypt(password)
+                    # Usa adattamento placeholder centralizzato
+                    db_manager.exec(cur, "UPDATE users SET password_hash = ? WHERE password_hash = ?", (new_hash, hashed))
+                    conn.commit()
+            except Exception as e:  # pragma: no cover
+                print(f"[AUTH] Password upgrade failed: {e}")
+        return ok
     
     @staticmethod
     def generate_user_key_hash(password: str, email: str) -> str:
@@ -150,10 +163,17 @@ class AuthManager:
         if user_data.get("failed_login_attempts", 0) >= MAX_LOGIN_ATTEMPTS:
             locked_until = user_data.get("locked_until")
             if locked_until:
-                # Controlla se il blocco è ancora attivo
-                lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
-                if datetime.utcnow() < lock_time:
-                    return True
+                # Controlla se il blocco è ancora attivo (gestisce str o datetime)
+                try:
+                    if isinstance(locked_until, str):
+                        lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
+                    else:
+                        lock_time = locked_until  # expected datetime from Postgres driver
+                    if datetime.utcnow() < lock_time:
+                        return True
+                except Exception:
+                    # Se parsing fallisce, considera non bloccato per non bloccare login
+                    return False
         return False
 
 # Dependency per autenticazione

@@ -113,7 +113,7 @@ async def update_conversation(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE conversations 
                 SET title_encrypted = ?, title_hash = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
@@ -135,8 +135,8 @@ async def delete_conversation(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""UPDATE conversations SET is_deleted = 1 WHERE id = ? AND user_id = ?""", (conversation_id, current_user["id"]))
-            cursor.execute("""UPDATE messages SET is_deleted = 1 WHERE conversation_id = ?""", (conversation_id,))
+            db_manager.exec(cursor, "UPDATE conversations SET is_deleted = ? WHERE id = ? AND user_id = ?", (True, conversation_id, current_user["id"]))
+            db_manager.exec(cursor, "UPDATE messages SET is_deleted = ? WHERE conversation_id = ?", (True, conversation_id))
             conn.commit()
         return {"message": "Conversation deleted successfully"}
     except Exception as e:
@@ -250,7 +250,7 @@ async def get_conversation_stats(
             cursor = conn.cursor()
             
             # Conteggio conversazioni
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT COUNT(*) as total_conversations,
                        SUM(message_count) as total_messages,
                        MAX(updated_at) as last_activity

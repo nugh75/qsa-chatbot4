@@ -1,14 +1,15 @@
 """
 Admin panel routes for device management and system monitoring
 """
-from fastapi import APIRouter, HTTPException, Depends, status, Query
+from fastapi import APIRouter, HTTPException, Depends, status, Query, Body
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
-import json
+import json, time, os
 
 from .auth import get_current_active_user, is_admin_user
 from .database import db_manager
+from .database import USING_POSTGRES
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -64,6 +65,191 @@ class DeviceAction(BaseModel):
     device_ids: List[str]
     reason: Optional[str] = None
 
+class SQLQuery(BaseModel):
+    sql: str
+    limit: Optional[int] = 100
+
+class TableColumns(BaseModel):
+    name: str
+    type: str
+    is_nullable: bool = True
+    is_primary: bool = False
+
+class DBUpdate(BaseModel):
+    table: str
+    key: Dict[str, Any]  # where equality (AND)
+    set: Dict[str, Any]
+
+class DBInsert(BaseModel):
+    table: str
+    values: Dict[str, Any]
+
+class DBDelete(BaseModel):
+    table: str
+    key: Dict[str, Any]
+
+_DBINFO_CACHE: dict = {
+    # key: (result_dict, timestamp)
+}
+
+@router.get("/db-info")
+async def get_db_info(
+    include_sizes: bool = Query(False, description="Includi dimensioni fisiche (tabella / totale)"),
+    order: str = Query("name", description="Ordinamento: name | rows | size"),
+    cache_seconds: int = Query(30, description="TTL cache lato server in secondi"),
+    force_refresh: bool = Query(False, description="Ignora cache e ricalcola"),
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Ritorna informazioni sul database in uso e lista tabelle.
+
+    Parametri:
+    - include_sizes: se true calcola dimensioni (può essere costoso su Postgres grandi)."""
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    try:
+        t0 = time.time()
+        cache_key = (include_sizes, order)
+        now = time.time()
+        if not force_refresh and cache_seconds > 0:
+            cached = _DBINFO_CACHE.get(cache_key)
+            if cached and (now - cached[1]) < cache_seconds:
+                data = cached[0].copy()
+                data["cached"] = True
+                data["cache_age_s"] = round(now - cached[1], 2)
+                data["cache_ttl_s"] = cache_seconds - (now - cached[1])
+                return data
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            # Elenco tabelle e conteggi
+            # Nota: 'personalities' è file-based (storage/personalities/personalities.json),
+            # quindi NON deve essere considerata una tabella critica.
+            critical_tables = [
+                'users','devices','conversations','messages','device_sync_log',
+                'feedback','personalities','rag_documents','rag_chunks'
+            ]
+            table_info = []  # list of {name, rows}
+            present_tables = set()
+
+            if USING_POSTGRES:
+                db_manager.exec(cursor, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename")
+                table_names = [r[0] for r in cursor.fetchall()]
+                for t in table_names:
+                    present_tables.add(t)
+                    try:
+                        db_manager.exec(cursor, f'SELECT COUNT(*) FROM "{t}"')
+                        count = cursor.fetchone()[0]
+                    except Exception:
+                        count = None
+                    size_bytes = None
+                    if include_sizes:
+                        try:
+                            # Usa pg_total_relation_size per includere indici
+                            db_manager.exec(cursor, f"SELECT pg_total_relation_size(%s)", (t,))
+                            size_bytes = cursor.fetchone()[0]
+                        except Exception:
+                            size_bytes = None
+                    table_info.append({"name": t, "rows": count, "size_bytes": size_bytes})
+                db_version = None
+                try:
+                    db_manager.exec(cursor, "SELECT version()")
+                    db_version = cursor.fetchone()[0]
+                except Exception:
+                    pass
+                missing = [t for t in critical_tables if t not in present_tables]
+                total_rows = sum([ti["rows"] for ti in table_info if isinstance(ti.get("rows"), int)])
+                total_size = sum([ti.get("size_bytes") or 0 for ti in table_info]) if include_sizes else None
+                elapsed_ms = round((time.time() - t0)*1000, 2)
+                # Ordinamento
+                if order == 'rows':
+                    table_info.sort(key=lambda x: (x.get('rows') is None, -(x.get('rows') or 0)))
+                elif order == 'size' and include_sizes:
+                    table_info.sort(key=lambda x: (x.get('size_bytes') is None, -(x.get('size_bytes') or 0)))
+                else:  # name default
+                    table_info.sort(key=lambda x: x['name'])
+
+                # Percent occupancy per singola tabella se total_size disponibile
+                if include_sizes and total_size and total_size > 0:
+                    for ti in table_info:
+                        sb = ti.get('size_bytes') or 0
+                        if sb:
+                            ti['size_pct'] = round((sb / total_size) * 100, 3)
+
+                result = {
+                    "engine": "postgres",
+                    "version": db_version,
+                    "tables": table_info,
+                    "critical_missing": missing,
+                    "total_rows": total_rows,
+                    "total_size_bytes": total_size,
+                    "elapsed_ms": elapsed_ms,
+                    "include_sizes": include_sizes,
+                    "order": order,
+                    "cached": False,
+                    "cache_age_s": 0.0,
+                    "cache_ttl_s": cache_seconds,
+                }
+                if cache_seconds > 0:
+                    _DBINFO_CACHE[cache_key] = (result, now)
+                return result
+            else:
+                # SQLite
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                table_names = [r[0] for r in cursor.fetchall()]
+                for t in table_names:
+                    present_tables.add(t)
+                    try:
+                        cursor.execute(f'SELECT COUNT(*) FROM "{t}"')
+                        count = cursor.fetchone()[0]
+                    except Exception:
+                        count = None
+                    size_bytes = None
+                    if include_sizes:
+                        # Non abbiamo dimensione per tabella facilmente senza analizzare file interno; saltiamo.
+                        size_bytes = None
+                    table_info.append({"name": t, "rows": count, "size_bytes": size_bytes})
+                cursor.execute("PRAGMA database_list")
+                dblist = cursor.fetchall()
+                missing = [t for t in critical_tables if t not in present_tables]
+                # Dimensione totale file
+                total_rows = sum([ti["rows"] for ti in table_info if isinstance(ti.get("rows"), int)])
+                db_file_size = None
+                if include_sizes:
+                    try:
+                        # determina path principale DB da manager
+                        from .database import db_manager as _dbm
+                        if getattr(_dbm, 'db_path', None):
+                            if os.path.exists(_dbm.db_path):
+                                db_file_size = os.path.getsize(_dbm.db_path)
+                    except Exception:
+                        db_file_size = None
+                elapsed_ms = round((time.time() - t0)*1000, 2)
+                if order == 'rows':
+                    table_info.sort(key=lambda x: (x.get('rows') is None, -(x.get('rows') or 0)))
+                elif order == 'size' and include_sizes:
+                    table_info.sort(key=lambda x: (x.get('size_bytes') is None, -(x.get('size_bytes') or 0)))
+                else:
+                    table_info.sort(key=lambda x: x['name'])
+
+                result = {
+                    "engine": "sqlite",
+                    "tables": table_info,
+                    "attached": [dict(zip([c[0] for c in cursor.description], row)) for row in dblist] if cursor.description else [],
+                    "critical_missing": missing,
+                    "total_rows": total_rows,
+                    "total_size_bytes": db_file_size,
+                    "elapsed_ms": elapsed_ms,
+                    "include_sizes": include_sizes,
+                    "order": order,
+                    "cached": False,
+                    "cache_age_s": 0.0,
+                    "cache_ttl_s": cache_seconds,
+                }
+                if cache_seconds > 0:
+                    _DBINFO_CACHE[cache_key] = (result, now)
+                return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore recupero info DB: {e}")
+
 @router.get("/stats", response_model=AdminStats)
 async def get_admin_stats(
     current_user: dict = Depends(get_current_active_user)
@@ -79,50 +265,47 @@ async def get_admin_stats(
     try:
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            
-            # Statistiche utenti
-            cursor.execute("SELECT COUNT(*) FROM users")
+
+            # Funzioni tempo differenziate
+            if USING_POSTGRES:
+                last_login_30 = "last_login > NOW() - INTERVAL '30 days'"
+                last_sync_7 = "last_sync > NOW() - INTERVAL '7 days'"
+                today_clause = "DATE(timestamp) = CURRENT_DATE"
+                length_fn = "LENGTH"
+            else:
+                last_login_30 = "last_login > datetime('now', '-30 days')"
+                last_sync_7 = "last_sync > datetime('now', '-7 days')"
+                today_clause = "DATE(timestamp) = DATE('now')"
+                length_fn = "LENGTH"
+
+            db_manager.exec(cursor, "SELECT COUNT(*) FROM users")
             total_users = cursor.fetchone()[0]
-            
-            cursor.execute("""
-                SELECT COUNT(*) FROM users 
-                WHERE is_active = 1 AND last_login > datetime('now', '-30 days')
-            """)
+
+            db_manager.exec(cursor, f"SELECT COUNT(*) FROM users WHERE is_active = 1 AND {last_login_30}")
             active_users = cursor.fetchone()[0]
-            
-            # Statistiche dispositivi
-            cursor.execute("SELECT COUNT(*) FROM devices")
+
+            db_manager.exec(cursor, "SELECT COUNT(*) FROM devices")
             total_devices = cursor.fetchone()[0]
-            
-            cursor.execute("""
-                SELECT COUNT(*) FROM devices 
-                WHERE is_active = 1 AND last_sync > datetime('now', '-7 days')
-            """)
+
+            db_manager.exec(cursor, f"SELECT COUNT(*) FROM devices WHERE is_active = 1 AND {last_sync_7}")
             active_devices = cursor.fetchone()[0]
-            
-            # Statistiche contenuti
-            cursor.execute("SELECT COUNT(*) FROM conversations WHERE is_deleted = 0")
+
+            db_manager.exec(cursor, "SELECT COUNT(*) FROM conversations WHERE is_deleted = 0")
             total_conversations = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM messages WHERE is_deleted = 0")
+
+            db_manager.exec(cursor, "SELECT COUNT(*) FROM messages WHERE is_deleted = 0")
             total_messages = cursor.fetchone()[0]
-            
-            # Sincronizzazioni oggi
-            cursor.execute("""
-                SELECT COUNT(*) FROM device_sync_log 
-                WHERE DATE(timestamp) = DATE('now')
-            """)
+
+            db_manager.exec(cursor, f"SELECT COUNT(*) FROM device_sync_log WHERE {today_clause}")
             sync_today = cursor.fetchone()[0] or 0
-            
-            # Medie
+
             avg_messages = total_messages / max(total_users, 1)
             avg_devices = total_devices / max(total_users, 1)
-            
-            # Storage usage (approssimato)
-            cursor.execute("""
+
+            db_manager.exec(cursor, f"""
                 SELECT 
-                    SUM(LENGTH(title_encrypted) + LENGTH(COALESCE(description, ''))) as conv_size,
-                    (SELECT SUM(LENGTH(content_encrypted)) FROM messages WHERE is_deleted = 0) as msg_size
+                    SUM({length_fn}(title_encrypted) + {length_fn}(COALESCE(description, ''))) as conv_size,
+                    (SELECT SUM({length_fn}(content_encrypted)) FROM messages WHERE is_deleted = 0) as msg_size
                 FROM conversations WHERE is_deleted = 0
             """)
             storage_row = cursor.fetchone()
@@ -192,7 +375,7 @@ async def get_users(
             """
             
             params.extend([limit, offset])
-            cursor.execute(query, params)
+            db_manager.exec(cursor, query, params)
             
             users = []
             for row in cursor.fetchall():
@@ -261,7 +444,7 @@ async def get_devices(
             """
             
             params.extend([limit, offset])
-            cursor.execute(query, params)
+            db_manager.exec(cursor, query, params)
             
             devices = []
             for row in cursor.fetchall():
@@ -308,7 +491,12 @@ async def get_sync_activity(
             cursor = conn.cursor()
             
             where_conditions = ["s.timestamp > datetime('now', ?)"]
-            params = [f"-{hours} hours"]
+            if USING_POSTGRES:
+                where_conditions = ["s.timestamp > NOW() - ( ? )::interval"]
+                params = [f"{hours} hours"]
+            else:
+                where_conditions = ["s.timestamp > datetime('now', ?)"]
+                params = [f"-{hours} hours"]
             
             if user_id:
                 where_conditions.append("s.user_id = ?")
@@ -334,7 +522,7 @@ async def get_sync_activity(
             """
             
             params.append(limit)
-            cursor.execute(query, params)
+            db_manager.exec(cursor, query, params)
             
             activities = []
             for row in cursor.fetchall():
@@ -380,32 +568,54 @@ async def device_action(
             for device_id in action_data.device_ids:
                 try:
                     if action_data.action == "deactivate":
-                        cursor.execute("""
-                            UPDATE devices 
-                            SET is_active = 0, deactivated_at = datetime('now')
-                            WHERE id = ?
-                        """, (device_id,))
+                        if USING_POSTGRES:
+                            db_manager.exec(cursor, """
+                                UPDATE devices 
+                                SET is_active = FALSE, deactivated_at = NOW()
+                                WHERE id = ?
+                            """, (device_id,))
+                        else:
+                            cursor.execute("""
+                                UPDATE devices 
+                                SET is_active = 0, deactivated_at = datetime('now')
+                                WHERE id = ?
+                            """, (device_id,))
                         
                     elif action_data.action == "force_sync":
-                        cursor.execute("""
-                            UPDATE devices 
-                            SET force_sync = 1, force_sync_at = datetime('now')
-                            WHERE id = ?
-                        """, (device_id,))
+                        if USING_POSTGRES:
+                            db_manager.exec(cursor, """
+                                UPDATE devices 
+                                SET force_sync = TRUE, force_sync_at = NOW()
+                                WHERE id = ?
+                            """, (device_id,))
+                        else:
+                            cursor.execute("""
+                                UPDATE devices 
+                                SET force_sync = 1, force_sync_at = datetime('now')
+                                WHERE id = ?
+                            """, (device_id,))
                         
                     elif action_data.action == "reset":
-                        cursor.execute("""
-                            UPDATE devices 
-                            SET sync_count = 0, last_sync = NULL, 
-                                conflict_count = 0, force_sync = 1
-                            WHERE id = ?
-                        """, (device_id,))
+                        if USING_POSTGRES:
+                            db_manager.exec(cursor, """
+                                UPDATE devices 
+                                SET sync_count = 0, last_sync = NULL, 
+                                    conflict_count = 0, force_sync = TRUE
+                                WHERE id = ?
+                            """, (device_id,))
+                        else:
+                            cursor.execute("""
+                                UPDATE devices 
+                                SET sync_count = 0, last_sync = NULL, 
+                                    conflict_count = 0, force_sync = 1
+                                WHERE id = ?
+                            """, (device_id,))
                         
                     elif action_data.action == "delete":
                         # Prima elimina i log di sync
-                        cursor.execute("DELETE FROM device_sync_log WHERE device_id = ?", (device_id,))
+                        db_manager.exec(cursor, "DELETE FROM device_sync_log WHERE device_id = ?", (device_id,))
                         # Poi elimina il dispositivo
-                        cursor.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+                        db_manager.exec(cursor, "DELETE FROM devices WHERE id = ?", (device_id,))
                         
                     else:
                         results.append({
@@ -416,11 +626,18 @@ async def device_action(
                         continue
                     
                     # Log dell'azione admin
-                    cursor.execute("""
-                        INSERT INTO device_sync_log (device_id, user_id, operation_type, status, details, timestamp)
-                        SELECT d.id, d.user_id, ?, 'success', ?, datetime('now')
-                        FROM devices d WHERE d.id = ?
-                    """, (f"admin_{action_data.action}", action_data.reason or f"Admin action: {action_data.action}", device_id))
+                    if USING_POSTGRES:
+                        db_manager.exec(cursor, """
+                            INSERT INTO device_sync_log (device_id, user_id, operation_type, status, details, timestamp)
+                            SELECT d.id, d.user_id, ?, 'success', ?, NOW()
+                            FROM devices d WHERE d.id = ?
+                        """, (f"admin_{action_data.action}", action_data.reason or f"Admin action: {action_data.action}", device_id))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO device_sync_log (device_id, user_id, operation_type, status, details, timestamp)
+                            SELECT d.id, d.user_id, ?, 'success', ?, datetime('now')
+                            FROM devices d WHERE d.id = ?
+                        """, (f"admin_{action_data.action}", action_data.reason or f"Admin action: {action_data.action}", device_id))
                     
                     results.append({
                         "device_id": device_id,
@@ -469,7 +686,7 @@ async def get_device_details(
             cursor = conn.cursor()
             
             # Informazioni base dispositivo
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT 
                     d.*, u.username, u.email, u.is_active as user_active
                 FROM devices d
@@ -482,7 +699,7 @@ async def get_device_details(
                 raise HTTPException(status_code=404, detail="Device not found")
             
             # Log di sync recenti
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM device_sync_log 
                 WHERE device_id = ? 
                 ORDER BY timestamp DESC 
@@ -492,7 +709,7 @@ async def get_device_details(
             sync_logs = [dict(row) for row in cursor.fetchall()]
             
             # Statistiche dispositivo
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT 
                     COUNT(*) as total_syncs,
                     COUNT(CASE WHEN status = 'success' THEN 1 END) as successful_syncs,
@@ -519,6 +736,260 @@ async def get_device_details(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving device details: {str(e)}"
         )
+
+# ---- Simple DB Explorer (read-only) ----
+@router.get("/db/tables")
+async def list_db_tables(current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            tables = []
+            if USING_POSTGRES:
+                db_manager.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+                tables = [r[0] for r in cur.fetchall()]
+            else:
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                tables = [r[0] for r in cur.fetchall()]
+            return {"tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB list error: {e}")
+
+@router.get("/db/table/{table_name}")
+async def sample_table(table_name: str, limit: int = 100, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            if not table_name.replace('_','').isalnum():
+                raise HTTPException(status_code=400, detail="Invalid table name")
+            q = f'SELECT * FROM "{table_name}" LIMIT ?'
+            db_manager.exec(cur, q, (limit,))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if cur.description else []
+            data = []
+            for r in rows:
+                try:
+                    data.append(dict(r))
+                except Exception:
+                    data.append(list(r))
+            return {"columns": cols, "rows": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB sample error: {e}")
+
+@router.post("/db/query")
+async def run_sql_query(payload: SQLQuery, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    sql = (payload.sql or '').strip()
+    if not sql.lower().startswith('select'):
+        raise HTTPException(status_code=400, detail="Only SELECT queries are allowed")
+    if ';' in sql[:-1]:
+        raise HTTPException(status_code=400, detail="Multiple statements not allowed")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, sql)
+            rows = cur.fetchmany(size=payload.limit or 100)
+            cols = [d[0] for d in cur.description] if cur.description else []
+            data = []
+            for r in rows:
+                try:
+                    data.append(dict(r))
+                except Exception:
+                    data.append(list(r))
+            return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Query error: {e}")
+
+def _validate_table_name(name: str) -> bool:
+    # allow only alnum + underscore
+    return bool(name) and name.replace('_','').isalnum()
+
+_WRITABLE_TABLES = set([
+    'users','conversations','messages','devices','device_sync_log','admin_actions',
+    'survey_responses','user_devices','rag_groups','rag_documents','rag_chunks','personalities'
+])
+
+@router.get("/db/columns/{table_name}", response_model=List[TableColumns])
+async def get_table_columns(table_name: str, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(403, detail="Admin access required")
+    if not _validate_table_name(table_name):
+        raise HTTPException(400, detail="Invalid table name")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            cols: List[TableColumns] = []
+            if USING_POSTGRES:
+                # columns
+                db_manager.exec(cur, """
+                    SELECT c.column_name, c.data_type, c.is_nullable
+                    FROM information_schema.columns c
+                    WHERE c.table_schema='public' AND c.table_name = ?
+                    ORDER BY c.ordinal_position
+                """, (table_name,))
+                col_rows = cur.fetchall()
+                # primary key
+                db_manager.exec(cur, """
+                    SELECT a.attname
+                    FROM pg_index i
+                    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                    WHERE i.indrelid = ?::regclass AND i.indisprimary
+                """, (table_name,))
+                pkcols = {r[0] for r in cur.fetchall()}
+                for r in col_rows:
+                    cols.append(TableColumns(
+                        name=r[0], type=r[1], is_nullable=(r[2] == 'YES'), is_primary=(r[0] in pkcols)
+                    ))
+            else:
+                # SQLite pragma
+                cur.execute(f"PRAGMA table_info('{table_name}')")
+                for r in cur.fetchall():
+                    cols.append(TableColumns(
+                        name=r[1], type=str(r[2]), is_nullable=not bool(r[3]), is_primary=bool(r[5])
+                    ))
+            return cols
+    except Exception as e:
+        raise HTTPException(500, detail=f"Columns error: {e}")
+
+@router.get("/db/search")
+async def search_table(table: str, q: str, limit: int = 50, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(403, detail="Admin access required")
+    if not _validate_table_name(table):
+        raise HTTPException(400, detail="Invalid table name")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            # discover text columns
+            text_cols: List[str] = []
+            num_cols: List[str] = []
+            if USING_POSTGRES:
+                db_manager.exec(cur, """
+                    SELECT column_name, data_type
+                    FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name = ?
+                """, (table,))
+                for r in cur.fetchall():
+                    dt = str(r[1]).lower()
+                    if 'char' in dt or 'text' in dt or 'json' in dt:
+                        text_cols.append(r[0])
+                    elif any(x in dt for x in ['int','numeric','double','real','float']):
+                        num_cols.append(r[0])
+            else:
+                cur.execute(f"PRAGMA table_info('{table}')")
+                for r in cur.fetchall():
+                    dt = str(r[2]).lower()
+                    if 'char' in dt or 'text' in dt:
+                        text_cols.append(r[1])
+                    elif 'int' in dt or 'real' in dt or 'num' in dt:
+                        num_cols.append(r[1])
+            where_parts: List[str] = []
+            params: List[Any] = []
+            terms = [t for t in q.strip().split() if t]
+            for term in terms:
+                sub_parts: List[str] = []
+                like = f"%{term}%"
+                for c in text_cols[:8]:  # cap to 8 columns for performance
+                    sub_parts.append(f'"{c}" ILIKE ?' if USING_POSTGRES else f'"{c}" LIKE ?')
+                    params.append(like)
+                # numeric exact match
+                if term.isdigit():
+                    for c in num_cols[:5]:
+                        sub_parts.append(f'"{c}" = ?')
+                        params.append(int(term))
+                if sub_parts:
+                    where_parts.append('(' + ' OR '.join(sub_parts) + ')')
+            where_clause = (' WHERE ' + ' AND '.join(where_parts)) if where_parts else ''
+            qsql = f'SELECT * FROM "{table}"{where_clause} LIMIT ?'
+            params.append(limit)
+            db_manager.exec(cur, qsql, params)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if cur.description else []
+            data = []
+            for r in rows:
+                try:
+                    data.append(dict(r))
+                except Exception:
+                    data.append(list(r))
+            return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Search error: {e}")
+
+@router.post("/db/update")
+async def db_update(payload: DBUpdate, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(403, detail="Admin access required")
+    if not _validate_table_name(payload.table):
+        raise HTTPException(400, detail="Invalid table name")
+    if payload.table not in _WRITABLE_TABLES:
+        raise HTTPException(400, detail="Table not allowed for write")
+    if not payload.key or not payload.set:
+        raise HTTPException(400, detail="Missing key or set")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            set_cols = list(payload.set.keys())
+            where_cols = list(payload.key.keys())
+            set_clause = ', '.join([f'"{c}" = ?' for c in set_cols])
+            where_clause = ' AND '.join([f'"{c}" = ?' for c in where_cols])
+            sql = f'UPDATE "{payload.table}" SET {set_clause} WHERE {where_clause}'
+            params = [payload.set[c] for c in set_cols] + [payload.key[c] for c in where_cols]
+            db_manager.exec(cur, sql, params)
+            conn.commit()
+            return {"updated": cur.rowcount}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Update error: {e}")
+
+@router.post("/db/insert")
+async def db_insert(payload: DBInsert, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(403, detail="Admin access required")
+    if not _validate_table_name(payload.table):
+        raise HTTPException(400, detail="Invalid table name")
+    if payload.table not in _WRITABLE_TABLES:
+        raise HTTPException(400, detail="Table not allowed for write")
+    if not payload.values:
+        raise HTTPException(400, detail="Missing values")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            cols = list(payload.values.keys())
+            placeholders = ','.join(['?']*len(cols))
+            col_idents = ','.join([f'"{c}"' for c in cols])
+            sql = f'INSERT INTO "{payload.table}" ({col_idents}) VALUES ({placeholders})'
+            db_manager.exec(cur, sql, [payload.values[c] for c in cols])
+            conn.commit()
+            return {"inserted": cur.rowcount}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Insert error: {e}")
+
+@router.post("/db/delete")
+async def db_delete(payload: DBDelete, current_user: dict = Depends(get_current_active_user)):
+    if not is_admin_user(current_user):
+        raise HTTPException(403, detail="Admin access required")
+    if not _validate_table_name(payload.table):
+        raise HTTPException(400, detail="Invalid table name")
+    if payload.table not in _WRITABLE_TABLES:
+        raise HTTPException(400, detail="Table not allowed for write")
+    if not payload.key:
+        raise HTTPException(400, detail="Missing key")
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            where_cols = list(payload.key.keys())
+            where_clause = ' AND '.join([f'"{c}" = ?' for c in where_cols])
+            sql = f'DELETE FROM "{payload.table}" WHERE {where_clause}'
+            db_manager.exec(cur, sql, [payload.key[c] for c in where_cols])
+            conn.commit()
+            return {"deleted": cur.rowcount}
+    except Exception as e:
+        raise HTTPException(500, detail=f"Delete error: {e}")
 
 def calculate_device_health(stats_row, device_row) -> dict:
     """Calcola punteggio di salute dispositivo"""

@@ -49,6 +49,9 @@ const PersonalitiesPanel: React.FC = () => {
   const [selectedPipelineTopics, setSelectedPipelineTopics] = useState<string[]>([])
   const [selectedRagGroups, setSelectedRagGroups] = useState<number[]>([])
   const [selectedMcpServers, setSelectedMcpServers] = useState<string[]>([])
+  // Data tables
+  const [dataTables, setDataTables] = useState<{id:string; title:string; name:string; row_count?: number}[]>([])
+  const [selectedDataTables, setSelectedDataTables] = useState<string[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
   // Test inline LLM
@@ -60,9 +63,10 @@ const PersonalitiesPanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [persRes, sysRes] = await Promise.all([
+      const [persRes, sysRes, tablesRes] = await Promise.all([
         authFetch(`${BACKEND}/api/admin/personalities`),
-        authFetch(`${BACKEND}/api/admin/system-prompts`)
+        authFetch(`${BACKEND}/api/admin/system-prompts`),
+        authFetch(`${BACKEND}/api/data-tables`)
       ])
       if (persRes.ok) {
         const data = await persRes.json()
@@ -71,6 +75,11 @@ const PersonalitiesPanel: React.FC = () => {
       if (sysRes.ok) {
         const data = await sysRes.json()
         setSystemPrompts(data.prompts || [])
+      }
+      if (tablesRes.ok) {
+        const data = await tablesRes.json()
+        const items = Array.isArray(data.tables) ? data.tables : []
+        setDataTables(items.map((t:any)=> ({ id: t.id, title: t.title, name: t.name, row_count: t.row_count })) )
       }
     } finally { setLoading(false) }
   }, [])
@@ -193,6 +202,7 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedPipelineTopics([]);
     setSelectedRagGroups([]);
     setSelectedMcpServers([]);
+    setSelectedDataTables([]);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -227,6 +237,7 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedPipelineTopics(p.enabled_pipeline_topics || []);
     setSelectedRagGroups(p.enabled_rag_groups || []);
     setSelectedMcpServers(p.enabled_mcp_servers || []);
+    setSelectedDataTables((p as any).enabled_data_tables || []);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -283,7 +294,8 @@ const PersonalitiesPanel: React.FC = () => {
           active,
           enabled_pipeline_topics: selectedPipelineTopics,
           enabled_rag_groups: selectedRagGroups,
-          enabled_mcp_servers: selectedMcpServers
+          enabled_mcp_servers: selectedMcpServers,
+          enabled_data_tables: selectedDataTables
         })
       })
       if (res.ok) {
@@ -331,6 +343,7 @@ const PersonalitiesPanel: React.FC = () => {
             ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
             ;(p as any).enabled_rag_groups = selectedRagGroups
             ;(p as any).enabled_mcp_servers = selectedMcpServers
+            ;(p as any).enabled_data_tables = selectedDataTables
             list[idx] = p
           } else {
             list.push({
@@ -350,7 +363,8 @@ const PersonalitiesPanel: React.FC = () => {
               active,
               enabled_pipeline_topics: selectedPipelineTopics,
               enabled_rag_groups: selectedRagGroups,
-              enabled_mcp_servers: selectedMcpServers
+              enabled_mcp_servers: selectedMcpServers,
+              enabled_data_tables: selectedDataTables
             })
           }
           return { ...prev, personalities: list }
@@ -783,6 +797,37 @@ const PersonalitiesPanel: React.FC = () => {
                   ))}
                   {mcpServers.length === 0 && (
                     <Typography variant="caption" color="text.secondary">Nessun server MCP disponibile</Typography>
+                  )}
+                </FormGroup>
+              </Paper>
+            </Box>
+
+            {/* Tabelle Dati */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Tabelle Dati Abilitate</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 220, overflow: 'auto' }}>
+                <FormGroup>
+                  {dataTables.map(tbl => (
+                    <FormControlLabel
+                      key={tbl.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={selectedDataTables.includes(tbl.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedDataTables(prev => [...prev, tbl.id])
+                            } else {
+                              setSelectedDataTables(prev => prev.filter(id => id !== tbl.id))
+                            }
+                          }}
+                        />
+                      }
+                      label={`${tbl.title} (${tbl.row_count || 0} righe)`}
+                    />
+                  ))}
+                  {dataTables.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">Nessuna tabella disponibile</Typography>
                   )}
                 </FormGroup>
               </Paper>

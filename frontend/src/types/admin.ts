@@ -53,6 +53,8 @@ export interface PersonalityEntry {
   enabled_pipeline_topics?: string[];
   enabled_rag_groups?: number[];
   enabled_mcp_servers?: string[];
+  // Data tables abilitati per questa personalità
+  enabled_data_tables?: string[];
 }
 
 export interface PipelineOption {

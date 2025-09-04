@@ -9,6 +9,7 @@ const BackupPanel: React.FC = () => {
   const [includeSeed, setIncludeSeed] = useState(false);
   const [includeAvatars, setIncludeAvatars] = useState(false);
   const [dryRunBackup, setDryRunBackup] = useState(false);
+  const [includeDb, setIncludeDb] = useState(true);
   const [status, setStatus] = useState<{files: StatusFile[]; aggregate_sha256: string} | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [error, setError] = useState<string|null>(null);
@@ -34,11 +35,29 @@ const BackupPanel: React.FC = () => {
   useEffect(()=>{
     if(!autoRefresh) return; const id = setInterval(loadStatus, 8000); return ()=> clearInterval(id);
   }, [autoRefresh, loadStatus]);
+  useEffect(()=>{
+    try {
+      const raw = localStorage.getItem('backupPanelPrefs');
+      if(raw){
+        const p = JSON.parse(raw);
+        if(typeof p.includeSeed==='boolean') setIncludeSeed(p.includeSeed);
+        if(typeof p.includeAvatars==='boolean') setIncludeAvatars(p.includeAvatars);
+        if(typeof p.dryRunBackup==='boolean') setDryRunBackup(p.dryRunBackup);
+        if(typeof p.includeDb==='boolean') setIncludeDb(p.includeDb);
+        if(typeof p.autoRefresh==='boolean') setAutoRefresh(p.autoRefresh);
+        if(typeof p.allowSeedRestore==='boolean') setAllowSeedRestore(p.allowSeedRestore);
+      }
+    } catch {}
+  }, []);
+  useEffect(()=>{
+    const p = { includeSeed, includeAvatars, dryRunBackup, includeDb, autoRefresh, allowSeedRestore };
+    localStorage.setItem('backupPanelPrefs', JSON.stringify(p));
+  }, [includeSeed, includeAvatars, dryRunBackup, includeDb, autoRefresh, allowSeedRestore]);
 
   const handleDownload = async () => {
     setError(null); setBackupInfo(null);
     try {
-      const response = await apiService.downloadConfigBackup({ include_seed: includeSeed, include_avatars: includeAvatars, dry_run: dryRunBackup });
+      const response = await apiService.downloadConfigBackup({ include_seed: includeSeed, include_avatars: includeAvatars, include_db: includeDb, dry_run: dryRunBackup });
       const ct = response.headers.get('content-type') || '';
       if (dryRunBackup || !ct.includes('zip')) {
         // try json first

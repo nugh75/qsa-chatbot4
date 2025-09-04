@@ -31,6 +31,10 @@ scikit-learn
 langchain-text-splitters
 tiktoken
 
+# Database driver per PostgreSQL
+psycopg2-binary>=2.9
+
 # Coqui TTS (for Italian voices)
 TTS==0.22.0
 soundfile
+openpyxl

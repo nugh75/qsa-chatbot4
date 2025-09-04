@@ -206,7 +206,7 @@ async def force_change_password(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users 
                 SET password_hash = ?, user_key_hash = ?, must_change_password = 0, failed_login_attempts = 0, locked_until = NULL
                 WHERE id = ?
@@ -276,7 +276,7 @@ async def change_password(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users 
                 SET password_hash = ?, user_key_hash = ?
                 WHERE id = ?
@@ -286,7 +286,7 @@ async def change_password(
         # Clear must_change_password flag
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET must_change_password = 0 WHERE id = ?", (current_user["id"],))
+            db_manager.exec(cursor, "UPDATE users SET must_change_password = 0 WHERE id = ?", (current_user["id"],))
             conn.commit()
         return {"message": "Password changed successfully"}
         
@@ -331,7 +331,7 @@ async def list_users(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT id, email, created_at, last_login, is_active, failed_login_attempts
                 FROM users 
                 ORDER BY created_at DESC 

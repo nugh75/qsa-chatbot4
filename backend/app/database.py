@@ -1,43 +1,137 @@
-"""
-Database models and configuration for QSA Chatbot with encrypted conversations
+"""Database layer with dynamic backend (SQLite default, optional PostgreSQL via DATABASE_URL).
+
+Se la variabile d'ambiente `DATABASE_URL` è impostata (formato postgresql://), userà psycopg2.
+Altrimenti mantiene il comportamento SQLite esistente.
+
+NOTE: Le query originali usavano placeholder `?` (stile SQLite). Per compatibilità rapida
+quando è attivo Postgres vengono convertiti in `%s`. Le differenze di schema (AUTOINCREMENT,
+CURRENT_TIMESTAMP, BOOLEAN) sono gestite creando uno schema compatibile in Postgres se mancano le tabelle.
+
+Per migrazione schema vedi `postgres_migration.md`. Questa implementazione NON tenta di alterare tabelle
+già esistenti in Postgres: assume che la migrazione sia stata eseguita. Se il DB è vuoto, crea lo schema base.
 """
 import sqlite3
 import hashlib
 import os
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import math
 from pathlib import Path
 from contextlib import contextmanager
 
+# Rileva se usare Postgres
+DATABASE_URL = os.getenv("DATABASE_URL")
+USING_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgres"))
+if USING_POSTGRES:
+    try:
+        import psycopg2  # type: ignore
+        import psycopg2.extras  # type: ignore
+    except Exception as _e:
+        print(f"[DB] psycopg2 non disponibile ({_e}), fallback a SQLite")
+        USING_POSTGRES = False
+
 # Configura il percorso del database nella nuova struttura
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = str(BASE_DIR / "storage" / "databases" / "qsa_chatbot.db")
 
 class DatabaseManager:
-    """Gestisce la connessione e le operazioni sul database SQLite"""
-    
+    """Gestisce la connessione e le operazioni sul database (SQLite default, Postgres opzionale)."""
+
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
-        # Ensure parent directory exists to avoid 'unable to open database file'
-        try:
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"[DB] Warning: cannot create database directory: {e}")
+        if not USING_POSTGRES:
+            try:
+                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                print(f"[DB] Warning: cannot create database directory: {e}")
         self.init_database()
-    
+
     @contextmanager
     def get_connection(self):
-        """Context manager per gestire connessioni al database"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Permette accesso per nome colonna
-        try:
-            yield conn
-        finally:
-            conn.close()
+        if USING_POSTGRES:
+            # Use DictCursor so rows behave like sqlite3.Row (mapping-like)
+            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)  # type: ignore
+            try:
+                yield conn
+            finally:
+                conn.close()
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+            finally:
+                conn.close()
     
+    def adapt_sql(self, sql: str) -> str:
+        """Converte placeholder '?' in '%s' per Postgres se necessario."""
+        if USING_POSTGRES:
+            # Placeholder conversion
+            sql = sql.replace('?', '%s')
+            # Boolean field normalization: SQLite used 0/1, Postgres wants TRUE/FALSE
+            # Simple regex replacements (word boundary)
+            sql = re.sub(r'\bis_active\s*=\s*1\b', 'is_active IS TRUE', sql)
+            sql = re.sub(r'\bis_active\s*=\s*0\b', 'is_active IS FALSE', sql)
+            sql = re.sub(r'\bis_deleted\s*=\s*1\b', 'is_deleted IS TRUE', sql)
+            sql = re.sub(r'\bis_deleted\s*=\s*0\b', 'is_deleted IS FALSE', sql)
+            sql = re.sub(r'\barchived\s*=\s*1\b', 'archived IS TRUE', sql)
+            sql = re.sub(r'\barchived\s*=\s*0\b', 'archived IS FALSE', sql)
+            return sql
+        return sql
+
+    def exec(self, cursor, sql: str, params=()):
+        cursor.execute(self.adapt_sql(sql), params)
+
     def init_database(self):
-        """Inizializza il database e crea le tabelle"""
+        """Inizializza il database e crea le tabelle.
+
+        - SQLite: crea lo schema completo come in precedenza.
+        - Postgres: applica in modo idempotente lo schema core e le tabelle accessorie
+          se il DB è fresco (assenza tabella users) o mancano tabelle note.
+        """
+        if USING_POSTGRES:
+            # Best-effort: se DB vuoto o mancano tabelle core, applica DDL idempotenti forniti negli script.
+            try:
+                from pathlib import Path as _P
+                schema_dir = _P(__file__).resolve().parent / 'scripts'
+                core_sql = (schema_dir / 'postgres_core_schema.sql')
+                extra_sql = (schema_dir / 'postgres_create_missing.sql')
+                with self.get_connection() as conn:
+                    cur = conn.cursor()
+                    # Check present tables
+                    self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    present = {r[0] for r in cur.fetchall()}
+                    need_core = any(t not in present for t in {'users','conversations','messages'})
+                    ran_any = False
+                    if need_core and core_sql.exists():
+                        try:
+                            sql = core_sql.read_text(encoding='utf-8')
+                            cur.execute(sql)
+                            ran_any = True
+                            print("[DB] Applied Postgres core schema (users/conversations/messages).")
+                        except Exception as e:
+                            print(f"[DB] Warning: core schema apply failed: {e}")
+                    # Apply accessories (devices, rag_*, feedback, personalities)
+                    self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    present = {r[0] for r in cur.fetchall()}
+                    need_extra = any(t not in present for t in {'devices','device_sync_log','rag_groups','rag_documents','rag_chunks','feedback','personalities'})
+                    if need_extra and extra_sql.exists():
+                        try:
+                            sql2 = extra_sql.read_text(encoding='utf-8')
+                            cur.execute(sql2)
+                            ran_any = True
+                            print("[DB] Applied Postgres accessory schema (devices/rag/feedback/personalities).")
+                        except Exception as e:
+                            print(f"[DB] Warning: accessory schema apply failed: {e}")
+                    if ran_any:
+                        conn.commit()
+                # Continue without raising; later queries will fail loudly if schema still missing
+            except Exception as e:
+                print(f"[DB] PostgreSQL init best-effort skipped due to error: {e}")
+            # Keep a note for clarity
+            print("[DB] PostgreSQL attivo: schema verificato (best-effort).")
+            return
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -211,12 +305,14 @@ class UserModel:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted)
-                    VALUES (?, ?, ?, ?)
-                """, (email, password_hash, user_key_hash, escrow_key_encrypted))
+                if USING_POSTGRES:
+                    db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?) RETURNING id", (email, password_hash, user_key_hash, escrow_key_encrypted))
+                    user_id = cursor.fetchone()[0]
+                else:
+                    db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?)", (email, password_hash, user_key_hash, escrow_key_encrypted))
+                    user_id = cursor.lastrowid
                 conn.commit()
-                return cursor.lastrowid
+                return user_id
         except sqlite3.IntegrityError:
             return None  # Email già esistente
     
@@ -225,7 +321,8 @@ class UserModel:
         """Recupera un utente per email"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE email = ? AND is_active = 1", (email,))
+            # Use boolean parameter for is_active for cross-DB compatibility
+            db_manager.exec(cursor, "SELECT * FROM users WHERE email = ? AND is_active = ?", (email, True))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -234,7 +331,7 @@ class UserModel:
         """Recupera un utente per ID"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,))
+            db_manager.exec(cursor, "SELECT * FROM users WHERE id = ? AND is_active = ?", (user_id, True))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -243,7 +340,7 @@ class UserModel:
         """Aggiorna timestamp ultimo login"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users SET last_login = CURRENT_TIMESTAMP, failed_login_attempts = 0, locked_until = NULL
                 WHERE id = ?
             """, (user_id,))
@@ -254,7 +351,7 @@ class UserModel:
         """Incrementa tentativi di login falliti"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users SET failed_login_attempts = failed_login_attempts + 1
                 WHERE email = ?
             """, (email,))
@@ -265,27 +362,38 @@ class UserModel:
         """Incrementa i tentativi falliti e imposta locked_until se si supera la soglia."""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            # Leggi valore corrente
-            cursor.execute("SELECT failed_login_attempts FROM users WHERE email = ?", (email,))
+            # Lettura tentativi correnti
+            db_manager.exec(cursor, "SELECT failed_login_attempts FROM users WHERE email = ?", (email,))
             row = cursor.fetchone()
             if not row:
                 return
-            current = row[0] or 0
+            # Both sqlite3.Row and DictRow support key access; fallback to index
+            current = (row[0] if isinstance(row, (tuple, list)) else row.get("failed_login_attempts")) or 0
             new_val = current + 1
             if new_val >= max_attempts:
-                # Imposta anche locked_until
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET failed_login_attempts = ?, locked_until = datetime('now', ?)
-                    WHERE email = ?
-                    """,
-                    (new_val, f"+{int(lock_minutes)} minutes", email)
-                )
+                if USING_POSTGRES:
+                    # Postgres: add interval using cast
+                    db_manager.exec(
+                        cursor,
+                        "UPDATE users SET failed_login_attempts = ?, locked_until = NOW() + ( ? )::interval WHERE email = ?",
+                        (new_val, f"{int(lock_minutes)} minutes", email),
+                    )
+                else:
+                    # SQLite: use datetime modifier
+                    db_manager.exec(
+                        cursor,
+                        """
+                        UPDATE users
+                        SET failed_login_attempts = ?, locked_until = datetime('now', ?)
+                        WHERE email = ?
+                        """,
+                        (new_val, f"+{int(lock_minutes)} minutes", email),
+                    )
             else:
-                cursor.execute(
+                db_manager.exec(
+                    cursor,
                     "UPDATE users SET failed_login_attempts = ? WHERE email = ?",
-                    (new_val, email)
+                    (new_val, email),
                 )
             conn.commit()
 
@@ -299,7 +407,7 @@ class ConversationModel:
             title_hash = hashlib.sha256(title_encrypted.encode()).hexdigest()
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     INSERT INTO conversations (id, user_id, title_encrypted, title_hash, device_id)
                     VALUES (?, ?, ?, ?, ?)
                 """, (conversation_id, user_id, title_encrypted, title_hash, device_id))
@@ -313,7 +421,7 @@ class ConversationModel:
         """Recupera le conversazioni di un utente"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM conversations 
                 WHERE user_id = ? AND is_deleted = 0
                 ORDER BY updated_at DESC
@@ -326,7 +434,7 @@ class ConversationModel:
         """Recupera una conversazione specifica"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM conversations 
                 WHERE id = ? AND user_id = ? AND is_deleted = 0
             """, (conversation_id, user_id))
@@ -338,7 +446,7 @@ class ConversationModel:
         """Aggiorna timestamp ultima modifica conversazione"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE conversations SET updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (conversation_id,))
@@ -357,7 +465,7 @@ class MessageModel:
                 cursor = conn.cursor()
                 
                 # Inserisci messaggio
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     INSERT INTO messages (id, conversation_id, content_encrypted, content_hash, 
                                         role, token_count, processing_time)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -365,7 +473,7 @@ class MessageModel:
                      role, token_count, processing_time))
                 
                 # Aggiorna contatore messaggi nella conversazione
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     UPDATE conversations 
                     SET message_count = message_count + 1, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
@@ -381,7 +489,7 @@ class MessageModel:
         """Recupera i messaggi di una conversazione"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM messages 
                 WHERE conversation_id = ? AND is_deleted = 0
                 ORDER BY timestamp ASC
@@ -399,11 +507,25 @@ class DeviceModel:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO user_devices 
-                    (id, user_id, device_name, device_fingerprint, user_agent, last_ip)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
+                if USING_POSTGRES:
+                    # Write into unified 'devices' table; upsert on id
+                    db_manager.exec(cursor, """
+                        INSERT INTO devices (id, user_id, device_name, device_type, fingerprint, user_agent, last_ip)
+                        VALUES (?, ?, ?, 'unknown', ?, ?, ?)
+                        ON CONFLICT (id) DO UPDATE SET 
+                            user_id = EXCLUDED.user_id,
+                            device_name = EXCLUDED.device_name,
+                            device_type = EXCLUDED.device_type,
+                            fingerprint = EXCLUDED.fingerprint,
+                            user_agent = EXCLUDED.user_agent,
+                            last_ip = EXCLUDED.last_ip
+                    """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
+                else:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO user_devices 
+                        (id, user_id, device_name, device_fingerprint, user_agent, last_ip)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
                 conn.commit()
                 return True
         except sqlite3.Error:
@@ -414,11 +536,18 @@ class DeviceModel:
         """Recupera i dispositivi di un utente"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM user_devices 
-                WHERE user_id = ? AND is_active = 1
-                ORDER BY last_sync DESC
-            """, (user_id,))
+            if USING_POSTGRES:
+                db_manager.exec(cursor, """
+                    SELECT * FROM devices 
+                    WHERE user_id = ? AND is_active = ?
+                    ORDER BY last_sync DESC
+                """, (user_id, True))
+            else:
+                cursor.execute("""
+                    SELECT * FROM user_devices 
+                    WHERE user_id = ? AND is_active = 1
+                    ORDER BY last_sync DESC
+                """, (user_id,))
             return [dict(row) for row in cursor.fetchall()]
 
 class AdminModel:
@@ -431,7 +560,7 @@ class AdminModel:
         """Registra un'azione amministrativa"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 INSERT INTO admin_actions 
                 (admin_email, action_type, target_user_id, target_email, description, ip_address, success)
                 VALUES (?, ?, ?, ?, ?, ?, ?)

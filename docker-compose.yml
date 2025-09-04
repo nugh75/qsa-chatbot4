@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-qsa_chatbot}
+      POSTGRES_USER: ${POSTGRES_USER:-qsa_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qsa_pass}
+    ports:
+      - "5532:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   backend:
     build: ./backend
     restart: unless-stopped
@@ -8,24 +26,32 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_super_secret_change_me} # Cambia in produzione
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev_super_secret_change_me}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.129.14:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:latest}
+      POSTGRES_DB: ${POSTGRES_DB:-qsa_chatbot}
+      POSTGRES_USER: ${POSTGRES_USER:-qsa_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qsa_pass}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-qsa_user}:${POSTGRES_PASSWORD:-qsa_pass}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-qsa_chatbot}}
     ports:
       - "8005:8005"
     volumes:
-
-      - ./backend/storage:/app/storage            # Storage persistente generale
-      - ./backend/storage/prompts:/app/storage/prompts           # System prompts runtime
-      - ./backend/storage/personalities:/app/storage/personalities # Personalities runtime
-      - ./backend/storage/summary:/app/storage/summary           # Summary prompt runtime
-      - ./backend/storage/welcome-guide:/app/storage/welcome-guide # Welcome & guides runtime
-      - ./backend/storage/avatars:/app/storage/avatars           # Avatars personalità
-      - ./backend/storage/logs:/app/storage/logs                   # Log persistenti
-      - ./backend/storage/pipeline:/app/storage/pipeline           # Pipeline regex guide & assets
-      - ./backend/models:/app/models              # Modelli
-      - ./backend/config:/app/config              # Config
-      - ./backend/.env:/app/.env:ro               # Env file
+      - ./backend/storage:/app/storage
+      - ./backend/storage/prompts:/app/storage/prompts
+      - ./backend/storage/personalities:/app/storage/personalities
+      - ./backend/storage/summary:/app/storage/summary
+      - ./backend/storage/welcome-guide:/app/storage/welcome-guide
+      - ./backend/storage/avatars:/app/storage/avatars
+      - ./backend/storage/logs:/app/storage/logs
+      - ./backend/storage/pipeline:/app/storage/pipeline
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./backend/.env:/app/.env:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   frontend:
     build: ./frontend
@@ -34,3 +60,6 @@ services:
       - "5176:5175"
     depends_on:
       - backend
+
+volumes:
+  pgdata:

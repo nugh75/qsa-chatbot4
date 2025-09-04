@@ -7,7 +7,7 @@ import {
   Tooltip, Slider, Tabs, Tab, Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon, Dns as DnsIcon } from '@mui/icons-material'
 
 import UserManagement from './components/UserManagement'
 // Rimosso ModelProvidersPanel (tab provider) — test LLM spostato sotto Personalità
@@ -20,6 +20,7 @@ import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
 import APIDocsPanel from './components/APIDocsPanel'
 import RagDocumentsPanel from './components/RagDocumentsPanel'
+import DataTablesPanel from './components/DataTablesPanel'
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
@@ -33,6 +34,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkSlugLocal from './utils/remarkSlugLocal'
 import BackupPanel from './components/BackupPanel'
+import DatabaseInfoPanel from './components/DatabaseInfoPanel'
 
 const AdminPanel: React.FC = () => {
   // Stato principale
@@ -70,11 +72,11 @@ const AdminPanel: React.FC = () => {
   const categories = [
     { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
-    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'data_tables', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
-    { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
+  { id: 'api', label: 'API & Tecnico', panels: ['apidocs','dbinfo'] },
     { id: 'backup', label: 'Backup', panels: ['backup_panel'] },
   ] as const
 
@@ -90,8 +92,10 @@ const AdminPanel: React.FC = () => {
   usage: false,
   memory: false,
   apidocs: false,
+  dbinfo: true,
   embedding: false,
   ragdocs: false,
+  data_tables: true,
   whisper_health: false,
   pipeline: false,
   welcome_guides: false,
@@ -653,6 +657,20 @@ const AdminPanel: React.FC = () => {
       </Accordion>
       )}
 
+      {panelVisible('dbinfo') && (
+      <Accordion expanded={expandedPanels.dbinfo} onChange={handlePanelExpansion('dbinfo')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <DnsIcon fontSize="small" />
+            <Typography variant="h6">Database Info</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <DatabaseInfoPanel />
+        </AccordionDetails>
+      </Accordion>
+      )}
+
   {/* Embedding Management */}
   {panelVisible('embedding') && (
   <Accordion expanded={expandedPanels.embedding} onChange={handlePanelExpansion('embedding')}>
@@ -714,7 +732,22 @@ const AdminPanel: React.FC = () => {
           </Card>
         </AccordionDetails>
       </Accordion>
-  )}
+      )}
+
+      {/* Data Tables Management */}
+      {panelVisible('data_tables') && (
+        <Accordion expanded={expandedPanels.data_tables} onChange={handlePanelExpansion('data_tables')}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <StorageIcon fontSize="small" />
+              <Typography variant="h6">Tabelle Dati (CSV/XLSX)</Typography>
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails>
+            <DataTablesPanel />
+          </AccordionDetails>
+        </Accordion>
+      )}
 
   {/* RAG Documenti */}
   {panelVisible('ragdocs') && (

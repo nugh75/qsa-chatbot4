@@ -13,6 +13,7 @@ QSA Chatbot is a two-tier app: a FastAPI backend exposing REST endpoints and a R
 - Config: JSON under `backend/config/` (e.g., `admin_config.json`) and `.env` for secrets (see `.env.example`).
 - Data/Models: `backend/data/`, `backend/models/` (cached models), `backend/storage/` (persistent artifacts).
 - Database: SQLite file `backend/qsa_chatbot.db`, accessed by modules like `database.py` and used by conversation/message persistence.
+  - (Opzionale) È stato aggiunto supporto infrastrutturale per migrazione a PostgreSQL via `docker-compose` (servizio `postgres`). Il codice applicativo è ancora basato su `sqlite3`; vedi `backend/app/postgres_migration.md` per i passi e prevedi refactor di `database.py` usando `psycopg2` o un ORM.
 - Serve: `uvicorn app.main:app --port 8005` (see `backend/Dockerfile`).
 
 ## Frontend (React + Vite)

@@ -255,12 +255,14 @@ async def chat(
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None
     personality_enabled_rag_groups = None
+    personality_enabled_data_tables = None
     if x_personality_id:
         try:
             p_meta = get_personality(x_personality_id)
             if p_meta:
                 personality_enabled_topics = p_meta.get("enabled_pipeline_topics")
                 personality_enabled_rag_groups = p_meta.get("enabled_rag_groups")
+                personality_enabled_data_tables = p_meta.get("enabled_data_tables")
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
@@ -418,6 +420,43 @@ async def chat(
         sections.append(f"[SEZIONE TOPICS]\n{topic_context_combined.strip()}")
     if rag_context_combined:
         sections.append(f"[SEZIONE RAG]\n{rag_context_combined.strip()}")
+    # Optional: search in enabled data tables (if any)
+    data_tables_context = ""
+    data_tables_search_results = None
+    try:
+        if personality_enabled_data_tables:
+            from .data_tables import search_tables as _search_dt
+            dt_res = _search_dt(full_user_message, personality_enabled_data_tables, limit_per_table=8)
+            data_tables_search_results = dt_res.get('results') or []
+            # Format as Markdown table per table (limit display columns to 5)
+            parts = []
+            # Budget for this section (chars)
+            DT_BUDGET = int(_os.getenv('CONTEXT_MIN_DT_CHARS', '2000'))
+            used = 0
+            for t in data_tables_search_results:
+                title = t.get('title') or t.get('table_name') or t.get('table_id')
+                disp_cols = t.get('display_columns') or (t.get('columns') or [])[:5]
+                if not disp_cols:
+                    continue
+                rows = t.get('rows') or []
+                # Header
+                header = "| " + " | ".join(disp_cols) + " |\n" + "|" + "|".join([" --- "] * len(disp_cols)) + "|\n"
+                body_lines = []
+                for r in rows[:8]:
+                    data = r.get('data') or {}
+                    vals = [str((data.get(c) if data.get(c) is not None else '')).replace('\n',' ').strip() for c in disp_cols]
+                    body_lines.append("| " + " | ".join(vals) + " |")
+                block = f"[Tabella: {title}]\n" + header + "\n".join(body_lines)
+                if used + len(block) > DT_BUDGET:
+                    break
+                parts.append(block)
+                used += len(block)
+            if parts:
+                data_tables_context = "\n\n".join(parts)
+    except Exception as _dte:
+        print(f"[data-tables] errore nel build contesto: {_dte}")
+    if data_tables_context:
+        sections.append(f"[SEZIONE TABELLE]\n{data_tables_context.strip()}")
     context = "\n\n".join(sections)[:TOTAL_BUDGET]
     # Provide simple rag_context flag for downstream logic (used in logging)
     rag_context = rag_context_combined if rag_context_combined else ""
@@ -610,7 +649,7 @@ async def chat(
     resp = {"reply": answer, "topic": topic, "topics": [t["topic"] for t in topics_multi] if topics_multi else ([topic] if topic else [])}
     # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
-        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
         if rag_results:
             sources["rag_chunks"] = [
                 {
@@ -652,6 +691,18 @@ async def chat(
                     nm = all_groups.get(gid)
                     if nm:
                         sources["rag_groups"].append({"id": gid, "name": nm})
+        except Exception:
+            pass
+        # Add data_tables meta if section was used
+        try:
+            if data_tables_search_results:
+                for t in data_tables_search_results:
+                    sources["data_tables"].append({
+                        "table_id": t.get('table_id'),
+                        "title": t.get('title') or t.get('table_name'),
+                        "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                        "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                    })
         except Exception:
             pass
         if any(sources.values()):
@@ -976,7 +1027,7 @@ async def chat_stream(
                 try:
                     from .personalities import load_topic_descriptions as _ltd
                     _td2 = _ltd()
-                    sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+                    sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
                     if rag_results:
                         sources["rag_chunks"] = [
                             {
@@ -1015,6 +1066,18 @@ async def chat_stream(
                                 nm = all_groups.get(gid)
                                 if nm:
                                     sources["rag_groups"].append({"id": gid, "name": nm})
+                    except Exception:
+                        pass
+                    # Data tables meta (if available in this request scope)
+                    try:
+                        if 'data_tables_search_results' in locals() and data_tables_search_results:
+                            for t in data_tables_search_results:
+                                sources["data_tables"].append({
+                                    "table_id": t.get('table_id'),
+                                    "title": t.get('title') or t.get('table_name'),
+                                    "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                                    "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                                })
                     except Exception:
                         pass
                     meta_evt = {"meta": True, "topic": topic, "source_docs": sources if any(sources.values()) else None}
@@ -1127,7 +1190,7 @@ async def chat_stream(
                 # Aggiungi pipeline topics e rag group names anche nell'evento finale
                 from .personalities import load_topic_descriptions as _ltd3
                 _td3 = _ltd3()
-                sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
+                sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
                 if rag_results:
                     sources_final["rag_chunks"] = [
                         {
@@ -1165,6 +1228,18 @@ async def chat_stream(
                             nm = all_groups.get(gid)
                             if nm:
                                 sources_final["rag_groups"].append({"id": gid, "name": nm})
+                except Exception:
+                    pass
+                # Data tables meta final
+                try:
+                    if 'data_tables_search_results' in locals() and data_tables_search_results:
+                        for t in data_tables_search_results:
+                            sources_final["data_tables"].append({
+                                "table_id": t.get('table_id'),
+                                "title": t.get('title') or t.get('table_name'),
+                                "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                                "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                            })
                 except Exception:
                     pass
                 meta = {"done": True, "reply": full_answer, "topic": topic, "topics": [t['topic'] for t in topics_multi] if topics_multi else ([topic] if topic else []), "source_docs": sources_final if any(sources_final.values()) else None}

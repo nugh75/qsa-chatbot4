@@ -680,6 +680,45 @@ class ApiService {
     return this.makeRequest(`/admin/models/${encodeURIComponent(provider)}`);
   }
 
+  // === Database Info ===
+  async getDatabaseInfo(include_sizes: boolean = false, opts: { order?: 'name'|'rows'|'size'; cacheSeconds?: number; forceRefresh?: boolean } = {}): Promise<ApiResponse<{ engine: string; version?: string|null; tables: ({ name: string; rows: number|null; size_bytes?: number|null; size_pct?: number }|string)[]; critical_missing?: string[]; attached?: any[]; total_rows?: number; total_size_bytes?: number|null; elapsed_ms?: number; include_sizes?: boolean; order?: string; cached?: boolean; cache_age_s?: number; cache_ttl_s?: number }>> {
+    const params: string[] = [];
+    if (include_sizes) params.push('include_sizes=true');
+    if (opts.order) params.push(`order=${encodeURIComponent(opts.order)}`);
+    if (typeof opts.cacheSeconds === 'number') params.push(`cache_seconds=${opts.cacheSeconds}`);
+    if (opts.forceRefresh) params.push('force_refresh=true');
+    const qp = params.length ? `?${params.join('&')}` : '';
+    return this.makeRequest<{ engine: string; version?: string|null; tables: ({ name: string; rows: number|null; size_bytes?: number|null; size_pct?: number }|string)[]; critical_missing?: string[]; attached?: any[]; total_rows?: number; total_size_bytes?: number|null; elapsed_ms?: number; include_sizes?: boolean; order?: string; cached?: boolean; cache_age_s?: number; cache_ttl_s?: number }>(`/admin/db-info${qp}`);
+  }
+
+  // === DB Explorer (Admin) ===
+  async listDbTables(): Promise<ApiResponse<{ tables: string[] }>> {
+    return this.makeRequest<{ tables: string[] }>(`/admin/db/tables`);
+  }
+  async sampleTable(table: string, limit: number = 100): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    const q = new URLSearchParams({ limit: String(limit) }).toString();
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/table/${encodeURIComponent(table)}?${q}`);
+  }
+  async runDbQuery(sql: string, limit: number = 100): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/query`, { method: 'POST', body: JSON.stringify({ sql, limit }) });
+  }
+  async getTableColumns(table: string): Promise<ApiResponse<{ name: string; type: string; is_nullable: boolean; is_primary: boolean }[]>> {
+    return this.makeRequest(`/admin/db/columns/${encodeURIComponent(table)}`);
+  }
+  async dbSearch(table: string, q: string, limit: number = 50): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    const qs = new URLSearchParams({ table, q, limit: String(limit) }).toString();
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/search?${qs}`);
+  }
+  async dbUpdate(table: string, key: Record<string, any>, set: Record<string, any>): Promise<ApiResponse<{ updated: number }>> {
+    return this.makeRequest<{ updated: number }>(`/admin/db/update`, { method: 'POST', body: JSON.stringify({ table, key, set }) });
+  }
+  async dbInsert(table: string, values: Record<string, any>): Promise<ApiResponse<{ inserted: number }>> {
+    return this.makeRequest<{ inserted: number }>(`/admin/db/insert`, { method: 'POST', body: JSON.stringify({ table, values }) });
+  }
+  async dbDelete(table: string, key: Record<string, any>): Promise<ApiResponse<{ deleted: number }>> {
+    return this.makeRequest<{ deleted: number }>(`/admin/db/delete`, { method: 'POST', body: JSON.stringify({ table, key }) });
+  }
+
   // === Pipeline (Regex Routes & File Mappings) ===
   async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
     return this.makeRequest('/admin/pipeline');
@@ -853,12 +892,22 @@ class ApiService {
   async getConfigStatus(): Promise<ApiResponse<{ files: {id:string; relative:string; filename:string; kind:string; required:boolean; sha256?:string; exists:boolean}[]; aggregate_sha256: string }>> {
     return this.makeRequest('/admin/config/status');
   }
-  async downloadConfigBackup(params: { include_seed?: boolean; include_avatars?: boolean; dry_run?: boolean } = {}): Promise<Response> {
+  async downloadConfigBackup(params: { include_seed?: boolean; include_avatars?: boolean; include_db?: boolean; dry_run?: boolean } = {}): Promise<Response> {
     const q = new URLSearchParams();
     if (params.include_seed) q.set('include_seed','true');
     if (params.include_avatars) q.set('include_avatars','true');
+    if (params.include_db === false) q.set('include_db','false');
     if (params.dry_run) q.set('dry_run','true');
     const url = `/admin/config/backup${q.toString()?`?${q.toString()}`:''}`;
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}${url}`, { headers });
+  }
+  async downloadDbDump(tables?: string[]): Promise<Response> {
+    const q = new URLSearchParams();
+    if (tables && tables.length) q.set('tables', tables.join(','));
+    const url = `/admin/db/dump${q.toString()?`?${q.toString()}`:''}`;
     const accessToken = CredentialManager.getAccessToken();
     const headers: Record<string,string> = {};
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;

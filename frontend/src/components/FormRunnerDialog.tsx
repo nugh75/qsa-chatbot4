@@ -8,9 +8,11 @@ type Props = {
   enabledFormIds: string[]
   conversationId?: string | null
   personalityId?: string | null
+  onPostSummary?: (summary: string) => void
+  onConversationReady?: (conversationId: string) => void
 }
 
-const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId }) => {
+const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onConversationReady }) => {
   const [forms, setForms] = React.useState<{ id: string; name: string; description?: string }[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
   const [items, setItems] = React.useState<{ factor: string; description: string; min?: number; max?: number }[]>([])
@@ -64,26 +66,43 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     const payload = { rows: items.map(it=> ({ factor: it.factor, description: it.description, value: Number(values[it.factor]||0) })) }
     const res = await apiService.submitForm(selectedId, payload, { conversationId: conversationId || undefined, personalityId: personalityId || undefined })
     try { localStorage.setItem('last_form_id', selectedId) } catch {}
-    // On success, post a summary assistant message in the current conversation (if available)
+    // Build summary message once (used both for UI and DB persistence)
     try {
-      if (res.success && conversationId) {
-        const lines: string[] = []
-        lines.push('Grazie per i dati inviati!')
-        lines.push('Ecco il riepilogo del tuo invio:')
-        lines.push('')
-        lines.push('DATI')
-        items.forEach(it => {
-          const v = values[it.factor]
-          const range = typeof it.min === 'number' || typeof it.max === 'number' ? ` (range ${it.min ?? '-'}–${it.max ?? '-'})` : ''
-          const inv = (it as any).invertita ? ' [invertita]' : ''
-          lines.push(`- ${it.factor}: ${v ?? ''}${range}${inv}`)
-        })
-        lines.push('')
-        lines.push('I dati sono corretti?')
-        lines.push('• Scrivi "sì" per confermare')
-        lines.push('• Scrivi "no" per reinviare il form')
-        const summary = lines.join('\n')
-        await apiService.sendMessage(conversationId, summary, 'assistant')
+      const lines: string[] = []
+      lines.push('Grazie per i dati inviati!')
+      lines.push('Ecco il riepilogo del tuo invio:')
+      lines.push('')
+      lines.push('DATI')
+      items.forEach(it => {
+        const v = values[it.factor]
+        const range = typeof it.min === 'number' || typeof it.max === 'number' ? ` (range ${it.min ?? '-'}–${it.max ?? '-'})` : ''
+        const inv = (it as any).invertita ? ' [invertita]' : ''
+        lines.push(`- ${it.factor}: ${v ?? ''}${range}${inv}`)
+      })
+      lines.push('')
+      lines.push('I dati sono corretti?')
+      lines.push('• Scrivi "sì" per confermare')
+      lines.push('• Scrivi "no" per reinviare il form')
+      const summary = lines.join('\n')
+      // Update UI immediately
+      onPostSummary?.(summary)
+      // Persist to DB best-effort: ensure conversation exists
+      if (res.success) {
+        let convId = conversationId || null
+        if (!convId) {
+          try {
+            const formName = (forms.find(f=> f.id === selectedId)?.name) || 'Esiti form'
+            const title = `Esiti form: ${formName}`
+            const c = await apiService.createConversation(title)
+            if (c.success && c.data?.conversation_id) {
+              convId = c.data.conversation_id
+              onConversationReady?.(convId)
+            }
+          } catch {/* ignore */}
+        }
+        if (convId) {
+          await apiService.sendMessage(convId, summary, 'assistant')
+        }
       }
     } catch (e) {
       // best-effort: non bloccare il flusso del dialog

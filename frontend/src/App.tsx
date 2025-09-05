@@ -1975,6 +1975,12 @@ const AppContent: React.FC = () => {
         enabledFormIds={(selectedPersonality as any)?.enabled_forms || []}
         conversationId={currentConversationId || undefined}
         personalityId={selectedPersonality?.id || undefined}
+        onPostSummary={(summary: string) => {
+          setMessages(prev => [...prev, { role: 'assistant' as const, content: summary, ts: Date.now() }])
+        }}
+        onConversationReady={(cid: string) => {
+          setCurrentConversationId(cid)
+        }}
       />
 
   <ConversationSidebar

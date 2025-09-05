@@ -207,35 +207,61 @@ export class CredentialManager {
   private static readonly TOKEN_KEY = 'qsa_access_token';
   private static readonly REFRESH_KEY = 'qsa_refresh_token';
   private static readonly USER_KEY = 'qsa_user_info';
+  private static readonly S_TOKEN_KEY = 'qsa_access_token'; // same keys in session scope
+  private static readonly S_REFRESH_KEY = 'qsa_refresh_token';
+  private static readonly S_USER_KEY = 'qsa_user_info';
 
   /**
    * Salva token di autenticazione
    */
-  static saveTokens(accessToken: string, refreshToken: string, userInfo: any): void {
-    localStorage.setItem(this.TOKEN_KEY, accessToken);
-    localStorage.setItem(this.REFRESH_KEY, refreshToken);
-    localStorage.setItem(this.USER_KEY, JSON.stringify(userInfo));
+  static saveTokens(accessToken: string, refreshToken: string, userInfo: any, remember?: boolean): void {
+    // Se 'remember' non è specificato, preserva lo storage esistente: usa local se già presente, altrimenti session se presente, altrimenti local
+    const targetLocal = ((): boolean => {
+      if (typeof remember === 'boolean') return remember;
+      const hasLocal = !!localStorage.getItem(this.TOKEN_KEY);
+      const hasSession = !!sessionStorage.getItem(this.S_TOKEN_KEY);
+      if (hasLocal) return true;
+      if (hasSession) return false;
+      return true; // default
+    })();
+    if (targetLocal) {
+      localStorage.setItem(this.TOKEN_KEY, accessToken);
+      localStorage.setItem(this.REFRESH_KEY, refreshToken);
+      localStorage.setItem(this.USER_KEY, JSON.stringify(userInfo));
+      // Pulisci sessione per evitare ambiguità
+      sessionStorage.removeItem(this.S_TOKEN_KEY);
+      sessionStorage.removeItem(this.S_REFRESH_KEY);
+      sessionStorage.removeItem(this.S_USER_KEY);
+    } else {
+      sessionStorage.setItem(this.S_TOKEN_KEY, accessToken);
+      sessionStorage.setItem(this.S_REFRESH_KEY, refreshToken);
+      sessionStorage.setItem(this.S_USER_KEY, JSON.stringify(userInfo));
+      // Pulisci local per non “ricordare” oltre la sessione
+      localStorage.removeItem(this.TOKEN_KEY);
+      localStorage.removeItem(this.REFRESH_KEY);
+      localStorage.removeItem(this.USER_KEY);
+    }
   }
 
   /**
    * Recupera access token
    */
   static getAccessToken(): string | null {
-    return localStorage.getItem(this.TOKEN_KEY);
+    return localStorage.getItem(this.TOKEN_KEY) || sessionStorage.getItem(this.S_TOKEN_KEY);
   }
 
   /**
    * Recupera refresh token
    */
   static getRefreshToken(): string | null {
-    return localStorage.getItem(this.REFRESH_KEY);
+    return localStorage.getItem(this.REFRESH_KEY) || sessionStorage.getItem(this.S_REFRESH_KEY);
   }
 
   /**
    * Recupera info utente
    */
   static getUserInfo(): any | null {
-    const userInfo = localStorage.getItem(this.USER_KEY);
+    const userInfo = localStorage.getItem(this.USER_KEY) || sessionStorage.getItem(this.S_USER_KEY);
     return userInfo ? JSON.parse(userInfo) : null;
   }
 
@@ -250,16 +276,22 @@ export class CredentialManager {
    * Pulisce credenziali (logout)
    */
   static clearCredentials(): void {
+    // Rimuovi da entrambi gli storage
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.REFRESH_KEY);
     localStorage.removeItem(this.USER_KEY);
+    sessionStorage.removeItem(this.S_TOKEN_KEY);
+    sessionStorage.removeItem(this.S_REFRESH_KEY);
+    sessionStorage.removeItem(this.S_USER_KEY);
   }
 
   /**
    * Aggiorna access token
    */
   static updateAccessToken(newToken: string): void {
+    // Aggiorna in entrambi per sicurezza; quello effettivo sarà letto con priorità local->session
     localStorage.setItem(this.TOKEN_KEY, newToken);
+    sessionStorage.setItem(this.S_TOKEN_KEY, newToken);
   }
 }
 

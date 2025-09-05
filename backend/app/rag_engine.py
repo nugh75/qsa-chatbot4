@@ -18,10 +18,35 @@ except Exception:
     db_manager = None
     USING_POSTGRES = False
 
-# Import per embedding e text processing
-from sentence_transformers import SentenceTransformer
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-import faiss
+# Import per embedding e text processing (opzionali con fallback)
+try:
+    from sentence_transformers import SentenceTransformer  # type: ignore
+except Exception:  # pragma: no cover
+    SentenceTransformer = None  # type: ignore
+
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter  # type: ignore
+except Exception:  # pragma: no cover
+    class RecursiveCharacterTextSplitter:  # type: ignore
+        def __init__(self, chunk_size=1000, chunk_overlap=200, length_function=len, separators=None):
+            self._chunk_size = chunk_size
+            self._chunk_overlap = chunk_overlap
+            self._length_function = length_function
+
+        def split_text(self, text: str):
+            chunks = []
+            n = len(text)
+            step = max(1, self._chunk_size - self._chunk_overlap)
+            i = 0
+            while i < n:
+                chunks.append(text[i : i + self._chunk_size])
+                i += step
+            return chunks
+
+try:
+    import faiss  # type: ignore
+except Exception:  # pragma: no cover
+    faiss = None  # type: ignore
 import pickle
 
 # Setup logging
@@ -64,10 +89,12 @@ class RAGEngine:
             length_function=len,
             separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
         )
-        
-        # FAISS indexes per gruppo
+
+        # FAISS indexes per gruppo (cache in memoria)
         self.group_indexes = {}
-        
+        # Info diagnostica ultima riassegnazione singolo documento
+        self.last_reassign_info = None
+
         # DB backend selection
         self.use_postgres = bool(USING_POSTGRES)
         # Inizializza database
@@ -130,7 +157,7 @@ class RAGEngine:
                 conn.commit()
         else:
             # SQLite rag.db
-            conn = sqlite3.connect(str(self.db_path))
+            conn = self._sqlite_conn()
             try:
                 conn.execute("PRAGMA foreign_keys = ON")
             except Exception:
@@ -205,33 +232,62 @@ class RAGEngine:
             conn.commit()
             conn.close()
 
+    # --- SQLite helpers ---
+    def _sqlite_conn(self):
+        """Open a SQLite connection to rag.db enabling foreign key constraints.
+
+        Foreign key enforcement is per-connection in SQLite; ensure it's ON
+        for all write operations (delete/move/rename) to maintain integrity.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+        return conn
+
     def recover_missing_groups(self) -> Dict[str, Any]:
         """Crea gruppi placeholder per ogni group_id referenziato in rag_documents che non esiste in rag_groups.
 
-        Returns:
-            dict con keys: created (int), recovered (list[{id,name}])
+        Supporta PostgreSQL e SQLite. Ritorna dict con 'created' e lista 'recovered'.
         """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
         created: list[Dict[str, Any]] = []
-        try:
-            cursor.execute("SELECT DISTINCT group_id FROM rag_documents WHERE group_id IS NOT NULL AND group_id != 0")
-            gids = [r[0] for r in cursor.fetchall() if r[0] is not None]
-            if not gids:
-                return {"created": 0, "recovered": []}
-            # Recupera quelli che mancano
-            placeholders = ",".join(["?"] * len(gids))
-            cursor.execute(f"SELECT id FROM rag_groups WHERE id IN ({placeholders})", gids)
-            existing = {r[0] for r in cursor.fetchall()}
-            missing = [g for g in gids if g not in existing]
-            for mid in missing:
-                name = f"Recuperato_{mid}"
-                cursor.execute("INSERT INTO rag_groups (id, name, description) VALUES (?, ?, ?)", (mid, name, "Gruppo ricostruito automaticamente"))
-                created.append({"id": mid, "name": name})
-            if created:
-                conn.commit()
-        finally:
-            conn.close()
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, """
+                    SELECT DISTINCT d.group_id
+                    FROM rag_documents d
+                    LEFT JOIN rag_groups g ON d.group_id = g.id
+                    WHERE d.group_id IS NOT NULL AND d.group_id <> 0 AND g.id IS NULL
+                """)
+                gids = [r[0] for r in cur.fetchall()]
+                for mid in gids:
+                    name = f"Recuperato_{mid}"
+                    try:
+                        db_manager.exec(cur, "INSERT INTO rag_groups (id, name, description) VALUES (?, ?, ?)", (mid, name, "Gruppo ricostruito automaticamente"))
+                        created.append({"id": mid, "name": name})
+                    except Exception:
+                        pass
+                if created:
+                    conn.commit()
+        else:
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT DISTINCT d.group_id FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL")
+                gids = [r[0] for r in cursor.fetchall() if r[0] is not None]
+                for mid in gids:
+                    name = f"Recuperato_{mid}"
+                    try:
+                        cursor.execute("INSERT INTO rag_groups (id, name, description) VALUES (?, ?, ?)", (mid, name, "Gruppo ricostruito automaticamente"))
+                        created.append({"id": mid, "name": name})
+                    except Exception:
+                        pass
+                if created:
+                    conn.commit()
+            finally:
+                conn.close()
         if created:
             logger.warning(f"Recover missing groups: creati {len(created)} gruppi placeholder")
         return {"created": len(created), "recovered": created}
@@ -284,7 +340,7 @@ class RAGEngine:
                     # Unique violation -> group already exists
                     raise ValueError(f"Gruppo '{name}' già esistente: {e}")
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             try:
                 cursor.execute(
@@ -305,14 +361,16 @@ class RAGEngine:
         if self.use_postgres and db_manager is not None:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
+                # Usa subquery per contare documenti e chunks per gruppo ed evitare moltiplicazioni dovute a JOIN multiple
                 db_manager.exec(cursor, """
-                    SELECT g.id, g.name, g.description, g.created_at, g.updated_at,
-                           COUNT(d.id) as document_count,
-                           COUNT(c.id) as chunk_count
+                    SELECT g.id,
+                           g.name,
+                           g.description,
+                           g.created_at,
+                           g.updated_at,
+                           (SELECT COUNT(*) FROM rag_documents d WHERE d.group_id = g.id) AS document_count,
+                           (SELECT COUNT(*) FROM rag_chunks   c WHERE c.group_id = g.id) AS chunk_count
                     FROM rag_groups g
-                    LEFT JOIN rag_documents d ON g.id = d.group_id
-                    LEFT JOIN rag_chunks c ON g.id = c.group_id
-                    GROUP BY g.id, g.name, g.description, g.created_at, g.updated_at
                     ORDER BY g.name
                 """)
                 groups = []
@@ -324,20 +382,22 @@ class RAGEngine:
                         "created_at": row[3],
                         "updated_at": row[4],
                         "document_count": row[5],
-                        "chunk_count": row[6]
+                        "chunk_count": row[6],
                     })
                 return groups
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
+            # Subquery per conteggi accurati anche in SQLite
             cursor.execute("""
-                SELECT g.id, g.name, g.description, g.created_at, g.updated_at,
-                       COUNT(d.id) as document_count,
-                       COUNT(c.id) as chunk_count
+                SELECT g.id,
+                       g.name,
+                       g.description,
+                       g.created_at,
+                       g.updated_at,
+                       (SELECT COUNT(*) FROM rag_documents d WHERE d.group_id = g.id) AS document_count,
+                       (SELECT COUNT(*) FROM rag_chunks   c WHERE c.group_id = g.id) AS chunk_count
                 FROM rag_groups g
-                LEFT JOIN rag_documents d ON g.id = d.group_id
-                LEFT JOIN rag_chunks c ON g.id = c.group_id
-                GROUP BY g.id, g.name, g.description, g.created_at, g.updated_at
                 ORDER BY g.name
             """)
             groups = []
@@ -349,7 +409,7 @@ class RAGEngine:
                     "created_at": row[3],
                     "updated_at": row[4],
                     "document_count": row[5],
-                    "chunk_count": row[6]
+                    "chunk_count": row[6],
                 })
             conn.close()
             return groups
@@ -378,7 +438,7 @@ class RAGEngine:
                     })
                 return docs
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -427,7 +487,7 @@ class RAGEngine:
                     moved = len(ids)
                 conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             try:
                 # Assicura gruppo esistente (nome univoco)
@@ -451,10 +511,154 @@ class RAGEngine:
         if moved:
             logger.info(f"Riassegnati {moved} documenti orfani al gruppo {orphan_group_id}")
         return moved
+
+    def ensure_orphan_group(self) -> int:
+        """Ritorna l'id del gruppo speciale 'Orfani', creandolo se non esiste."""
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                db_manager.exec(cursor, "SELECT id FROM rag_groups WHERE name = ?", ("Orfani",))
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+                db_manager.exec(cursor, "INSERT INTO rag_groups (name, description) VALUES (?, ?) RETURNING id", ("Orfani", "Documenti senza gruppo esplicito"))
+                gid = cursor.fetchone()[0]
+                conn.commit()
+                return gid
+        else:
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT id FROM rag_groups WHERE name = ?", ("Orfani",))
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+                cursor.execute("INSERT INTO rag_groups (name, description) VALUES (?, ?)", ("Orfani", "Documenti senza gruppo esplicito"))
+                gid = cursor.lastrowid
+                conn.commit()
+                return gid
+            finally:
+                conn.close()
+
+    def reassign_document_to_orphans(self, document_id: int) -> int:
+        """Riassegna un singolo documento (e i suoi chunks) al gruppo 'Orfani'.
+
+        Ritorna l'id del gruppo 'Orfani'. Ricostruisce gli indici dei gruppi coinvolti.
+        """
+        self.last_reassign_info = {
+            "document_id": document_id,
+            "duplicate_removed": False,
+            "already_in_orphans": False,
+            "backend": "postgres" if self.use_postgres and db_manager is not None else "sqlite",
+            "db_path": str(self.db_path),
+        }
+        orphan_gid = self.ensure_orphan_group()
+        old_gid: Optional[int] = None
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    db_manager.exec(cur, "SELECT group_id, file_hash FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cur.fetchone()
+                    if not row:
+                        logger.warning(f"[RAG] reassign_orphans: documento non trovato (id=%s) on backend=postgres", document_id)
+                        raise ValueError("Documento non trovato")
+                    old_gid, file_hash = row[0], row[1]
+                    if old_gid == orphan_gid:
+                        self.last_reassign_info["already_in_orphans"] = True
+                        return orphan_gid
+                    try:
+                        db_manager.exec(cur, "UPDATE rag_documents SET group_id = ? WHERE id = ?", (orphan_gid, document_id))
+                        db_manager.exec(cur, "UPDATE rag_chunks SET group_id = ? WHERE document_id = ?", (orphan_gid, document_id))
+                    except Exception as ue:
+                        msg = str(ue).lower()
+                        if 'unique' in msg or 'duplicate' in msg or 'uq_documents_hash_group' in msg:
+                            # collisione: documento con stesso file_hash già presente negli Orfani
+                            try:
+                                db_manager.exec(cur, "SELECT id FROM rag_documents WHERE file_hash = ? AND group_id = ? AND id != ?", (file_hash, orphan_gid, document_id))
+                                dup = cur.fetchone()
+                                if dup:
+                                    try:
+                                        db_manager.exec(cur, "DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                                    except Exception:
+                                        pass
+                                    db_manager.exec(cur, "DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                                    self.last_reassign_info["duplicate_removed"] = True
+                                    logger.info(f"Documento {document_id} rimosso come duplicato durante riassegnazione agli Orfani (target id {dup[0]})")
+                                else:
+                                    raise
+                            except Exception:
+                                raise
+                        else:
+                            raise
+                    conn.commit()
+                finally:
+                    pass
+        else:
+            conn = self._sqlite_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("SELECT group_id, file_hash FROM rag_documents WHERE id = ?", (document_id,))
+                row = cur.fetchone()
+                if not row:
+                    try:
+                        # Extra diagnostica: conta record totali e qualche id vicino
+                        cur.execute("SELECT COUNT(*) FROM rag_documents")
+                        total_docs = cur.fetchone()[0]
+                        cur.execute("SELECT id, group_id, filename FROM rag_documents ORDER BY id DESC LIMIT 5")
+                        sample = cur.fetchall()
+                        logger.warning(
+                            "[RAG] reassign_orphans: documento non trovato (id=%s) on backend=sqlite db=%s total=%s last5=%s",
+                            document_id,
+                            self.db_path,
+                            total_docs,
+                            [(r[0], r[1]) for r in sample] if sample else []
+                        )
+                    except Exception:
+                        pass
+                    raise ValueError("Documento non trovato")
+                old_gid, file_hash = row[0], row[1]
+                if old_gid == orphan_gid:
+                    self.last_reassign_info["already_in_orphans"] = True
+                    return orphan_gid
+                try:
+                    cur.execute("UPDATE rag_documents SET group_id = ? WHERE id = ?", (orphan_gid, document_id))
+                    cur.execute("UPDATE rag_chunks SET group_id = ? WHERE document_id = ?", (orphan_gid, document_id))
+                except Exception as ue:
+                    msg = str(ue).lower()
+                    if isinstance(ue, sqlite3.IntegrityError) or 'unique' in msg or 'duplicate' in msg:
+                        cur.execute("SELECT id FROM rag_documents WHERE file_hash = ? AND group_id = ? AND id != ?", (file_hash, orphan_gid, document_id))
+                        dup = cur.fetchone()
+                        if dup:
+                            try:
+                                cur.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                            except Exception:
+                                pass
+                            cur.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                            self.last_reassign_info["duplicate_removed"] = True
+                            logger.info(f"Documento {document_id} rimosso come duplicato durante riassegnazione agli Orfani (target id {dup[0]})")
+                        else:
+                            raise
+                    else:
+                        raise
+                conn.commit()
+            finally:
+                conn.close()
+        # Rebuild indici per ricerca coerente
+        try:
+            if old_gid and old_gid != orphan_gid:
+                self._rebuild_group_index(old_gid)
+        except Exception:
+            pass
+        try:
+            self._rebuild_group_index(orphan_gid)
+        except Exception:
+            pass
+        return orphan_gid
     
     def delete_group(self, group_id: int):
         """Elimina un gruppo e tutti i suoi documenti"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._sqlite_conn()
         cursor = conn.cursor()
         
         # Rimuovi anche l'indice FAISS se esiste
@@ -549,7 +753,7 @@ class RAGEngine:
                         pass
                     raise ValueError(f"Errore inserimento documento: {e}")
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             try:
                 # Verifica presenza colonna stored_filename (migrazione soft)
@@ -667,7 +871,7 @@ class RAGEngine:
                     )
                 conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             for i, (chunk_text, embedding) in enumerate(zip(chunks, embeddings)):
                 metadata = {
@@ -699,6 +903,10 @@ class RAGEngine:
         """Ricostruisce l'indice FAISS per un gruppo"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        # Se FAISS non disponibile, evita crash
+        if 'faiss' not in globals() or faiss is None:  # type: ignore
+            logger.warning("FAISS non disponibile: skip rebuild indice per gruppo %s", group_id)
+            return
         # Recupera embeddings solo dei documenti non archiviati (se colonna presente)
         has_archived = False
         try:
@@ -887,7 +1095,7 @@ class RAGEngine:
                     })
                 return documents
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             # Verifica che la colonna stored_filename esista (installazioni precedenti potrebbero non averla)
             try:
@@ -969,7 +1177,7 @@ class RAGEngine:
                     "archived": bool(row[10])
                 }
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("PRAGMA table_info(rag_documents)")
             cols = [r[1] for r in cursor.fetchall()]
@@ -1003,7 +1211,7 @@ class RAGEngine:
                 db_manager.exec(cursor, "UPDATE rag_documents SET filename = ? WHERE id = ?", (new_filename, document_id))
                 conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("UPDATE rag_documents SET filename = ? WHERE id = ?", (new_filename, document_id))
             conn.commit()
@@ -1016,18 +1224,31 @@ class RAGEngine:
                 db_manager.exec(cursor, "SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
                 row = cursor.fetchone()
                 if not row:
+                    logger.warning("[RAG] move_document: documento non trovato id=%s backend=postgres target_group=%s", document_id, new_group_id)
                     raise ValueError("Documento non trovato")
                 old_group = row[0]
                 db_manager.exec(cursor, "UPDATE rag_documents SET group_id = ? WHERE id = ?", (new_group_id, document_id))
                 db_manager.exec(cursor, "UPDATE rag_chunks SET group_id = ? WHERE document_id = ?", (new_group_id, document_id))
                 conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
             row = cursor.fetchone()
             if not row:
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM rag_documents")
+                    total_docs = cursor.fetchone()[0]
+                except Exception:
+                    total_docs = None
+                try:
+                    cursor.execute("SELECT id FROM rag_documents ORDER BY id DESC LIMIT 5")
+                    sample = [r[0] for r in cursor.fetchall()]
+                except Exception:
+                    sample = []
                 conn.close()
+                logger.warning("[RAG] move_document: documento non trovato id=%s backend=sqlite db=%s total=%s last5=%s target_group=%s",
+                               document_id, self.db_path, total_docs, sample, new_group_id)
                 raise ValueError("Documento non trovato")
             old_group = row[0]
             cursor.execute("UPDATE rag_documents SET group_id = ? WHERE id = ?", (new_group_id, document_id))
@@ -1052,7 +1273,7 @@ class RAGEngine:
                 db_manager.exec(cursor, "SELECT content FROM rag_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,))
                 parts = [r[0] for r in cursor.fetchall()]
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT filename, original_filename FROM rag_documents WHERE id = ?", (document_id,))
             row = cursor.fetchone()
@@ -1073,6 +1294,7 @@ class RAGEngine:
         return new_id
 
     def reprocess_document(self, document_id: int, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None):
+        """Rigenera i chunk di un documento ricostruendo il testo dai chunk esistenti."""
         # Retrieve document text by joining chunks; could be optimized by caching original text separately.
         if self.use_postgres and db_manager is not None:
             with db_manager.get_connection() as conn:
@@ -1084,8 +1306,151 @@ class RAGEngine:
                 group_id = row[0]
                 db_manager.exec(cursor, "SELECT content FROM rag_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,))
                 parts = [r[0] for r in cursor.fetchall()]
+                # Delete old chunks
+                db_manager.exec(cursor, "DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                raise ValueError("Documento non trovato")
+            group_id = row[0]
+            cursor.execute("SELECT content FROM rag_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,))
+            parts = [r[0] for r in cursor.fetchall()]
+            # Delete old chunks
+            cursor.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+            conn.commit()
+            conn.close()
+        full_text = "\n".join(parts)
+        # Temporarily adjust splitter
+        old_splitter = self.text_splitter
+        if chunk_size or chunk_overlap:
+            self.text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size or getattr(old_splitter, '_chunk_size', 1000),
+                chunk_overlap=chunk_overlap or getattr(old_splitter, '_chunk_overlap', 200),
+                length_function=len,
+                separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
+            )
+        try:
+            new_count = self._process_document(document_id, group_id, full_text)
+            if self.use_postgres and db_manager is not None:
+                with db_manager.get_connection() as conn3:
+                    cur3 = conn3.cursor()
+                    db_manager.exec(cur3, "UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (new_count, document_id))
+                    conn3.commit()
+            else:
+                conn2 = self._sqlite_conn()
+                cur2 = conn2.cursor()
+                cur2.execute("UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (new_count, document_id))
+                conn2.commit()
+                conn2.close()
+            return new_count
+        finally:
+            self.text_splitter = old_splitter
+
+    def force_delete_document(self, document_id: int) -> bool:
+        """Force delete a document and its chunks, remove stored file, and rebuild index.
+
+        Returns True if after the operation the document no longer exists (idempotent success).
+        """
+        removed_file = False
+        group_id = None
+        stored_filename = None
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                # Pre-fetch info for cleanup/reindex
+                try:
+                    db_manager.exec(cur, "SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cur.fetchone()
+                    if row:
+                        group_id = row[0]
+                        stored_filename = row[1]
+                except Exception:
+                    pass
+                # Remove chunks first (robust even if FK is not cascading as expected)
+                try:
+                    db_manager.exec(cur, "DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                except Exception:
+                    pass
+                db_manager.exec(cur, "DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                conn.commit()
+                # Remove stored file if any
+                try:
+                    if stored_filename:
+                        fpath = self.originals_dir / stored_filename
+                        if fpath.exists():
+                            fpath.unlink()
+                            removed_file = True
+                except Exception:
+                    pass
+                # Rebuild index for group, if any
+                try:
+                    if group_id:
+                        self._rebuild_group_index(group_id)
+                except Exception:
+                    pass
+                # Verify absence
+                try:
+                    db_manager.exec(cur, "SELECT 1 FROM rag_documents WHERE id = ?", (document_id,))
+                    still = cur.fetchone()
+                    return False if still else True
+                except Exception:
+                    # If verification fails, fall back to optimistic True
+                    return True
+        else:
+            conn = self._sqlite_conn()
+            cur = conn.cursor()
+            try:
+                # Pre-fetch info
+                try:
+                    cur.execute("SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cur.fetchone()
+                    if row:
+                        group_id = row[0]
+                        stored_filename = row[1]
+                except Exception:
+                    pass
+                # Delete chunks and document
+                try:
+                    cur.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                except Exception:
+                    pass
+                cur.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                conn.commit()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            # Remove stored file if any
+            try:
+                if stored_filename:
+                    fpath = self.originals_dir / stored_filename
+                    if fpath.exists():
+                        fpath.unlink()
+                        removed_file = True
+            except Exception:
+                pass
+            # Rebuild index for group, if any
+            try:
+                if group_id:
+                    self._rebuild_group_index(group_id)
+            except Exception:
+                pass
+            # Verify absence on a fresh connection
+            try:
+                vconn = self._sqlite_conn()
+                vcur = vconn.cursor()
+                vcur.execute("SELECT 1 FROM rag_documents WHERE id = ?", (document_id,))
+                still = vcur.fetchone()
+                vconn.close()
+                return False if still else True
+            except Exception:
+                return True
             cursor = conn.cursor()
             cursor.execute("SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
             row = cursor.fetchone()
@@ -1121,7 +1486,7 @@ class RAGEngine:
                     db_manager.exec(cur3, "UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (new_count, document_id))
                     conn3.commit()
             else:
-                conn2 = sqlite3.connect(self.db_path)
+                conn2 = self._sqlite_conn()
                 cur2 = conn2.cursor()
                 cur2.execute("UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (new_count, document_id))
                 conn2.commit()
@@ -1152,7 +1517,7 @@ class RAGEngine:
                         "metadata": md
                     })
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT id, chunk_index, content, metadata FROM rag_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,))
             chunks = []
@@ -1179,7 +1544,7 @@ class RAGEngine:
                 db_manager.exec(cursor, "UPDATE rag_documents SET archived = ? WHERE id = ?", (bool(archived), document_id))
                 conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
             row = cursor.fetchone()
@@ -1194,30 +1559,95 @@ class RAGEngine:
         self._rebuild_group_index(group_id)
     
     def delete_document(self, document_id: int):
-        """Elimina un documento e tutti i suoi chunks"""
+        """Elimina un documento (soft/standard). Ritorna dict con esito.
+
+        Returns:
+            {"deleted": bool, "document_id": int, "group_id": Optional[int]}
+        """
+        stored_filename = None
+        group_id = None
+        deleted = False
         if self.use_postgres and db_manager is not None:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                db_manager.exec(cursor, "SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
+                try:
+                    db_manager.exec(cursor, "SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                    result = cursor.fetchone()
+                    if result:
+                        group_id, stored_filename = result[0], result[1]
+                        db_manager.exec(cursor, "DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                        conn.commit()
+                        deleted = True
+                except Exception as e:
+                    logger.error(f"Errore eliminazione documento {document_id}: {e}")
+                # Cleanup file
+                if deleted and stored_filename:
+                    try:
+                        fpath = self.originals_dir / stored_filename
+                        if fpath.exists():
+                            fpath.unlink()
+                    except Exception:
+                        pass
+                # Rebuild index
+                if deleted and group_id:
+                    try:
+                        self._rebuild_group_index(group_id)
+                    except Exception:
+                        pass
+                # Verifica assenza
+                try:
+                    db_manager.exec(cursor, "SELECT 1 FROM rag_documents WHERE id = ?", (document_id,))
+                    still = cursor.fetchone()
+                    if still:
+                        deleted = False
+                except Exception:
+                    pass
+        else:
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
                 result = cursor.fetchone()
                 if result:
-                    group_id = result[0]
-                    db_manager.exec(cursor, "DELETE FROM rag_documents WHERE id = ?", (document_id,))
+                    group_id, stored_filename = result[0], result[1]
+                    cursor.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
                     conn.commit()
+                    deleted = cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"Errore eliminazione documento {document_id}: {e}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            if deleted and stored_filename:
+                try:
+                    fpath = self.originals_dir / stored_filename
+                    if fpath.exists():
+                        fpath.unlink()
+                except Exception:
+                    pass
+            if deleted and group_id:
+                try:
                     self._rebuild_group_index(group_id)
-                    logger.info(f"Documento {document_id} eliminato")
+                except Exception:
+                    pass
+            # Verifica con nuova connessione
+            try:
+                vconn = self._sqlite_conn()
+                vcur = vconn.cursor()
+                vcur.execute("SELECT 1 FROM rag_documents WHERE id = ?", (document_id,))
+                still = vcur.fetchone()
+                vconn.close()
+                if still:
+                    deleted = False
+            except Exception:
+                pass
+        if deleted:
+            logger.info(f"[RAG] Documento {document_id} eliminato (non-force) group={group_id}")
         else:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT group_id FROM rag_documents WHERE id = ?", (document_id,))
-            result = cursor.fetchone()
-            if result:
-                group_id = result[0]
-                cursor.execute("DELETE FROM rag_documents WHERE id = ?", (document_id,))
-                conn.commit()
-                self._rebuild_group_index(group_id)
-                logger.info(f"Documento {document_id} eliminato")
-            conn.close()
+            logger.warning(f"[RAG] Delete richiesto per documento {document_id} ma il record persiste o non esisteva (backend={'postgres' if self.use_postgres and db_manager is not None else 'sqlite'} db={self.db_path})")
+        return {"deleted": deleted, "document_id": document_id, "group_id": group_id}
     
     def get_stats(self) -> Dict[str, Any]:
         """Restituisce statistiche del sistema RAG"""
@@ -1240,7 +1670,7 @@ class RAGEngine:
                 db_manager.exec(cursor, "SELECT SUM(file_size) FROM rag_documents")
                 total_size = cursor.fetchone()[0] or 0
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM rag_groups")
             total_groups = cursor.fetchone()[0]
@@ -1284,7 +1714,7 @@ class RAGEngine:
                 n = cursor.fetchone()[0] or 0
                 return n
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT COUNT(c.id)
@@ -1315,7 +1745,7 @@ class RAGEngine:
                     removed = cursor.rowcount if hasattr(cursor, 'rowcount') else len(ids)
                     conn.commit()
         else:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._sqlite_conn()
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT c.id

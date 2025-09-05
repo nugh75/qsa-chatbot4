@@ -8,6 +8,7 @@ e un modello configurabili (indipendenti dalla personalità principale).
 """
 from typing import Any, Dict, List, Optional, Tuple
 import re
+import os
 from datetime import datetime
 
 from .admin import load_config
@@ -23,6 +24,8 @@ DEFAULT_SETTINGS = {
     "model": None,  # lascia che chat_with_provider risolva il default/provider-selected
     "temperature": 0.2,
     "limit_per_table": 8,
+    # Prompt di sistema personalizzabile (se non fornito, usa il default sotto)
+    "system_prompt": None,
 }
 
 
@@ -32,6 +35,27 @@ def get_settings() -> Dict[str, Any]:
 
 
 def build_system_prompt() -> str:
+    """Restituisce il prompt di sistema per il sottoagente.
+
+    Ordine di priorità:
+    1) Variabile d'ambiente DATA_TABLES_AGENT_SYSTEM_PROMPT (se non vuota)
+    2) Campo config data_tables_settings.system_prompt (se non vuoto)
+    3) Prompt di default codificato di seguito
+    """
+    try:
+        env_prompt = os.getenv('DATA_TABLES_AGENT_SYSTEM_PROMPT')  # type: ignore[name-defined]
+    except Exception:
+        env_prompt = None
+    if isinstance(env_prompt, str) and env_prompt.strip():
+        return env_prompt
+    try:
+        settings = get_settings()
+        custom = settings.get('system_prompt')
+        if isinstance(custom, str) and custom.strip():
+            return custom
+    except Exception:
+        pass
+    # Default storico
     return (
         "Sei un assistente dati. Riceverai: (1) la domanda dell'utente e (2) gli schemi delle tabelle disponibili (nome colonne).\n"
         "Compito: proponi query strutturate (nessun SQL libero) come JSON:\n"

@@ -17,6 +17,7 @@ from pathlib import Path
 from .rag_engine import rag_engine
 from .file_processing import extract_text_from_pdf, extract_text_from_docx
 from .auth import get_current_admin_user
+from .logging_utils import get_system_logger
 
 # Pydantic models
 class GroupCreate(BaseModel):
@@ -187,10 +188,39 @@ async def upload_documents(
 async def delete_document(document_id: int, current_user = Depends(get_current_admin_user)):
     """Elimina un documento"""
     try:
-        rag_engine.delete_document(document_id)
-        return {"success": True, "message": f"Documento {document_id} eliminato"}
+        result = rag_engine.delete_document(document_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail="Documento non trovato o non eliminato")
+        try:
+            get_system_logger().info(f"[RAG] Delete document id={document_id} (non-force) group={result.get('group_id')}")
+        except Exception:
+            pass
+        return {"success": True, "message": f"Documento {document_id} eliminato", "group_id": result.get("group_id")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nell'eliminazione: {str(e)}")
+
+# ---- Admin maintenance & force operations ----
+@router.post("/admin/rag/maintenance/fix-orphans")
+async def fix_orphans(current_user = Depends(get_current_admin_user)):
+    try:
+        recovered = rag_engine.recover_missing_groups()
+        moved = rag_engine.reassign_orphan_documents()
+        removed = rag_engine.delete_orphan_chunks()
+        return {"success": True, "created_groups": recovered.get('created', 0), "recovered_groups": recovered.get('recovered', []), "moved_documents": moved, "removed_chunks": removed}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.delete("/admin/rag/documents/{document_id}/force")
+async def force_delete_document(document_id: int, current_user = Depends(get_current_admin_user)):
+    try:
+        deleted = rag_engine.force_delete_document(document_id)
+        try:
+            get_system_logger().info(f"[RAG] Force delete document via rag_routes id={document_id} deleted={bool(deleted)}")
+        except Exception:
+            pass
+        return {"success": True, "deleted": bool(deleted)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione forzata: {str(e)}")
 
 @router.post("/rag/search")
 async def search_documents(search_request: SearchRequest):

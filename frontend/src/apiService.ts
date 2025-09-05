@@ -556,6 +556,9 @@ class ApiService {
   async cleanupRagOrphanChunks(): Promise<ApiResponse<{ removed: number }>> {
     return this.makeRequest('/admin/rag/orphans/cleanup-chunks', { method: 'POST' });
   }
+  async cleanupRagOrphanDocuments(): Promise<ApiResponse<{ deleted: number; requested: number }>> {
+    return this.makeRequest('/admin/rag/orphans/cleanup-documents', { method: 'POST' });
+  }
   async createRagGroup(name: string, description: string): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
   }
@@ -591,6 +594,9 @@ class ApiService {
   }
   async ragDocumentMetadata(documentId: number): Promise<ApiResponse<{ document: any }>> {
     return this.makeRequest<{ document: any }>(`/admin/rag/documents/${documentId}/metadata`);
+  }
+  async reassignRagDocumentToOrphans(documentId: number): Promise<ApiResponse<{ group_id: number; duplicate_removed?: boolean; already_in_orphans?: boolean }>> {
+    return this.makeRequest<{ group_id: number; duplicate_removed?: boolean; already_in_orphans?: boolean }>(`/admin/rag/documents/${documentId}/reassign-orphans`, { method: 'POST' });
   }
   async forceDeleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
     return this.makeRequest(`/admin/rag/documents/${documentId}/force`, { method: 'DELETE' });

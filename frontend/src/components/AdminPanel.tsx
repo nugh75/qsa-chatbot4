@@ -80,7 +80,7 @@ import { it } from 'date-fns/locale';
 
 // Import servizi
 import { apiService } from '../apiService';
-import AdminRAGManagement from './AdminRAGManagement';
+import RagDocumentsPanel from './RagDocumentsPanel';
 // import AdminUserManagement from './AdminUserManagement';
 
 interface AdminStats {
@@ -1747,7 +1747,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
           {currentTab === 1 && <UsersTab />}
           {currentTab === 2 && <DevicesTab />}
           {currentTab === 3 && <PipelineTab />}
-          {currentTab === 4 && <AdminRAGManagement />}
+          {currentTab === 4 && <RagDocumentsPanel />}
           {currentTab === 5 && <PromptsTab />}
           {currentTab === 6 && <WelcomeGuidesTab />}
         </Box>

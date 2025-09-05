@@ -435,6 +435,9 @@ async def get_public_personalities():
                     "temperature": p.get("temperature"),
                     "enabled_forms": p.get("enabled_forms") or [],
                     "enabled_data_tables": p.get("enabled_data_tables") or [],
+                    # UI visibility flags
+                    "show_pipeline_topics": p.get("show_pipeline_topics", True),
+                    "show_source_docs": p.get("show_source_docs", True),
                 }
                 for p in data.get("personalities", []) if p.get('active', True)
             ]

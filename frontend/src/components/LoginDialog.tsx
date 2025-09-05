@@ -43,14 +43,15 @@ interface UserInfo {
 interface LoginForm {
   email: string;
   password: string;
+  // Unico flag: se attivo, mantiene l'accesso e salva la chiave finché il browser resta aperto
   rememberMe: boolean;
-  rememberKeyThisSession?: boolean;
 }
 
 interface RegisterForm {
   email: string;
   password: string;
   confirmPassword: string;
+  rememberMe?: boolean;
 }
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
@@ -72,21 +73,21 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
     email: '',
     password: '',
     rememberMe: false,
-    rememberKeyThisSession: false,
   });
 
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
     email: '',
     password: '',
     confirmPassword: '',
+    rememberMe: false,
   });
 
   useEffect(() => {
     if (open) {
       // Reset form quando si apre
       setError(null);
-      setLoginForm({ email: '', password: '', rememberMe: false, rememberKeyThisSession: false });
-      setRegisterForm({ email: '', password: '', confirmPassword: '' });
+      setLoginForm({ email: '', password: '', rememberMe: false });
+      setRegisterForm({ email: '', password: '', confirmPassword: '', rememberMe: false });
     }
   }, [open]);
 
@@ -111,7 +112,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         CredentialManager.saveTokens(
           response.data.access_token,
           response.data.refresh_token,
-          {} // userInfo temporaneo, verrà aggiornato dopo
+          {}, // userInfo temporaneo, verrà aggiornato dopo
+          loginForm.rememberMe
         );
 
         // Poi ottieni info utente (ora il token è disponibile)
@@ -137,11 +139,11 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           await crypto.deriveKeyFromPassword(
             loginForm.password,
             loginForm.email,
-            !!loginForm.rememberKeyThisSession
+            !!loginForm.rememberMe // estraibile solo se vogliamo salvarla in sessione
           );
 
-          // Se richiesto, salva la chiave in sessionStorage
-          if (loginForm.rememberKeyThisSession) {
+          // Se richiesto, salva la chiave in sessionStorage (valida finché il browser resta aperto)
+          if (loginForm.rememberMe) {
             try {
               const raw = await crypto.exportCurrentKeyRaw();
               sessionStorage.setItem('qsa_crypto_key_raw', raw);
@@ -239,7 +241,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         CredentialManager.saveTokens(
           response.data.access_token,
           response.data.refresh_token,
-          {} // userInfo temporaneo, verrà aggiornato dopo
+          {}, // userInfo temporaneo, verrà aggiornato dopo
+          !!registerForm.rememberMe
         );
         
         console.log('✅ Tokens saved to localStorage');
@@ -262,12 +265,23 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           CredentialManager.saveTokens(
             response.data.access_token,
             response.data.refresh_token,
-            userInfo
+            userInfo,
+            !!registerForm.rememberMe
           );
 
           // Inizializza crypto
           const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(registerForm.password, registerForm.email);
+          await crypto.deriveKeyFromPassword(registerForm.password, registerForm.email, !!registerForm.rememberMe);
+
+          if (registerForm.rememberMe) {
+            try {
+              const raw = await crypto.exportCurrentKeyRaw();
+              sessionStorage.setItem('qsa_crypto_key_raw', raw);
+              sessionStorage.setItem('qsa_crypto_key_user', registerForm.email);
+            } catch (e) {
+              console.warn('Impossibile salvare la chiave in sessione:', e);
+            }
+          }
 
           onLoginSuccess(userInfo, crypto);
           onClose();
@@ -369,17 +383,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                     onChange={(e) => setLoginForm(prev => ({ ...prev, rememberMe: e.target.checked }))}
                   />
                 }
-                label="Ricordami"
-              />
-
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={!!loginForm.rememberKeyThisSession}
-                    onChange={(e) => setLoginForm(prev => ({ ...prev, rememberKeyThisSession: e.target.checked }))}
-                  />
-                }
-                label="Ricorda chiave finché il browser resta aperto"
+                label="Ricordami (mantieni accesso, chiave finché il browser resta aperto)"
               />
             </Box>
           ) : (
@@ -428,21 +432,31 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                 required
               />
 
-              <TextField
-                fullWidth
-                label="Conferma Password"
-                type={showPassword ? 'text' : 'password'}
-                value={registerForm.confirmPassword}
-                onChange={(e) => setRegisterForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <LockIcon />
-                    </InputAdornment>
-                  ),
-                }}
-                required
-              />
+            <TextField
+              fullWidth
+              label="Conferma Password"
+              type={showPassword ? 'text' : 'password'}
+              value={registerForm.confirmPassword}
+              onChange={(e) => setRegisterForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LockIcon />
+                  </InputAdornment>
+                ),
+              }}
+              required
+            />
+
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={!!registerForm.rememberMe}
+                  onChange={(e) => setRegisterForm(prev => ({ ...prev, rememberMe: e.target.checked }))}
+                />
+              }
+              label="Ricordami (mantieni accesso, chiave finché il browser resta aperto)"
+            />
 
               <Typography variant="caption" color="text.secondary">
                 Creando un account, le tue conversazioni saranno crittografate end-to-end

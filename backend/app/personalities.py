@@ -88,7 +88,7 @@ def _ensure_personality_schema():
                 END $$;
                 """)
                 conn.commit()
-            # Ensure optional JSON column exists
+            # Ensure optional JSON/BOOL columns exist
             db_manager.exec(cur, """
                 SELECT 1 FROM information_schema.columns
                 WHERE table_name = 'personalities' AND column_name = 'enabled_data_tables'
@@ -104,6 +104,21 @@ def _ensure_personality_schema():
             exists2 = cur.fetchone()
             if not exists2:
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_forms JSONB DEFAULT '[]'::jsonb")
+            # Show/hide flags for UI visibility
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'show_pipeline_topics'
+            """)
+            exists3 = cur.fetchone()
+            if not exists3:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN show_pipeline_topics BOOLEAN NOT NULL DEFAULT TRUE")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'show_source_docs'
+            """)
+            exists4 = cur.fetchone()
+            if not exists4:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN show_source_docs BOOLEAN NOT NULL DEFAULT TRUE")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -190,6 +205,8 @@ def load_personalities() -> Dict:
                 'enabled_rag_groups': d.get('enabled_rag_groups') or [],
                 'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
                 'enabled_data_tables': d.get('enabled_data_tables') or [],
+                'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
+                'show_source_docs': bool(d.get('show_source_docs', True)),
             })
         return {'default_id': default_id, 'personalities': items}
 
@@ -219,6 +236,8 @@ def upsert_personality(
     enabled_data_tables: Optional[List[str]] = None,
     enabled_forms: Optional[List[str]] = None,
     max_tokens: Optional[int] = None,
+    show_pipeline_topics: Optional[bool] = None,
+    show_source_docs: Optional[bool] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -236,8 +255,10 @@ def upsert_personality(
             INSERT INTO personalities (
                 id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
                 welcome_message, guide_id, context_window, temperature, max_tokens, active,
-                enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms, is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
+                show_pipeline_topics, show_source_docs,
+                is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -257,11 +278,16 @@ def upsert_personality(
                 enabled_mcp_servers = EXCLUDED.enabled_mcp_servers,
                 enabled_data_tables = EXCLUDED.enabled_data_tables,
                 enabled_forms = EXCLUDED.enabled_forms,
+                show_pipeline_topics = EXCLUDED.show_pipeline_topics,
+                show_source_docs = EXCLUDED.show_source_docs,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
             welcome_message, guide_id, context_window, temperature, max_tokens, bool(active),
-            e_topics, e_groups, e_mcp, e_tables, e_forms, bool(False)
+            e_topics, e_groups, e_mcp, e_tables, e_forms,
+            True if show_pipeline_topics is None else bool(show_pipeline_topics),
+            True if show_source_docs is None else bool(show_source_docs),
+            bool(False)
         ))
         if set_default:
             db_manager.exec(cur, "UPDATE personalities SET is_default = FALSE WHERE is_default = TRUE")
@@ -335,4 +361,6 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'enabled_rag_groups': d.get('enabled_rag_groups') or [],
             'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
             'enabled_data_tables': d.get('enabled_data_tables') or [],
+            'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
+            'show_source_docs': bool(d.get('show_source_docs', True)),
         }

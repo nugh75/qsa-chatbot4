@@ -55,6 +55,9 @@ const PersonalitiesPanel: React.FC = () => {
   // Forms (questionari)
   const [forms, setForms] = useState<{ id: string; name: string; description?: string; items_count: number }[]>([])
   const [selectedForms, setSelectedForms] = useState<string[]>([])
+  // UI visibility flags
+  const [showPipelineTopics, setShowPipelineTopics] = useState<boolean>(true)
+  const [showSourceDocs, setShowSourceDocs] = useState<boolean>(true)
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
   // Test inline LLM
@@ -245,10 +248,12 @@ const PersonalitiesPanel: React.FC = () => {
     setAvatarFile(null); setAvatarPreview(effectiveAvatarUrl); setRemoveAvatar(false); setActive(p.active !== false); setTtsProvider(p.tts_provider || ''); setTtsVoice((p as any).tts_voice || '');
     // Carica configurazioni pipeline e RAG
     setSelectedPipelineTopics(p.enabled_pipeline_topics || []);
-    setSelectedRagGroups(p.enabled_rag_groups || []);
+    setSelectedRagGroups((p.enabled_rag_groups as any[] || []).map((x:any)=> typeof x === 'number' ? x : parseInt(String(x),10)).filter((n:number)=> !isNaN(n)));
     setSelectedMcpServers(p.enabled_mcp_servers || []);
     setSelectedDataTables((p as any).enabled_data_tables || []);
     setSelectedForms((p as any).enabled_forms || []);
+    setShowPipelineTopics((p as any).show_pipeline_topics !== false)
+    setShowSourceDocs((p as any).show_source_docs !== false)
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -307,7 +312,9 @@ const PersonalitiesPanel: React.FC = () => {
           enabled_rag_groups: selectedRagGroups,
           enabled_mcp_servers: selectedMcpServers,
           enabled_data_tables: selectedDataTables,
-          enabled_forms: selectedForms
+          enabled_forms: selectedForms,
+          show_pipeline_topics: showPipelineTopics,
+          show_source_docs: showSourceDocs
         })
       })
       if (res.ok) {
@@ -357,6 +364,8 @@ const PersonalitiesPanel: React.FC = () => {
             ;(p as any).enabled_mcp_servers = selectedMcpServers
             ;(p as any).enabled_data_tables = selectedDataTables
             ;(p as any).enabled_forms = selectedForms
+            ;(p as any).show_pipeline_topics = showPipelineTopics
+            ;(p as any).show_source_docs = showSourceDocs
             list[idx] = p
           } else {
             list.push({
@@ -378,7 +387,9 @@ const PersonalitiesPanel: React.FC = () => {
               enabled_rag_groups: selectedRagGroups,
               enabled_mcp_servers: selectedMcpServers,
               enabled_data_tables: selectedDataTables,
-              enabled_forms: selectedForms
+              enabled_forms: selectedForms,
+              show_pipeline_topics: showPipelineTopics,
+              show_source_docs: showSourceDocs
             })
           }
           return { ...prev, personalities: list }
@@ -738,6 +749,17 @@ const PersonalitiesPanel: React.FC = () => {
                   {pipelineTopics.length === 0 && (
                     <Typography variant="caption" color="text.secondary">Nessun topic pipeline disponibile</Typography>
                   )}
+                </FormGroup>
+              </Paper>
+            </Box>
+
+            {/* Visibilità in chat */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Visibilità in Chat</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1 }}>
+                <FormGroup>
+                  <FormControlLabel control={<Checkbox size="small" checked={showPipelineTopics} onChange={e=> setShowPipelineTopics(e.target.checked)} />} label="Mostra Topics Pipeline" />
+                  <FormControlLabel control={<Checkbox size="small" checked={showSourceDocs} onChange={e=> setShowSourceDocs(e.target.checked)} />} label="Mostra Fonti (RAG/Tabelle)" />
                 </FormGroup>
               </Paper>
             </Box>

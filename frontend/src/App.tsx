@@ -1353,7 +1353,12 @@ const AppContent: React.FC = () => {
                     </Box>
                     </Box>
                     {/* Sezione Fonti (nuova) */}
-                    {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length || m.source_docs.data_tables?.length) && (
+                    {(() => {
+                      const showTopics = (selectedPersonality as any)?.show_pipeline_topics !== false;
+                      const showSources = (selectedPersonality as any)?.show_source_docs !== false;
+                      const hasSources = !!(m.source_docs && ((showSources && (m.source_docs?.rag_chunks?.length || m.source_docs?.rag_groups?.length || m.source_docs?.data_tables?.length)) || (showTopics && m.source_docs?.pipeline_topics?.length)));
+                      return m.role==='assistant' && hasSources;
+                    })() && (
                       <Box sx={{ mt:1.5 }}>
                         <Paper variant="outlined" sx={{ p:1.1, bgcolor: '#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
                           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: m.__sourcesExpanded ? 0.5 : 0 }}>
@@ -1366,7 +1371,7 @@ const AppContent: React.FC = () => {
                           </Stack>
                           {m.__sourcesExpanded && (
                             <Box>
-                              {m.source_docs.rag_chunks?.length ? (
+                              {m.source_docs?.rag_chunks?.length ? (
                                 <Box sx={{ mb:0.5 }}>
                                   <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
                                     {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
@@ -1375,22 +1380,22 @@ const AppContent: React.FC = () => {
                               ) : null}
                               <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
                                 {/* Topic pipeline */}
-                                {m.source_docs.pipeline_topics && m.source_docs.pipeline_topics.map((pt,idx)=>(
+                                {(selectedPersonality as any)?.show_pipeline_topics !== false && m.source_docs?.pipeline_topics && m.source_docs?.pipeline_topics.map((pt,idx)=>(
                                   <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
                                     <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
                                   </Box>
                                 ))}
                                 {/* Gruppi RAG selezionati */}
-                                {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.rag_groups?.length ?? 0) > 0) && (
                                   <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                                    <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
+                                    <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs?.rag_groups?.map(g=>g.name).join(', ')}
                                   </Box>
                                 )}
                                 {/* Tabelle dati utilizzate */}
-                                {m.source_docs.data_tables && m.source_docs.data_tables.length>0 && (
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.data_tables?.length ?? 0) > 0) && (
                                   <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
                                     <strong style={{ color:'#6d4c41' }}>Tabelle:</strong>{' '}
-                                    {m.source_docs.data_tables.map((t, idx)=> (
+                                    {m.source_docs?.data_tables?.map((t, idx)=> (
                                       <React.Fragment key={`dt-${t.table_id}`}>
                                         {idx>0 ? ', ' : ''}
                                         {t.download_url ? (
@@ -1403,8 +1408,8 @@ const AppContent: React.FC = () => {
                                   </Box>
                                 )}
                                 {/* Documenti con grouping chunks */}
-                                {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (()=>{
-                                  const sorted = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0));
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.rag_chunks?.length ?? 0) > 0) && (()=>{
+                                  const sorted = [...(m.source_docs?.rag_chunks || [])].sort((a,b)=> (b.similarity||0) - (a.similarity||0));
                                   const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity);
                                   // Group by document_id if available, else by filename
                                   const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; maxSim:number; chunks:any[]}>;

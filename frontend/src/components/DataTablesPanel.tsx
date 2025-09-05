@@ -43,6 +43,7 @@ const DataTablesPanel: React.FC = () => {
   const [agentModels, setAgentModels] = useState<string[]>([])
   const [agentTemp, setAgentTemp] = useState<number>(0.2)
   const [agentLimit, setAgentLimit] = useState<number>(8)
+  const [agentPrompt, setAgentPrompt] = useState<string>('')
   const [savingSettings, setSavingSettings] = useState<boolean>(false)
   const [testQ, setTestQ] = useState<string>('Quali lezioni di settembre?')
   const [testing, setTesting] = useState<boolean>(false)
@@ -147,6 +148,7 @@ const DataTablesPanel: React.FC = () => {
           if (typeof s.temperature === 'number') setAgentTemp(s.temperature)
           if (typeof s.limit_per_table === 'number') setAgentLimit(s.limit_per_table)
           if (s.model) setAgentModel(s.model)
+          if (typeof s.system_prompt === 'string') setAgentPrompt(s.system_prompt)
         }
       } catch {/* ignore */}
     })()
@@ -172,7 +174,7 @@ const DataTablesPanel: React.FC = () => {
       const r = await authFetch(`${BACKEND}/api/admin/data-tables/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: agentEnabled, provider: agentProvider, model: agentModel || null, temperature: agentTemp, limit_per_table: agentLimit })
+        body: JSON.stringify({ enabled: agentEnabled, provider: agentProvider, model: agentModel || null, temperature: agentTemp, limit_per_table: agentLimit, system_prompt: agentPrompt })
       })
       const data = await r.json()
       if (!data?.success) setError(data?.error || 'Errore salvataggio impostazioni')
@@ -255,6 +257,17 @@ const DataTablesPanel: React.FC = () => {
               <Box component="pre" sx={{ whiteSpace:'pre-wrap', fontSize: 13 }}>{testAnswer}</Box>
             </Paper>
           )}
+          <TextField
+            size="small"
+            label="Prompt del subagente (sistema)"
+            value={agentPrompt}
+            onChange={e=> setAgentPrompt(e.target.value)}
+            fullWidth
+            multiline
+            minRows={4}
+            sx={{ mt:1 }}
+            placeholder={"Istruzioni per l'agente che genera le query JSON sulle tabelle..."}
+          />
         </Paper>
         <Stack direction={{ xs:'column', sm:'row' }} spacing={2} alignItems={{ sm:'flex-end' }}>
           <TextField label="Titolo" value={title} onChange={e=> setTitle(e.target.value)} size="small" sx={{ minWidth: 200 }} />

@@ -1424,6 +1424,9 @@ class PersonalityIn(BaseModel):
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
     enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
     enabled_forms: Optional[List[str]] = None  # questionari abilitati
+    # UI visibility flags
+    show_pipeline_topics: Optional[bool] = True
+    show_source_docs: Optional[bool] = True
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -1475,7 +1478,9 @@ async def upsert_personality_admin(p: PersonalityIn):
             enabled_mcp_servers=p.enabled_mcp_servers,
             enabled_data_tables=p.enabled_data_tables,
             enabled_forms=p.enabled_forms,
-            max_tokens=p.max_tokens
+            max_tokens=p.max_tokens,
+            show_pipeline_topics=p.show_pipeline_topics,
+            show_source_docs=p.show_source_docs
         )
         return {"success": True, **res}
     except Exception as e:
@@ -1614,11 +1619,11 @@ async def get_rag_options():
     try:
         from .rag_engine import rag_engine
         groups = rag_engine.get_groups()
-        # Filtra solo gruppi con documenti
+        # Includi tutti i gruppi, anche se al momento con 0 documenti (utile per pre-configurare le personalità)
         available_groups = [
-            {"id": g["id"], "name": g["name"], "document_count": g["document_count"]}
-            for g in groups 
-            if g["document_count"] > 0
+            {"id": g.get("id"), "name": g.get("name"), "document_count": g.get("document_count", 0)}
+            for g in (groups or [])
+            if g and g.get("id") is not None
         ]
         return {"success": True, "groups": available_groups}
     except Exception as e:
@@ -3614,6 +3619,43 @@ async def admin_get_rag_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/admin/rag/debug/env")
+async def admin_rag_debug_env(document_id: int | None = None):
+    """Diagnostica rapida backend RAG: tipo DB, path SQLite, presenza documento opzionale."""
+    try:
+        from .database import USING_POSTGRES
+        info: dict[str, Any] = {
+            "backend": "postgres" if USING_POSTGRES else "sqlite",
+            "rag_db_path": str(rag_engine.db_path),
+            "originals_dir": str(rag_engine.originals_dir),
+        }
+        if document_id is not None:
+            try:
+                import sqlite3
+                if USING_POSTGRES:
+                    # Usa db_manager per interrogare Postgres
+                    from .database import db_manager as _db
+                    with _db.get_connection() as conn:
+                        cur = conn.cursor()
+                        _db.exec(cur, "SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
+                        row = cur.fetchone()
+                        if row:
+                            info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]}
+                        else:
+                            info["document"] = None
+                else:
+                    conn = sqlite3.connect(str(rag_engine.db_path))
+                    cur = conn.cursor()
+                    cur.execute("SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cur.fetchone()
+                    conn.close()
+                    info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]} if row else None
+            except Exception as e:
+                info["error"] = f"lookup_error:{e}"
+        return {"success": True, "env": info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore debug env: {e}")
+
 @router.get("/admin/rag/groups")
 async def admin_get_rag_groups():
     """Get all RAG groups for admin panel"""
@@ -3680,21 +3722,28 @@ async def admin_upload_rag_document(
             temp_file_path = temp_file.name
         
         try:
-            # Verifica che il gruppo esista
-            try:
+            # Verifica che il gruppo esista usando il backend attivo
+            if USING_POSTGRES:
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    db_manager.exec(cur, "SELECT id FROM rag_groups WHERE id = ?", (group_id,))
+                    if not cur.fetchone():
+                        raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
+            else:
                 import sqlite3 as _sl
                 _c = _sl.connect(str(rag_engine.db_path))
-                curg = _c.cursor()
-                curg.execute("SELECT id FROM rag_groups WHERE id = ?", (group_id,))
-                if not curg.fetchone():
-                    raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
-            finally:
                 try:
-                    _c.close()
-                except Exception:
-                    pass
-            # Salva copia persistente del PDF grezzo in storage/rag_data/originals
-            originals_dir = Path('/app/storage/rag_data/originals')
+                    curg = _c.cursor()
+                    curg.execute("SELECT id FROM rag_groups WHERE id = ?", (group_id,))
+                    if not curg.fetchone():
+                        raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
+                finally:
+                    try:
+                        _c.close()
+                    except Exception:
+                        pass
+            # Salva copia persistente del PDF grezzo nella directory originals del rag_engine
+            originals_dir = rag_engine.originals_dir
             originals_dir.mkdir(parents=True, exist_ok=True)
             import time, shutil
             safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", file.filename.rsplit('/',1)[-1]) or 'document.pdf'
@@ -3713,90 +3762,142 @@ async def admin_upload_rag_document(
                 raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
 
             # Calcola hash per rilevare duplicati prima di inserire
-            import hashlib, sqlite3
+            import hashlib
             content_hash = hashlib.sha256(text_content.encode()).hexdigest()
             duplicate = False
             duplicate_existing_chunk_count = 0
             document_id = None
             existing_filename = ""
-            try:
+            # Usa backend attivo per deduplica e aggiornamento timestamp
+            if USING_POSTGRES:
+                with db_manager.get_connection() as conn:
+                    cur_h = conn.cursor()
+                    db_manager.exec(cur_h, "SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
+                    row_h = cur_h.fetchone()
+                    if row_h:
+                        document_id, existing_filename = row_h
+                        duplicate = True
+                        get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
+                        try:
+                            db_manager.exec(cur_h, "UPDATE rag_documents SET updated_at = NOW() WHERE id = ?", (document_id,))
+                            conn.commit()
+                        except Exception:
+                            pass
+                    else:
+                        duplicate = False
+                        document_id = rag_engine.add_document(
+                            group_id=group_id,
+                            filename=file.filename,
+                            content=text_content,
+                            original_filename=file.filename,
+                            stored_filename=stored_name
+                        )
+                    if duplicate and document_id:
+                        try:
+                            db_manager.exec(cur_h, "SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
+                            rcc = cur_h.fetchone()
+                            if rcc:
+                                duplicate_existing_chunk_count = rcc[0] or 0
+                        except Exception:
+                            pass
+            else:
+                import sqlite3
                 conn_h = sqlite3.connect(str(rag_engine.db_path))
-                cur_h = conn_h.cursor()
-                
-                # Cerca un duplicato basato su hash e gruppo
-                cur_h.execute("SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
-                row_h = cur_h.fetchone()
-                
-                if row_h:
-                    document_id, existing_filename = row_h
-                    duplicate = True
-                    get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
-                    
-                    # Aggiorna solo il timestamp per farlo riapparire in cima alle liste ordinate per data
+                try:
+                    cur_h = conn_h.cursor()
+                    cur_h.execute("SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
+                    row_h = cur_h.fetchone()
+                    if row_h:
+                        document_id, existing_filename = row_h
+                        duplicate = True
+                        get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
+                        try:
+                            cur_h.execute("UPDATE rag_documents SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (document_id,))
+                            conn_h.commit()
+                        except Exception:
+                            pass
+                    else:
+                        duplicate = False
+                        document_id = rag_engine.add_document(
+                            group_id=group_id,
+                            filename=file.filename,
+                            content=text_content,
+                            original_filename=file.filename,
+                            stored_filename=stored_name
+                        )
+                    if duplicate and document_id:
+                        try:
+                            cur_h.execute("SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
+                            rcc = cur_h.fetchone()
+                            if rcc:
+                                duplicate_existing_chunk_count = rcc[0] or 0
+                        except Exception:
+                            pass
+                finally:
                     try:
-                        cur_h.execute("UPDATE rag_documents SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (document_id,))
-                        conn_h.commit()
-                    except Exception:
-                        pass  # Ignora se la colonna non esiste o altro errore non critico
-
-                else:
-                    # Inserimento normale se non è un duplicato
-                    duplicate = False
-                    document_id = rag_engine.add_document(
-                        group_id=group_id,
-                        filename=file.filename,
-                        content=text_content,
-                        original_filename=file.filename,
-                        stored_filename=stored_name
-                    )
-                # Conta chunks esistenti per duplicato
-                if duplicate and document_id:
-                    try:
-                        cur_h.execute("SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
-                        rcc = cur_h.fetchone()
-                        if rcc:
-                            duplicate_existing_chunk_count = rcc[0] or 0
+                        conn_h.close()
                     except Exception:
                         pass
-            finally:
-                if conn_h:
-                    conn_h.close()
 
             # Recupera dettagli documento per facilitare aggiornamento frontend immediato
+            # Recupera dettagli documento via backend attivo
             doc_details = None
-            try:
+            if USING_POSTGRES:
+                with db_manager.get_connection() as conn:
+                    cur_d = conn.cursor()
+                    # In Postgres archived è già definito come boolean, COALESCE per updated_at
+                    db_manager.exec(cur_d,
+                        "SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at, archived FROM rag_documents WHERE id = ?",
+                        (document_id,)
+                    )
+                    row = cur_d.fetchone()
+                    if row:
+                        doc_details = {
+                            "id": row[0],
+                            "group_id": row[1],
+                            "filename": row[2],
+                            "original_filename": row[3],
+                            "stored_filename": row[4],
+                            "file_size": row[5],
+                            "content_preview": row[6],
+                            "chunk_count": row[7],
+                            "created_at": row[8],
+                            "updated_at": row[9],
+                            "archived": bool(row[10])
+                        }
+            else:
+                import sqlite3
                 conn_d = sqlite3.connect(str(rag_engine.db_path))
-                cur_d = conn_d.cursor()
-                cur_d.execute("PRAGMA table_info(rag_documents)")
-                cols = [r[1] for r in cur_d.fetchall()]
-                has_archived = 'archived' in cols
-                select_archived = ", archived" if has_archived else ", 0 as archived"
-                cur_d.execute(
-                    f"SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at{select_archived} FROM rag_documents WHERE id = ?",
-                    (document_id,)
-                )
-                row = cur_d.fetchone()
-                if row:
-                    doc_details = {
-                        "id": row[0],
-                        "group_id": row[1],
-                        "filename": row[2],
-                        "original_filename": row[3],
-                        "stored_filename": row[4],
-                        "file_size": row[5],
-                        "content_preview": row[6],
-                        "chunk_count": row[7],
-                        "created_at": row[8],
-                        "updated_at": row[9],
-                        "archived": row[10] if len(row) > 10 else 0
-                    }
-            except Exception:
-                pass
-            finally:
                 try:
-                    conn_d.close()
-                except Exception:
-                    pass
+                    cur_d = conn_d.cursor()
+                    cur_d.execute("PRAGMA table_info(rag_documents)")
+                    cols = [r[1] for r in cur_d.fetchall()]
+                    has_archived = 'archived' in cols
+                    select_archived = ", archived" if has_archived else ", 0 as archived"
+                    cur_d.execute(
+                        f"SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at{select_archived} FROM rag_documents WHERE id = ?",
+                        (document_id,)
+                    )
+                    row = cur_d.fetchone()
+                    if row:
+                        doc_details = {
+                            "id": row[0],
+                            "group_id": row[1],
+                            "filename": row[2],
+                            "original_filename": row[3],
+                            "stored_filename": row[4],
+                            "file_size": row[5],
+                            "content_preview": row[6],
+                            "chunk_count": row[7],
+                            "created_at": row[8],
+                            "updated_at": row[9],
+                            "archived": row[10] if len(row) > 10 else 0
+                        }
+                finally:
+                    try:
+                        conn_d.close()
+                    except Exception:
+                        pass
 
             message = f"Documento '{file.filename}' caricato con successo."
             if duplicate:
@@ -3846,8 +3947,6 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
       - limit/offset: paginazione (default 100)
     """
     try:
-        import sqlite3
-        q = "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id"
         conds = []
         params: list[Any] = []
         if group_id is not None:
@@ -3860,14 +3959,26 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
         where_clause = f" WHERE {' AND '.join(conds)}" if conds else ""
         order_clause = " ORDER BY d.created_at DESC"
         limit_clause = " LIMIT ? OFFSET ?"
-        conn = sqlite3.connect(str(rag_engine.db_path))
-        cur = conn.cursor()
-        # Count totale
-        cur.execute(f"SELECT COUNT(*) FROM rag_documents d{' LEFT JOIN rag_groups g ON d.group_id = g.id' if conds else ''}{where_clause}", params)
-        total = cur.fetchone()[0]
-        cur.execute(q + where_clause + order_clause + limit_clause, [*params, limit, offset])
-        rows = cur.fetchall()
-        conn.close()
+        base = (
+            "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at "
+            "FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id"
+        )
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
+                total = cur.fetchone()[0]
+                db_manager.exec(cur, base + where_clause + order_clause + limit_clause, [*params, limit, offset])
+                rows = cur.fetchall()
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute(f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
+            total = cur.fetchone()[0]
+            cur.execute(base + where_clause + order_clause + limit_clause, [*params, limit, offset])
+            rows = cur.fetchall()
+            conn.close()
         docs = [
             {
                 "id": r[0],
@@ -3893,23 +4004,27 @@ async def admin_search_rag_document(q: str):
     """
     if not q or len(q.strip()) < 2:
         raise HTTPException(status_code=400, detail="Query troppo corta (min 2 caratteri)")
-    import sqlite3
     try:
-        conn = sqlite3.connect(str(rag_engine.db_path))
-        cur = conn.cursor()
         like = f"%{q.lower()}%"
-        cur.execute(
-            """
-            SELECT d.id, d.group_id, g.name, d.filename, d.original_filename, d.chunk_count
-            FROM rag_documents d
-            LEFT JOIN rag_groups g ON d.group_id = g.id
-            WHERE LOWER(d.filename) LIKE ? OR LOWER(d.original_filename) LIKE ?
-            ORDER BY d.created_at DESC
-            LIMIT 50
-            """, (like, like)
+        sql = (
+            "SELECT d.id, d.group_id, g.name, d.filename, d.original_filename, d.chunk_count "
+            "FROM rag_documents d "
+            "LEFT JOIN rag_groups g ON d.group_id = g.id "
+            "WHERE LOWER(d.filename) LIKE ? OR LOWER(d.original_filename) LIKE ? "
+            "ORDER BY d.created_at DESC LIMIT 50"
         )
-        rows = cur.fetchall()
-        conn.close()
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, sql, (like, like))
+                rows = cur.fetchall()
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute(sql, (like, like))
+            rows = cur.fetchall()
+            conn.close()
         results = [
             {
                 "id": r[0],
@@ -3926,6 +4041,46 @@ async def admin_search_rag_document(q: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/admin/rag/orphans")
+async def admin_list_rag_orphans():
+    """Elenca documenti orfani: group_id NULL/0 o riferito a gruppo inesistente."""
+    import sqlite3
+    try:
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, "SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
+                nulls = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+                db_manager.exec(cur,
+                    """
+                    SELECT d.id, d.group_id, d.filename, d.created_at
+                    FROM rag_documents d
+                    LEFT JOIN rag_groups g ON d.group_id = g.id
+                    WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
+                    ORDER BY d.created_at DESC
+                    """
+                )
+                dangling = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+        else:
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
+            nulls = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+            cur.execute(
+                """
+                SELECT d.id, d.group_id, d.filename, d.created_at
+                FROM rag_documents d
+                LEFT JOIN rag_groups g ON d.group_id = g.id
+                WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
+                ORDER BY d.created_at DESC
+                """
+            )
+            dangling = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+            conn.close()
+        return { 'success': True, 'null_group': nulls, 'dangling_group': dangling, 'total': len(nulls) + len(dangling) }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/admin/rag/recover-groups")
 async def admin_recover_rag_groups():
     """Ricostruisce gruppi mancanti presenti nei documenti (placeholder)."""
@@ -3939,21 +4094,47 @@ async def admin_recover_rag_groups():
 async def admin_download_rag_document(document_id: int):
     """Scarica il PDF originale se salvato (stored_filename)."""
     try:
-        import sqlite3
-        conn = sqlite3.connect(str(rag_engine.db_path))
-        cur = conn.cursor()
-        cur.execute("SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?", (document_id,))
-        row = cur.fetchone()
-        conn.close()
-        if not row:
+        stored_filename = None
+        original_filename = None
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(
+                    cur,
+                    "SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?",
+                    (document_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    stored_filename, original_filename = row[0], row[1]
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?",
+                (document_id,),
+            )
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                stored_filename, original_filename = row
+
+        if stored_filename is None and original_filename is None:
             raise HTTPException(status_code=404, detail="Documento non trovato")
-        stored_filename, original_filename = row
         if not stored_filename:
             raise HTTPException(status_code=404, detail="File originale non disponibile")
-        path = Path('/app/storage/rag_data/originals') / stored_filename
+
+        path = rag_engine.originals_dir / stored_filename
         if not path.exists():
             raise HTTPException(status_code=404, detail="File mancante su disco")
-        return FileResponse(str(path), media_type='application/pdf', filename=original_filename or stored_filename)
+
+        return FileResponse(
+            str(path),
+            media_type="application/pdf",
+            filename=original_filename or stored_filename,
+        )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -3984,12 +4165,125 @@ async def admin_rag_orphans_status():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/admin/rag/documents/{document_id}/reassign-orphans")
+async def admin_rag_reassign_single_orphan(document_id: int):
+    """Riassegna un documento specifico al gruppo speciale 'Orfani'.
+
+    Crea il gruppo se mancante e aggiorna anche i chunks. Ritorna l'id del gruppo.
+    """
+    try:
+        gid = rag_engine.reassign_document_to_orphans(document_id)
+        info = getattr(rag_engine, 'last_reassign_info', None) or {}
+        try:
+            get_system_logger().info(f"[RAG] Reassigned document id={document_id} to Orfani group_id={gid}")
+        except Exception:
+            pass
+        return {"success": True, "group_id": gid, "duplicate_removed": bool(info.get('duplicate_removed')), "already_in_orphans": bool(info.get('already_in_orphans'))}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @router.post("/admin/rag/orphans/cleanup-chunks")
 async def admin_rag_cleanup_orphan_chunks():
     """Elimina tutti i chunks orfani."""
     try:
         removed = rag_engine.delete_orphan_chunks()
+        try:
+            get_system_logger().info(f"[RAG] Cleanup orphan chunks removed={removed}")
+        except Exception:
+            pass
         return {"success": True, "removed": removed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/orphans/cleanup-documents")
+async def admin_rag_cleanup_orphan_documents():
+    """Elimina tutti i documenti orfani (senza gruppo o con gruppo mancante).
+
+    Criteri:
+    - rag_documents.group_id IS NULL o = 0
+    - rag_documents.group_id riferito a un gruppo inesistente in rag_groups
+    """
+    try:
+        # Elenco documenti orfani usando il backend attivo (Postgres o SQLite)
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                # Documenti con group_id NULL o 0
+                db_manager.exec(cur, "SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0", ())
+                null_rows = cur.fetchall()
+                # Documenti con group_id che punta a gruppo inesistente
+                db_manager.exec(
+                    cur,
+                    "SELECT d.id, d.stored_filename FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id WHERE d.group_id IS NOT NULL AND d.group_id <> 0 AND g.id IS NULL",
+                    (),
+                )
+                dangling_rows = cur.fetchall()
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            try:
+                cur = conn.cursor()
+                # Documenti con group_id NULL o 0
+                cur.execute("SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0")
+                null_rows = cur.fetchall()
+                # Documenti con group_id pendente verso gruppo inesistente
+                cur.execute(
+                    """
+                    SELECT d.id, d.stored_filename
+                    FROM rag_documents d
+                    LEFT JOIN rag_groups g ON d.group_id = g.id
+                    WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
+                    """
+                )
+                dangling_rows = cur.fetchall()
+            finally:
+                conn.close()
+
+        # Mappa {id: stored_filename}
+        to_delete_map: dict[int, str | None] = {}
+        for did, sf in null_rows + dangling_rows:
+            to_delete_map[int(did)] = sf
+
+        to_delete = list(to_delete_map.keys())
+        try:
+            get_system_logger().info(f"[RAG] Cleanup orphan documents start requested={len(to_delete)}")
+        except Exception:
+            pass
+
+        deleted = 0
+        removed_files = 0
+        for did in to_delete:
+            try:
+                sf = to_delete_map.get(did)
+                ok = rag_engine.force_delete_document(did)
+                if ok:
+                    deleted += 1
+                    # Prova a rimuovere anche il file originale se presente
+                    if sf:
+                        try:
+                            fpath = rag_engine.originals_dir / sf
+                            if fpath.exists():
+                                fpath.unlink()
+                                removed_files += 1
+                        except Exception:
+                            pass
+                try:
+                    get_system_logger().info(
+                        f"[RAG] Cleanup orphan document id={did} deleted={bool(ok)} stored='{sf}' removed_file={'true' if sf else 'false'}"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                # Continua con i successivi anche se uno fallisce
+                pass
+
+        try:
+            get_system_logger().info(
+                f"[RAG] Cleanup orphan documents done requested={len(to_delete)} deleted={deleted} removed_files={removed_files}"
+            )
+        except Exception:
+            pass
+        return {"success": True, "deleted": deleted, "requested": len(to_delete), "removed_files": removed_files}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3997,8 +4291,10 @@ async def admin_rag_cleanup_orphan_chunks():
 async def admin_delete_rag_document(document_id: int):
     """Delete RAG document for admin panel"""
     try:
-        rag_engine.delete_document(document_id)
-        return {"success": True, "message": "Documento eliminato con successo"}
+        result = rag_engine.delete_document(document_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail="Documento non trovato o non eliminato")
+        return {"success": True, "message": "Documento eliminato con successo", "group_id": result.get("group_id")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4081,10 +4377,38 @@ async def admin_rag_document_metadata(document_id: int):
 
 @router.delete("/admin/rag/documents/{document_id}/force")
 async def admin_rag_force_delete_document(document_id: int):
-    """Force delete bypassing checks (identical to delete now but kept separate for UI)."""
+    """Eliminazione forzata di un documento RAG, con rimozione del file originale se presente."""
     try:
-        rag_engine.delete_document(document_id)
-        return {"success": True}
+        # Prova a leggere stored_filename prima della cancellazione
+        stored_filename = None
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute("SELECT stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                stored_filename = row[0]
+        except Exception:
+            pass
+
+        deleted = rag_engine.force_delete_document(document_id)
+        # Rimuovi file originale se presente
+        removed_file = False
+        if deleted and stored_filename:
+            try:
+                fpath = (rag_engine.originals_dir / stored_filename)
+                if fpath.exists():
+                    fpath.unlink()
+                    removed_file = True
+            except Exception:
+                pass
+        try:
+            get_system_logger().info(f"[RAG] Force delete document id={document_id} deleted={bool(deleted)} stored='{stored_filename}' removed_file={removed_file}")
+        except Exception:
+            pass
+        return {"success": True, "deleted": bool(deleted), "removed_file": removed_file}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -4252,12 +4576,13 @@ class DataTablesSettingsIn(BaseModel):
     model: str | None = None
     temperature: float | None = 0.2
     limit_per_table: int | None = 8
+    system_prompt: str | None = None
 
 @router.get('/admin/data-tables/settings')
 async def get_data_tables_settings():
     try:
         cfg = load_config()
-        defaults = {"enabled": True, "provider": "openrouter", "model": None, "temperature": 0.2, "limit_per_table": 8}
+        defaults = {"enabled": True, "provider": "openrouter", "model": None, "temperature": 0.2, "limit_per_table": 8, "system_prompt": None}
         settings = cfg.get('data_tables_settings') or {}
         return {"success": True, "settings": {**defaults, **settings}}
     except Exception as e:
@@ -4276,7 +4601,8 @@ async def set_data_tables_settings(payload: DataTablesSettingsIn):
             'provider': prov,
             'model': (payload.model or '').strip() or None,
             'temperature': float(payload.temperature or 0.2),
-            'limit_per_table': int(payload.limit_per_table or 8)
+            'limit_per_table': int(payload.limit_per_table or 8),
+            'system_prompt': (payload.system_prompt or '').strip() or None
         }
         save_config(cfg)
         return {"success": True}

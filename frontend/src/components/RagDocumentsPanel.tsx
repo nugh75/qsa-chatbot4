@@ -56,6 +56,7 @@ const RagDocumentsPanel: React.FC = () => {
   const [advancedView, setAdvancedView] = useState(false);
   const [fixingOrphans, setFixingOrphans] = useState(false);
   const [recoveringGroups, setRecoveringGroups] = useState(false);
+  const [cleaningOrphanDocs, setCleaningOrphanDocs] = useState(false);
   const [orphanChunks, setOrphanChunks] = useState<number>(0);
   const [snack, setSnack] = useState<{open:boolean; message:string; severity:'success'|'info'|'warning'|'error'}>({open:false,message:'',severity:'info'});
   const [actionsAnchor, setActionsAnchor] = useState<null | HTMLElement>(null);
@@ -68,6 +69,7 @@ const RagDocumentsPanel: React.FC = () => {
   const [allTotal, setAllTotal] = useState(0);
   const [allSearch, setAllSearch] = useState('');
   const [allGroupFilter, setAllGroupFilter] = useState<number|''>('');
+  const [onlyOrphans, setOnlyOrphans] = useState<boolean>(false);
   const [allPage, setAllPage] = useState(0);
   const pageSize = 50;
   // Global quick search
@@ -359,6 +361,10 @@ const RagDocumentsPanel: React.FC = () => {
                     <ListItemIcon><FolderIcon fontSize="small" /></ListItemIcon>
                     <ListItemText primary="Riassegna documenti orfani" />
                   </MenuItem>
+                  <MenuItem disabled={cleaningOrphanDocs} onClick={async ()=> { handleCloseActions(); if (!window.confirm('Eliminare tutti i documenti orfani?')) return; setCleaningOrphanDocs(true); try { const res = await apiService.cleanupRagOrphanDocuments(); if (res.success) { const n = (res.data?.deleted ?? 0); setSnack({open:true,message:`Documenti orfani eliminati: ${n}`,severity:'success'}); await loadAll(); } else { setSnack({open:true,message:'Errore eliminazione documenti orfani',severity:'error'});} } catch { setSnack({open:true,message:'Errore eliminazione documenti orfani',severity:'error'});} finally { setCleaningOrphanDocs(false);} }}>
+                    <ListItemIcon><DeleteIcon fontSize="small" /></ListItemIcon>
+                    <ListItemText primary="Elimina documenti orfani" />
+                  </MenuItem>
                   <MenuItem disabled={orphanChunks===0} onClick={async ()=> {
                     handleCloseActions();
                     if (!window.confirm(`Eliminare ${orphanChunks} chunks orfani?`)) { return; }
@@ -498,13 +504,22 @@ const RagDocumentsPanel: React.FC = () => {
           <Box>
             <Stack direction={{ xs:'column', md:'row' }} spacing={2} alignItems={{ md:'flex-start' }} sx={{ mb:2 }}>
               <TextField size="small" label="Cerca" value={allSearch} onChange={e=> { setAllPage(0); setAllSearch(e.target.value); }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }} />
-              <FormControl size="small" sx={{ minWidth:180 }}>
+              <FormControl size="small" sx={{ minWidth:220 }}>
                 <InputLabel id="rag-all-group-label">Filtro gruppo</InputLabel>
                 <Select labelId="rag-all-group-label" value={allGroupFilter} label="Filtro gruppo" onChange={e=> { setAllPage(0); setAllGroupFilter(e.target.value as any); }}>
                   <MenuItem value=""><em>Tutti</em></MenuItem>
-                  {groups.map(g=> <MenuItem key={g.id} value={g.id}>{g.name}</MenuItem>)}
+                  {groups.map(g=> (
+                    <MenuItem key={g.id} value={g.id}>
+                      {g.name} ({g.document_count ?? 0} doc / {g.chunk_count ?? 0} ch)
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
+              <FormControlLabel control={<Checkbox size="small" checked={onlyOrphans} onChange={e=> setOnlyOrphans(e.target.checked)} />} label="Solo orfani" />
+              <Stack direction="row" spacing={1}>
+                <Chip size="small" variant={orphanChunks>0? 'filled':'outlined'} color={orphanChunks>0? 'warning':'default'} label={`orfani: ${orphanChunks}`} />
+                <Button size="small" variant="outlined" onClick={async()=>{ try { const res1 = await apiService.recoverRagGroups(); const res2 = await apiService.fixRagOrphans(); const res3 = await apiService.cleanupRagOrphanChunks(); setSnack({open:true,message:`Riparazione eseguita: gruppi+${res1.data?.created||0}, spostati ${res2.data?.moved||0}, chunks rimossi ${res3.data?.removed||0}`,severity:'success'}); await loadAll(false); } catch { setSnack({open:true,message:'Errore riparazione orfani',severity:'error'});} }}>Ripara orfani</Button>
+              </Stack>
             </Stack>
             <Paper variant="outlined" sx={{ maxHeight: 480, overflow:'auto' }}>
               <Table size="small" stickyHeader>
@@ -520,12 +535,18 @@ const RagDocumentsPanel: React.FC = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {allDocs.map(d => {
+                  {allDocs.filter(d => !onlyOrphans || (!d.group_id || !d.group_name)).map(d => {
                     const short = (d.chunk_count||0) <= 1;
                     return (
                       <TableRow key={d.id} hover>
                         <TableCell>{d.id}</TableCell>
-                        <TableCell>{d.group_name || d.group_id || '-'}</TableCell>
+                        <TableCell>
+                          {d.group_name ? (
+                            <span>{d.group_name}</span>
+                          ) : (
+                            <Chip size="small" color="warning" variant="outlined" label="orfano" />
+                          )}
+                        </TableCell>
                         <TableCell>
                           <Box sx={{ display:'flex', alignItems:'center', gap:0.5 }}>
                             {short && <Tooltip title="Estratto poco testo – valuta Reprocess"><WarningAmberIcon color="warning" fontSize="inherit" /></Tooltip>}
@@ -536,7 +557,24 @@ const RagDocumentsPanel: React.FC = () => {
                         <TableCell>{formatBytes(d.file_size||0)}</TableCell>
                         <TableCell>{d.created_at ? formatDate(d.created_at) : '-'}</TableCell>
                         <TableCell align="right">
-                          <Tooltip title="Azioni limitate (usa tab Collezioni per complete)"><span><IconButton size="small" disabled><MoreVertIcon fontSize="inherit" /></IconButton></span></Tooltip>
+                          {(!d.group_id || !d.group_name) ? (
+                            <>
+                              <Tooltip title="Riassegna al gruppo 'Orfani'"><IconButton size="small" onClick={async ()=>{ try { const res = await apiService.reassignRagDocumentToOrphans(d.id); if (res.success) { const flags = res.data || {} as { duplicate_removed?: boolean; already_in_orphans?: boolean }; let msg = "Riassegnato al gruppo 'Orfani'"; if (flags.already_in_orphans) msg = "Già nel gruppo 'Orfani'"; if (flags.duplicate_removed) msg = "Duplicato rimosso (già presente negli 'Orfani')"; setSnack({open:true,message:msg,severity:'success'});
+                                  if (!flags.duplicate_removed) { // Solo se esiste ancora il documento dopo la riassegnazione
+                                    const doDelete = window.confirm(msg + '. Vuoi eliminarlo ora (eliminazione standard)?');
+                                    if (doDelete) {
+                                      try { const del = await apiService.deleteRagDocument(d.id); if (del.success) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); } else { setSnack({open:true,message:'Eliminazione standard fallita',severity:'warning'}); } }
+                                      catch { setSnack({open:true,message:'Errore eliminazione standard',severity:'error'}); }
+                                    }
+                                  }
+                                  await loadGlobalDocs();
+                                } else { setSnack({open:true,message: (res.error || 'Riassegnazione fallita'),severity:'error'}); console.error('Reassign to orphans failed:', res); } } catch (e) { console.error('Reassign to orphans error:', e); setSnack({open:true,message:'Errore riassegnazione',severity:'error'});} }}><SwapHorizIcon fontSize="inherit" /></IconButton></Tooltip>
+                              <Tooltip title="Elimina (forzato)"><IconButton size="small" onClick={async ()=>{ if (!window.confirm('Eliminare definitivamente il documento?')) return; try { const res = await apiService.forceDeleteRagDocument(d.id); if (res.success && (res.data?.deleted ?? true)) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); await loadGlobalDocs(); } else { setSnack({open:true,message:'Impossibile eliminare il documento',severity:'warning'}); } } catch { setSnack({open:true,message:'Errore eliminazione',severity:'error'});} }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
+                            </>
+                          ) : (
+                            // Per documenti non orfani, abilita l'eliminazione standard anche da questa vista
+                            <Tooltip title="Elimina"><IconButton size="small" onClick={async ()=>{ if (!window.confirm('Eliminare il documento?')) return; try { const res = await apiService.deleteRagDocument(d.id); if (res.success) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); await loadGlobalDocs(); } else { setSnack({open:true,message: res.error || 'Eliminazione fallita',severity:'warning'});} } catch { setSnack({open:true,message:'Errore eliminazione',severity:'error'});} }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
+                          )}
                         </TableCell>
                       </TableRow>
                     );

@@ -57,6 +57,9 @@ export interface PersonalityEntry {
   enabled_data_tables?: string[];
   // Questionari (forms) abilitati per questa personalità
   enabled_forms?: string[];
+  // Visibilità in chat
+  show_pipeline_topics?: boolean;
+  show_source_docs?: boolean;
 }
 
 export interface PipelineOption {

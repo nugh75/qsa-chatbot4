@@ -74,6 +74,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkSlugLocal from '../utils/remarkSlugLocal';
+import { prepareChatMarkdown } from '../utils/markdownPipeline';
 import { format, parseISO, formatDistanceToNow } from 'date-fns';
 import { it } from 'date-fns/locale';
 
@@ -477,7 +478,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       setGuideLoading(true); setGuideError(null);
       const res = await apiService.getPipelineRegexGuide();
       if (res.success && (res.data as any)?.content) {
-        const d:any = res.data; setGuideContent(d.content); if (d.source) setGuideSource(String(d.source));
+        const d:any = res.data; setGuideContent(prepareChatMarkdown(d.content)); if (d.source) setGuideSource(String(d.source));
       } else {
         setGuideError(res.error || 'Errore caricamento guida');
       }
@@ -491,7 +492,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose }) => {
       setAdminGuideLoading(true); setAdminGuideError(null);
       const res = await apiService.getAdminGuide();
       if (res.success && (res.data as any)?.content) {
-        const d:any = res.data; setAdminGuideContent(d.content); if (d.source) setAdminGuideSource(String(d.source));
+        const d:any = res.data; setAdminGuideContent(prepareChatMarkdown(d.content)); if (d.source) setAdminGuideSource(String(d.source));
       } else {
         setAdminGuideError(res.error || 'Errore caricamento guida admin');
       }

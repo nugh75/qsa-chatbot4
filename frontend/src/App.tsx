@@ -3,7 +3,6 @@ import type { PersonalityEntry } from './types/admin'
 import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText, LinearProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
-// VolumeUpIcon removed from inline usage (handled by HeaderBar)
 import MicIcon from '@mui/icons-material/Mic'
 import StopIcon from '@mui/icons-material/Stop'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
@@ -40,11 +39,11 @@ import { ThemeProvider } from '@mui/material/styles'
 import { appTheme } from './theme'
 import RAGContextSelector from './components/RAGContextSelector'
 import SurveyForm from './SurveyForm'
-// (SurveyLink rimosso: inline link custom)
 import SurveyResults from './SurveyResults'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
-import { sanitizeChatMarkdown } from './utils/markdownSanitizer'
+import { prepareChatMarkdown, toPlainText } from './utils/markdownPipeline'
+import { buildDocumentAggregate, detectPreviewType, fetchTextTruncated, normalizeDocName } from './utils/ragPreview'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { useTheme, useMediaQuery } from '@mui/material'
@@ -267,46 +266,9 @@ const AppContent: React.FC = () => {
   // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
   const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
 
-  // Build aggregated content for a document name from rag chunks
-  const normalizeDocName = (raw: string): string => {
-    return raw
-      .toLowerCase()
-      .replace(/%20/g,' ')
-      .replace(/[\s_-]+/g,' ') // uniforma separatori
-      .replace(/\.pdf$|\.md$|\.markdown$|\.txt$/,'')
-      .trim()
-  }
-  const buildDocumentAggregate = (name: string, ragChunks?: SourceDocs['rag_chunks']): string => {
-    if (!ragChunks) return ''
-    const decoded = decodeURIComponent(name)
-    const target = normalizeDocName(decoded)
-    const related = ragChunks.filter(c => {
-      const fn = c.filename || ''
-      const base = fn.split('/').pop() || fn
-      const cleaned = normalizeDocName(base.split('_').pop() || base)
-      return cleaned && (cleaned === target || cleaned.includes(target) || target.includes(cleaned))
-    })
-    if (!related.length) return ''
-    related.sort((a,b)=> (a.chunk_index||0) - (b.chunk_index||0))
-    return related.map(c => `### Chunk ${c.chunk_index}\n${c.content || c.preview || ''}` ).join('\n\n')
-  }
+  // Build aggregated content for a document name from rag chunks (moved to utils)
 
-  // Inject links for bare [DOC filename] citations (no existing (url))
-  const injectDocLinks = (md: string, ragChunks?: SourceDocs['rag_chunks']): string => {
-    if (!md) return md
-    const normSet = new Set((ragChunks||[]).map(c => {
-      const fn = c.filename || ''
-      const base = fn.split('/').pop() || fn
-      return normalizeDocName(base.split('_').pop() || base)
-    }))
-  return md.replace(/\[DOC\s+([^\]\(]+?)\](?!\()/g, (match, inner) => {
-      const raw = inner.trim()
-      const norm = normalizeDocName(raw)
-      const has = Array.from(normSet).some(f => f && (f === norm || f.includes(norm) || norm.includes(f)))
-      if (!has) return match
-  return `[DOC ${raw}](doc://${encodeURIComponent(raw)})`
-    })
-  }
+  // (doc:// link injection is handled by prepareChatMarkdown)
 
   const openPreviewForLink = async (href: string, title: string, ragChunksForContext?: SourceDocs['rag_chunks']) => {
     console.debug('[preview] openPreviewForLink', { href, title, chunkCount: ragChunksForContext?.length })
@@ -338,24 +300,17 @@ const AppContent: React.FC = () => {
           setPreviewContent(`# ${decodeURIComponent(name)}\n\n${agg}`)
         }
       } else {
-        const lower = href.toLowerCase()
-        let type: 'pdf' | 'markdown' | 'text' = 'text'
-        if (lower.endsWith('.pdf')) type = 'pdf'
-        else if (lower.endsWith('.md') || lower.endsWith('.markdown')) type = 'markdown'
-        else if (lower.endsWith('.txt')) type = 'text'
-        else if (/\/api\/rag\/download\//.test(href)) type = 'pdf'
+        const type = detectPreviewType(href)
         setPreviewType(type)
-        const res = await fetch(href)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         if (type === 'pdf') {
+          const res = await fetch(href)
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
           setPreviewUrl(url)
         } else {
-          const text = await res.text()
-          const max = 200 * 1024
-          const truncated = text.length > max ? text.slice(0, max) + '\n\n[contenuto troncato]' : text
-          setPreviewContent(truncated)
+          const text = await fetchTextTruncated(href)
+          setPreviewContent(text)
         }
       }
     } catch (e: any) {
@@ -378,209 +333,14 @@ const AppContent: React.FC = () => {
   }
 
   // Helpers markdown (reinserted here so they're in scope before usage)
-  const sanitizeMarkdownToPlainText = (input: string): string => {
-    let text = input
-    text = text.replace(/```[\s\S]*?```/g, ' ')
-    text = text.replace(/`([^`]+)`/g, '$1')
-    text = text.replace(/!\[([^\]]*)\]\([^\)]*\)/g, '$1')
-    text = text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '$1')
-    text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    text = text.replace(/^\s{0,3}>\s?/gm, '')
-    text = text.replace(/^\s{0,3}[-*+]\s+/gm, '')
-    text = text.replace(/^\s{0,3}\d+\.\s+/gm, '')
-    text = text.replace(/^\s*\|?\s*:?[-]{2,}:?\s*(\|\s*:?[-]{2,}:?\s*)+\|?\s*$/gm, '')
-    text = text.replace(/^\s*[-]{3,}\s*$/gm, '')
-    text = text.replace(/\|/g, ' • ')
-    text = text.replace(/<[^>]+>/g, '')
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1')
-    text = text.replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/__([^_]+)__/g, '$1')
-    text = text.replace(/_([^_]+)_/g, '$1')
-    text = text.replace(/[ \t\f\v]+/g, ' ')
-    text = text.replace(/\n{3,}/g, '\n\n')
-    return text.trim()
-  }
+  // (plain-text conversion moved to utils/markdownPipeline.ts)
 
-  const normalizeMarkdownForDisplay = (md: string): string => {
-    if (!md) return md
-  // 1. Converte sequenze letterali \n in newline reali (arrivano a volte escaped dal backend / provider)
-  let out = md.replace(/\\n/g, '\n')
-  // 2. Normalizza CRLF
-  out = out.replace(/\r\n?/g, '\n')
-  // 3. Garantisce che blocco "**Fonti consultate:**" inizi su linea propria
-  out = out.replace(/\n?\s*\*\*Fonti consultate:\*\*\s*/i, (m)=> `\n\n**Fonti consultate:**\n`)
-  // 4. Protegge i fenced code block senza toccare il contenuto tabellare
-  out = out.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
-      const lines = inner.split('\n')
-      for (let i = 0; i < lines.length - 1; i++) {
-        if (lines[i].includes('|')) {
-          const sep = lines[i + 1]?.trim() || ''
-          if (/^[:\-| ]+$/.test(sep) && sep.includes('-')) {
-            return inner
-          }
-        }
-      }
-      return match
-    })
-    const lines = out.split('\n')
-    const converted: string[] = []
-    for (let i = 0; i < lines.length; i++) {
-      const cur = lines[i]
-      const nxt = lines[i + 1] || ''
-      if (/^\s*-{2,}(?:\s+-{2,})+\s*$/.test(nxt)) {
-        const headers = cur.trim().split(/\s{2,}/).filter(Boolean)
-        const seps = nxt.trim().split(/\s{2,}/).filter(Boolean)
-        if (headers.length >= 2 && seps.length === headers.length) {
-          const headerRow = `| ${headers.join(' | ')} |`
-          const sepRow = `| ${seps.map(() => '---').join(' | ')} |`
-          const bodyRows: string[] = []
-          let j = i + 2
-          while (j < lines.length) {
-            const row = lines[j]
-            if (!row.trim()) break
-            const cols = row.trim().split(/\s{2,}/).filter(Boolean)
-            if (cols.length === headers.length) {
-              bodyRows.push(`| ${cols.join(' | ')} |`)
-              j++
-            } else {
-              break
-            }
-          }
-          converted.push(headerRow, sepRow, ...bodyRows)
-          i = j - 1
-          continue
-        }
-      }
-      converted.push(cur)
-    }
-  out = converted.join('\n')
-  // 5. Collassa più di 2 newline in doppio newline per creare paragrafi puliti
-  out = out.replace(/\n{3,}/g, '\n\n')
-  // 6. Soft-break: mantieni singolo newline (ReactMarkdown + remark-breaks lo gestirà se plugin attivo)
-  return out
-  }
+  // (markdown normalization handled by utils/markdownPipeline.ts)
 
   // Migliora ulteriormente le tabelle markdown:
   // - Aggiunge riga separatrice se manca (caso: modello produce solo header + righe dati senza ---)
   // - Normalizza spazi superflui attorno alle pipes
-  const enhanceMarkdownTables = (md: string): string => {
-    if (!md) return md
-    const lines = md.split('\n')
-    const result: string[] = []
-  let inPipeTable = false
-  let currentColCount = 0
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      const next = lines[i+1] || ''
-
-      // Caso 1: formato "legacy" senza pipes: Header line, poi linea di soli trattini separati da spazi -> converti in pipe table
-      // Esempio:
-      // Codice  Nome  Descrizione
-      // -------- ------ -------------
-      // C1   Strategia ...
-      if (/[-A-Za-zÀ-ÖØ-öø-ÿ0-9].*[ \t]{2,}[-A-Za-zÀ-ÖØ-öø-ÿ0-9]/.test(line) && /^\s*-{2,}(?:\s+-{2,})+\s*$/.test(next)) {
-        // Raccogli header columns (split su 2+ spazi)
-        const headerCols = line.trim().split(/\s{2,}/).map(c=>c.trim()).filter(Boolean)
-        const dashParts = next.trim().split(/\s{2,}/)
-        if (headerCols.length === dashParts.length && headerCols.length >= 2) {
-          result.push('| ' + headerCols.join(' | ') + ' |')
-          result.push('| ' + headerCols.map(()=> '---').join(' | ') + ' |')
-          i += 1 // salta riga di trattini
-          // Consuma righe dati finché pattern colonne regge
-          let j = i + 1
-          while (j < lines.length) {
-            const dataLine = lines[j]
-            if (!dataLine.trim()) {
-              break
-            }
-            const dataCols = dataLine.trim().split(/\s{2,}/).map(c=>c.trim())
-            if (dataCols.length === headerCols.length) {
-              result.push('| ' + dataCols.join(' | ') + ' |')
-              j++
-            } else {
-              break
-            }
-          }
-          i = j - 1
-          continue
-        }
-      }
-      // Caso: riga con almeno una pipe ma NON è una riga separatrice e la prossima riga non è separatrice e contiene pipe -> probabilmente manca la riga ---
-      if (/\|/.test(line) && /\|/.test(next) && !/^\s*\|?\s*:?-{2,}:?/.test(line) && !/^\s*\|?\s*:?-{2,}:?/.test(next)) {
-          // Inserisce riga separatrice calcolando numero colonne
-          const parts = line.split('|')
-          const cols = parts.length - 1 // splitting conta bordi
-          if (cols >= 2) {
-            // Normalizza header e celle rimuovendo spazi multipli e vuoti estremi
-            const normalizedCells = parts.map(p => p.trim()).filter((cell,idx,arr)=> !(idx===0 && cell==='') && !(idx===arr.length-1 && cell===''))
-            const normalizedHeader = '|' + normalizedCells.join(' | ') + ' |'
-            result.push(normalizedHeader)
-            result.push('|' + Array(cols).fill('---').join(' | ') + ' |')
-            continue
-          }
-      }
-
-      // Caso 2: Tabella con pipes già presente ma riga separatrice malformata (esempio: header corretto, seconda riga con meno segmenti di ---)
-      // Strategia: se line ha pipes ed è header (non solo ---) e next contiene almeno 3 '-' totali ma numero gruppi '---' + pipes < colonne header, rigenera separatore.
-      if (/\|/.test(line) && !/^\s*\|\s*:?-{3,}:?/.test(line)) {
-        // Conta colonne header
-        const headerCells = line.split('|').map(c=>c.trim()).filter((c,idx,arr)=> !(idx===0 && c==='') && !(idx===arr.length-1 && c===''))
-        if (headerCells.length > 1) {
-          const sepMatch = next.match(/\|/g)
-          const looksLikeSep = /-{3,}/.test(next) && (sepMatch ? sepMatch.length >= 1 : true)
-          if (looksLikeSep) {
-            // Conta gruppi potenziali di separazione (--- o :---: ecc.)
-            const groups = next.split('|').map(s=>s.trim()).filter(Boolean)
-            const validGroupCount = groups.filter(g=>/^:?-{3,}:?$/.test(g)).length
-            if (validGroupCount !== headerCells.length) {
-              // Rigenera intera coppia header + separatore corretto
-              result.push('| ' + headerCells.join(' | ') + ' |')
-              result.push('| ' + headerCells.map(()=> '---').join(' | ') + ' |')
-              i += 1 // Salta la vecchia riga next
-              continue
-            }
-          }
-        }
-      }
-
-      // Tracking stato tabella dopo aver eventualmente pushato header + separatore
-      if (/^\s*\|.*\|\s*$/.test(line) && /\|/.test(line)) {
-        // Se questa è una riga separatrice valida appena aggiunta, attiva stato tabella
-        if (/^\s*\|\s*:?-{3,}:?(\s*\|\s*:?-{3,}:?)*\|?\s*$/.test(line)) {
-          inPipeTable = true
-        } else if (!inPipeTable) {
-          // È un header (non separatore) – determina colonne
-          const headerCellsTmp = line.split('|').map(c=>c.trim()).filter((c,idx,arr)=> !(idx===0 && c==='') && !(idx===arr.length-1 && c===''))
-          currentColCount = headerCellsTmp.length
-        }
-      } else if (inPipeTable) {
-        // Se siamo in tabella ma riga non ha pipe: potrebbe essere continuazione cella multiline → unisci alla riga precedente
-        if (result.length > 0) {
-          const prev = result[result.length -1]
-          if (/^\s*\|.*\|\s*$/.test(prev)) {
-            // Appendi testo (solo se non vuoto) all'ultima cella
-            if (line.trim()) {
-              result[result.length -1] = prev.replace(/\|\s*$/,'') + '<br/>' + line.trim() + ' |'
-            }
-            continue
-          }
-        }
-        // Se riga vuota, chiudi stato tabella
-        if (!line.trim()) {
-          inPipeTable = false
-          currentColCount = 0
-        }
-      }
-
-      // Rimozione righe corpo fatte solo di --- (errori del modello) mantenendo solo separatore ufficiale
-      if (inPipeTable && /^\s*\|\s*(?:-{3,}\s*\|\s*)+(-{3,}\s*)?\|?\s*$/.test(line)) {
-        // Questa è una riga composta solo da dashes (non dovrebbe comparire nel body) -> skip
-        continue
-      }
-      result.push(line)
-    }
-    return result.join('\n')
-  }
+  
 
   // Provider mappings
   const providerLabels: Record<string, string> = {
@@ -1480,7 +1240,7 @@ const AppContent: React.FC = () => {
                         }
                       }}
                     >
-                      {injectDocLinks(enhanceMarkdownTables(normalizeMarkdownForDisplay(sanitizeChatMarkdown(m.content))), m.source_docs?.rag_chunks)}
+                      {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
                     </ReactMarkdown>
                   </Box>
                 
@@ -1497,7 +1257,7 @@ const AppContent: React.FC = () => {
                     {/* TTS */}
                     <Box 
                       component="button" 
-                      onClick={() => playTTS(sanitizeMarkdownToPlainText(m.content), i)}
+                      onClick={() => playTTS(toPlainText(m.content), i)}
                       sx={{ 
                         background: 'none', 
                         border: 'none', 
@@ -2111,7 +1871,7 @@ const AppContent: React.FC = () => {
           )}
           {!guideLoading && activeGuide && (
             <Box sx={{ '& h1,h2,h3':{ mt:2 }, '& p':{ mb:1 } }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{activeGuide}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{prepareChatMarkdown(activeGuide)}</ReactMarkdown>
             </Box>
           )}
           {!guideLoading && !activeGuide && (
@@ -2247,7 +2007,7 @@ const AppContent: React.FC = () => {
           {!previewLoading && !previewError && (previewType === 'markdown' || previewType === 'text') && (
             previewType === 'markdown' ? (
               <Box sx={{ '& h1,& h2,& h3': { mt:2 }, '& pre': { p:1, bgcolor:'#f5f5f5', overflowX:'auto' } }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{previewContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{prepareChatMarkdown(previewContent)}</ReactMarkdown>
               </Box>
             ) : (
               <Box component="pre" sx={{ whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'monospace', fontSize:'0.85rem', m:0 }}>

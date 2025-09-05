@@ -69,16 +69,14 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     // Build summary message once (used both for UI and DB persistence)
     try {
       const lines: string[] = []
-      lines.push('Grazie per i dati inviati!')
-      lines.push('Ecco il riepilogo del tuo invio:')
-      lines.push('')
-      lines.push('DATI')
+      // Solo i campi richiesti: nome, descrizione, esito
+      lines.push('Nome | Descrizione | Esito')
+      lines.push('--- | --- | ---')
       items.forEach(it => {
         const v = values[it.factor]
-        const range = typeof it.min === 'number' || typeof it.max === 'number' ? ` (range ${it.min ?? '-'}–${it.max ?? '-'})` : ''
-        const inv = (it as any).invertita ? ' [invertita]' : ''
-        lines.push(`- ${it.factor}: ${v ?? ''}${range}${inv}`)
+        lines.push(`${it.factor} | ${it.description ?? ''} | ${v ?? ''}`)
       })
+      // Sezione conferma richiesta dall'utente
       lines.push('')
       lines.push('I dati sono corretti?')
       lines.push('• Scrivi "sì" per confermare')

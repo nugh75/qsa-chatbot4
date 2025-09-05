@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkSlugLocal from '../utils/remarkSlugLocal';
 import { apiService } from '../apiService';
-// DebugPipelineTest removed per nuova specifica
+import { prepareChatMarkdown } from '../utils/markdownPipeline';
 
 interface PatternIssue { pattern: string; topic?: string; severity: 'INFO'|'WARN'|'ERROR'; code: string; message: string }
 interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; validation?: { issues: PatternIssue[]; counts: { ERROR:number; WARN:number; INFO:number } } }
@@ -66,7 +66,7 @@ const PipelinePanel: React.FC = () => {
       const res = await apiService.getPipelineRegexGuide();
       if (res.success && (res.data as any)?.content) {
         const dataAny: any = res.data;
-        setGuideContent(dataAny.content);
+        setGuideContent(prepareChatMarkdown(dataAny.content));
         if (dataAny.source) setGuideSource(String(dataAny.source));
       } else {
         setGuideError(res.error || 'Errore nel caricamento della guida');

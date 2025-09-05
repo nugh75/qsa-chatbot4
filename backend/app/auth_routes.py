@@ -19,6 +19,14 @@ import os, jwt
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
+# Admin configuration from environment
+ADMIN_EMAILS = [
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+]
+DEFAULT_ADMIN_EMAIL = ADMIN_EMAILS[0] if ADMIN_EMAILS else ""
+
 @router.post("/register", response_model=TokenResponse)
 async def register_user(user_data: UserRegistration):
     """Registrazione nuovo utente"""
@@ -300,7 +308,7 @@ async def change_password(
 @router.post("/admin/reset-password")
 async def admin_reset_password(
     target_email: str,
-    admin_email: str = "admin@qsa-chatbot.com"  # In produzione verifica admin token
+    admin_email: str = DEFAULT_ADMIN_EMAIL  # In produzione verifica admin token
 ):
     """Reset password utente da parte amministratore con sistema escrow"""
     
@@ -372,7 +380,7 @@ async def update_user_role(user_id: int, payload: RoleUpdate, current_admin: dic
 
 @router.get("/admin/escrow/verify")
 async def verify_escrow_integrity(
-    admin_email: str = "admin@qsa-chatbot.com"  # In produzione verifica admin token
+    admin_email: str = DEFAULT_ADMIN_EMAIL  # In produzione verifica admin token
 ):
     """Verifica integrità sistema escrow"""
     

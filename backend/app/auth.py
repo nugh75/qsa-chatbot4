@@ -48,6 +48,18 @@ LOCKOUT_DURATION_MINUTES = 30
 
 security = HTTPBearer()
 
+# Admin configuration loaded from environment variables
+ADMIN_EMAILS = [
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+]
+ADMIN_ROLES = [
+    r.strip().lower()
+    for r in os.getenv("ADMIN_ROLES", "").split(",")
+    if r.strip()
+]
+
 # Pydantic models
 class UserRegistration(BaseModel):
     email: EmailStr
@@ -216,17 +228,13 @@ async def get_current_admin_user(current_user: dict = Depends(get_current_active
 
 def is_admin_user(user: dict) -> bool:
     """Controlla se l'utente ha privilegi di amministratore"""
-    # Verifica se l'utente è admin tramite email o ruolo
-    admin_emails = [
-        "admin@qsa-chatbot.com",
-        "desi76@example.com",  # Aggiungi qui email degli admin
-        "daniele.dragoni@gmail.com",
-    ]
-    
+    user_email = (user.get("email") or "").lower()
+    user_role = (user.get("role") or "").lower()
+
     return (
-        user.get("email") in admin_emails or 
-        user.get("role") == "admin" or
-        user.get("is_admin", False)
+        user_email in ADMIN_EMAILS
+        or user_role in ADMIN_ROLES
+        or user.get("is_admin", False)
     )
 
 # Funzioni per password reset con escrow

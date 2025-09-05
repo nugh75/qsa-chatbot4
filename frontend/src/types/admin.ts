@@ -55,6 +55,8 @@ export interface PersonalityEntry {
   enabled_mcp_servers?: string[];
   // Data tables abilitati per questa personalità
   enabled_data_tables?: string[];
+  // Questionari (forms) abilitati per questa personalità
+  enabled_forms?: string[];
 }
 
 export interface PipelineOption {

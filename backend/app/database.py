@@ -83,6 +83,26 @@ class DatabaseManager:
     def exec(self, cursor, sql: str, params=()):
         cursor.execute(self.adapt_sql(sql), params)
 
+    def ping(self) -> dict:
+        """Simple health check for the configured DB backend.
+
+        Returns a dict with backend type and ok flag. Exceptions are caught and
+        returned in the payload to avoid raising during health checks.
+        """
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                try:
+                    # Works for both SQLite and Postgres after adapt_sql
+                    self.exec(cur, "SELECT 1")
+                    _ = cur.fetchone() if hasattr(cur, 'fetchone') else None
+                finally:
+                    # No commit needed for read-only
+                    pass
+            return {"ok": True, "backend": "postgresql" if USING_POSTGRES else "sqlite"}
+        except Exception as e:
+            return {"ok": False, "backend": "postgresql" if USING_POSTGRES else "sqlite", "error": str(e)}
+
     def init_database(self):
         """Inizializza il database e crea le tabelle.
 

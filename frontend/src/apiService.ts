@@ -691,6 +691,33 @@ class ApiService {
     return this.makeRequest<{ engine: string; version?: string|null; tables: ({ name: string; rows: number|null; size_bytes?: number|null; size_pct?: number }|string)[]; critical_missing?: string[]; attached?: any[]; total_rows?: number; total_size_bytes?: number|null; elapsed_ms?: number; include_sizes?: boolean; order?: string; cached?: boolean; cache_age_s?: number; cache_ttl_s?: number }>(`/admin/db-info${qp}`);
   }
 
+  // === Predefined Queries ===
+  async listQueries(): Promise<ApiResponse<{ queries: any[] }>> {
+    return this.makeRequest('/queries');
+  }
+  async describeQuery(id: string): Promise<ApiResponse<{ query: any }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}`);
+  }
+  async previewQuery(id: string, params: Record<string, any>): Promise<ApiResponse<{ query_id: string; count: number; rows: any[] }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}/preview`, { method: 'POST', body: JSON.stringify({ params }) });
+  }
+  async executeQuery(id: string, params: Record<string, any>): Promise<ApiResponse<{ query_id: string; count: number; rows: any[] }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}/execute`, { method: 'POST', body: JSON.stringify({ params }) });
+  }
+  async nlq(text: string): Promise<ApiResponse<{ matched: boolean; query_id?: string; params?: any; label?: string; message?: string; suggestions?: any[] }>> {
+    return this.makeRequest('/queries/nlq', { method: 'POST', body: JSON.stringify({ text }) });
+  }
+  async exportQueryCsv(id: string, params: Record<string, any>): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${API_BASE_URL}/queries/${encodeURIComponent(id)}/export`, { method: 'POST', headers, body: JSON.stringify({ params }) });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(txt || 'Export failed');
+    }
+    return resp.blob();
+  }
+
   // === DB Explorer (Admin) ===
   async listDbTables(): Promise<ApiResponse<{ tables: string[] }>> {
     return this.makeRequest<{ tables: string[] }>(`/admin/db/tables`);
@@ -717,6 +744,34 @@ class ApiService {
   }
   async dbDelete(table: string, key: Record<string, any>): Promise<ApiResponse<{ deleted: number }>> {
     return this.makeRequest<{ deleted: number }>(`/admin/db/delete`, { method: 'POST', body: JSON.stringify({ table, key }) });
+  }
+
+  // === Forms (Questionari) ===
+  async listForms(): Promise<ApiResponse<{ forms: { id: string; name: string; description?: string; items_count: number }[] }>> {
+    return this.makeRequest(`/forms`);
+  }
+  async getForm(formId: string): Promise<ApiResponse<{ form: { id: string; name: string; description?: string; items: any[] } }>> {
+    return this.makeRequest(`/forms/${encodeURIComponent(formId)}`);
+  }
+  async submitForm(formId: string, values: any, opts: { conversationId?: string; personalityId?: string } = {}): Promise<ApiResponse<{ id: string }>> {
+    return this.makeRequest(`/forms/${encodeURIComponent(formId)}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ values, conversation_id: opts.conversationId || null, personality_id: opts.personalityId || null })
+    });
+  }
+  // Admin forms
+  async adminListForms(): Promise<ApiResponse<{ forms: any[] }>> {
+    return this.makeRequest(`/admin/forms`);
+  }
+  async adminSaveForm(form: { id?: string; name: string; description?: string; items: any[] }): Promise<ApiResponse<{ id: string }>> {
+    return this.makeRequest(`/admin/forms`, { method: 'POST', body: JSON.stringify(form) });
+  }
+  async adminDeleteForm(id: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.makeRequest(`/admin/forms/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  async adminListFormSubmissions(id: string, limit: number = 100, offset: number = 0): Promise<ApiResponse<{ items: any[] }>> {
+    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) }).toString();
+    return this.makeRequest(`/admin/forms/${encodeURIComponent(id)}/submissions?${q}`);
   }
 
   // === Pipeline (Regex Routes & File Mappings) ===

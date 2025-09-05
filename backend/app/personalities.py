@@ -34,7 +34,7 @@ _cached_topic_descriptions = None
 def _ensure_personality_schema():
     """Ensure `personalities` table and required columns exist on Postgres.
     - Creates the table if missing (idempotent)
-    - Ensures enabled_data_tables column exists
+    - Ensures enabled_data_tables and enabled_forms columns exist
     No-op on SQLite.
     """
     if not USING_POSTGRES:
@@ -70,6 +70,7 @@ def _ensure_personality_schema():
                   enabled_rag_groups JSONB,
                   enabled_mcp_servers JSONB,
                   enabled_data_tables JSONB DEFAULT '[]'::jsonb,
+                  enabled_forms JSONB DEFAULT '[]'::jsonb,
                   is_default BOOLEAN NOT NULL DEFAULT FALSE,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -95,6 +96,14 @@ def _ensure_personality_schema():
             exists = cur.fetchone()
             if not exists:
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_data_tables JSONB DEFAULT '[]'::jsonb")
+            # Ensure enabled_forms column exists as well
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'enabled_forms'
+            """)
+            exists2 = cur.fetchone()
+            if not exists2:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_forms JSONB DEFAULT '[]'::jsonb")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -208,6 +217,7 @@ def upsert_personality(
     enabled_rag_groups: Optional[List[int]] = None,
     enabled_mcp_servers: Optional[List[str]] = None,
     enabled_data_tables: Optional[List[str]] = None,
+    enabled_forms: Optional[List[str]] = None,
     max_tokens: Optional[int] = None,
 ) -> Dict:
     if not USING_POSTGRES:
@@ -219,14 +229,15 @@ def upsert_personality(
     e_groups = json.dumps(enabled_rag_groups or [])
     e_mcp = json.dumps(enabled_mcp_servers or [])
     e_tables = json.dumps(enabled_data_tables or [])
+    e_forms = json.dumps(enabled_forms or [])
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
         db_manager.exec(cur, """
             INSERT INTO personalities (
                 id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
                 welcome_message, guide_id, context_window, temperature, max_tokens, active,
-                enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -245,11 +256,12 @@ def upsert_personality(
                 enabled_rag_groups = EXCLUDED.enabled_rag_groups,
                 enabled_mcp_servers = EXCLUDED.enabled_mcp_servers,
                 enabled_data_tables = EXCLUDED.enabled_data_tables,
+                enabled_forms = EXCLUDED.enabled_forms,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
             welcome_message, guide_id, context_window, temperature, max_tokens, bool(active),
-            e_topics, e_groups, e_mcp, e_tables, bool(False)
+            e_topics, e_groups, e_mcp, e_tables, e_forms, bool(False)
         ))
         if set_default:
             db_manager.exec(cur, "UPDATE personalities SET is_default = FALSE WHERE is_default = TRUE")

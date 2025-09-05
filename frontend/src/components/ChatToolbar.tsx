@@ -12,6 +12,7 @@ import {
   Stop as StopIcon,
   AttachFile as AttachFileIcon,
 } from '@mui/icons-material';
+import AssignmentIcon from '@mui/icons-material/Assignment';
 
 interface ChatToolbarProps {
   onSend: () => void;
@@ -23,6 +24,7 @@ interface ChatToolbarProps {
   onToggleAttachments?: () => void;
   attachmentsCount?: number;
   attachmentsOpen?: boolean;
+  onOpenFormDialog?: () => void;
 }
 
 const ChatToolbar: React.FC<ChatToolbarProps> = ({
@@ -34,7 +36,8 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
   isLoading,
   onToggleAttachments,
   attachmentsCount = 0,
-  attachmentsOpen = false
+  attachmentsOpen = false,
+  onOpenFormDialog
 }) => {
   
   const handleMicClick = () => {
@@ -83,6 +86,22 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
       >
         {isLoading ? <CircularProgress size={16} /> : <SendIcon />}
       </IconButton>
+
+      {onOpenFormDialog && (
+        <Tooltip title="Questionari">
+          <span>
+            <IconButton
+              onClick={onOpenFormDialog}
+              disabled={isLoading}
+              color={'primary'}
+              size="small"
+              sx={{ borderRadius: 2, width: 36, height: 36 }}
+            >
+              <AssignmentIcon />
+            </IconButton>
+          </span>
+        </Tooltip>
+      )}
 
       <IconButton
         onClick={handleMicClick}

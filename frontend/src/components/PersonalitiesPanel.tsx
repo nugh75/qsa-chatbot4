@@ -52,6 +52,9 @@ const PersonalitiesPanel: React.FC = () => {
   // Data tables
   const [dataTables, setDataTables] = useState<{id:string; title:string; name:string; row_count?: number}[]>([])
   const [selectedDataTables, setSelectedDataTables] = useState<string[]>([])
+  // Forms (questionari)
+  const [forms, setForms] = useState<{ id: string; name: string; description?: string; items_count: number }[]>([])
+  const [selectedForms, setSelectedForms] = useState<string[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
   // Test inline LLM
@@ -63,10 +66,11 @@ const PersonalitiesPanel: React.FC = () => {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [persRes, sysRes, tablesRes] = await Promise.all([
+      const [persRes, sysRes, tablesRes, formsRes] = await Promise.all([
         authFetch(`${BACKEND}/api/admin/personalities`),
         authFetch(`${BACKEND}/api/admin/system-prompts`),
-        authFetch(`${BACKEND}/api/data-tables`)
+        authFetch(`${BACKEND}/api/data-tables`),
+        authFetch(`${BACKEND}/api/admin/forms`)
       ])
       if (persRes.ok) {
         const data = await persRes.json()
@@ -80,6 +84,11 @@ const PersonalitiesPanel: React.FC = () => {
         const data = await tablesRes.json()
         const items = Array.isArray(data.tables) ? data.tables : []
         setDataTables(items.map((t:any)=> ({ id: t.id, title: t.title, name: t.name, row_count: t.row_count })) )
+      }
+      if (formsRes.ok) {
+        const data = await formsRes.json()
+        const list = Array.isArray(data.forms) ? data.forms : []
+        setForms(list.map((f:any)=> ({ id: f.id, name: f.name, description: f.description, items_count: (f.items||[]).length || f.items_count || 0 })))
       }
     } finally { setLoading(false) }
   }, [])
@@ -203,6 +212,7 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedRagGroups([]);
     setSelectedMcpServers([]);
     setSelectedDataTables([]);
+    setSelectedForms([]);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -238,6 +248,7 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedRagGroups(p.enabled_rag_groups || []);
     setSelectedMcpServers(p.enabled_mcp_servers || []);
     setSelectedDataTables((p as any).enabled_data_tables || []);
+    setSelectedForms((p as any).enabled_forms || []);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -295,7 +306,8 @@ const PersonalitiesPanel: React.FC = () => {
           enabled_pipeline_topics: selectedPipelineTopics,
           enabled_rag_groups: selectedRagGroups,
           enabled_mcp_servers: selectedMcpServers,
-          enabled_data_tables: selectedDataTables
+          enabled_data_tables: selectedDataTables,
+          enabled_forms: selectedForms
         })
       })
       if (res.ok) {
@@ -344,6 +356,7 @@ const PersonalitiesPanel: React.FC = () => {
             ;(p as any).enabled_rag_groups = selectedRagGroups
             ;(p as any).enabled_mcp_servers = selectedMcpServers
             ;(p as any).enabled_data_tables = selectedDataTables
+            ;(p as any).enabled_forms = selectedForms
             list[idx] = p
           } else {
             list.push({
@@ -364,7 +377,8 @@ const PersonalitiesPanel: React.FC = () => {
               enabled_pipeline_topics: selectedPipelineTopics,
               enabled_rag_groups: selectedRagGroups,
               enabled_mcp_servers: selectedMcpServers,
-              enabled_data_tables: selectedDataTables
+              enabled_data_tables: selectedDataTables,
+              enabled_forms: selectedForms
             })
           }
           return { ...prev, personalities: list }
@@ -828,6 +842,37 @@ const PersonalitiesPanel: React.FC = () => {
                   ))}
                   {dataTables.length === 0 && (
                     <Typography variant="caption" color="text.secondary">Nessuna tabella disponibile</Typography>
+                  )}
+                </FormGroup>
+              </Paper>
+            </Box>
+
+            {/* Forms (Questionari) */}
+            <Box>
+              <FormLabel component="legend" sx={{ mb: 1 }}>Questionari Abilitati</FormLabel>
+              <Paper variant="outlined" sx={{ p: 1, maxHeight: 220, overflow: 'auto' }}>
+                <FormGroup>
+                  {forms.map(f => (
+                    <FormControlLabel
+                      key={f.id}
+                      control={
+                        <Checkbox
+                          size="small"
+                          checked={selectedForms.includes(f.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedForms(prev => [...prev, f.id])
+                            } else {
+                              setSelectedForms(prev => prev.filter(id => id !== f.id))
+                            }
+                          }}
+                        />
+                      }
+                      label={`${f.name} (${f.items_count || 0} voci)`}
+                    />
+                  ))}
+                  {forms.length === 0 && (
+                    <Typography variant="caption" color="text.secondary">Nessun form disponibile</Typography>
                   )}
                 </FormGroup>
               </Paper>

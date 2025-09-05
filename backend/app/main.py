@@ -21,6 +21,7 @@ from .search_routes import router as search_router
 from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
+from .forms_routes import router as forms_router, admin_router as forms_admin_router
 from .survey_routes import router as survey_router
 from .welcome_guides import router as welcome_guides_router
 from .data_tables_routes import router as data_tables_router
@@ -28,6 +29,9 @@ from .personalities import load_personalities
 from .welcome_guides import list_welcome_messages
 from .prompts import load_system_prompts, load_summary_prompt
 from .logging_utils import get_system_logger, log_system
+from .health_routes import router as health_router
+from .database import db_manager as _dbm
+from .queries_routes import router as queries_router
 
 # Carica le variabili di ambiente dal file .env (path esplicito) e log mascherato
 _env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -47,11 +51,31 @@ print('[env] Loaded .env at', _env_path.exists(), 'OPENAI_API_KEY=', _mask(os.ge
 async def lifespan(app: FastAPI):
     # On startup
     import os as _os
+    # Attach shared db_manager and run a health ping early
+    try:
+        app.state.db_manager = _dbm
+        _ping = _dbm.ping()
+        if not _ping.get('ok'):
+            print(f"[startup][DB] Health ping FAILED backend={_ping.get('backend')} error={_ping.get('error')}")
+        else:
+            print(f"[startup][DB] Health ping OK backend={_ping.get('backend')}")
+    except Exception as _e:
+        print(f"[startup][DB] Initialization error: {_e}")
     # Seed default provider/model if needed
     try:
         ensure_default_ai_provider(seed=True)
     except Exception as _e:
         print(f"[startup] default provider seed skipped: {_e}")
+    # Seed default admin user (idempotente)
+    try:
+        from .seed_admin import seed_admin as _seed_admin
+        email = os.getenv('DEFAULT_ADMIN_EMAIL', 'ai4educ@gmail.com')
+        password = os.getenv('DEFAULT_ADMIN_PASSWORD', 'admin123!')
+        overwrite_flag = os.getenv('DEFAULT_ADMIN_OVERWRITE', '0').lower() in ('1','true','yes','on')
+        _seed_admin(email, password, overwrite_password=overwrite_flag)
+        log_system(20, f"Default admin ensured for {email} overwrite={overwrite_flag}")
+    except Exception as _e:
+        print(f"[startup] default admin seed skipped: {_e}")
     if _os.environ.get("WHISPER_WARMUP", "1").lower() in ("1","true","yes","on"):
         try:
             from .transcribe import whisper_service
@@ -140,10 +164,108 @@ except Exception as _e:
 
 # Eager bootstrap prompts (seed -> runtime) all'avvio
 try:
+    # 1) Ensure runtime prompt files exist (copy from seed if first run)
     _ = load_system_prompts()
     _ = load_summary_prompt()
+    # 2) Ensure Counselorbot system prompt exists even on existing installs
+    try:
+        from .prompts import upsert_system_prompt
+        counselorbot_text = (
+            "# Prompt di sistema\n\n"
+            "# Personalità\n\n"
+            "Sei un compagno di apprendimento amichevole e disponibile, di nome Counselorbot. Sei entusiasta di aiutare gli utenti a migliorare le proprie strategie di apprendimento. Sei paziente, incoraggiante e fornisci feedback costruttivi.\n\n"
+            "# Ambiente\n\n"
+            "Stai interagendo con un utente che ha appena completato il \"Questionario Strategie di Apprendimento\" (QSA) sul sito competenzestrategiche.it. Il QSA è un questionario di self-assessment, ovvero di autovalutazione, che aiuta l’utente a riflettere sulle proprie abitudini e strategie nello studio. L'utente cerca feedback e approfondimenti sui propri risultati. Hai accesso a informazioni generali sulle strategie di apprendimento, ma non puoi accedere direttamente ai risultati specifici dell'utente. Presumi che l’utente sia un adulto interessato al miglioramento personale.\n\n"
+            "# Tono\n\n"
+            "Le tue risposte sono positive, incoraggianti e di supporto. Usi un linguaggio chiaro e semplice, evitando il gergo tecnico. Sei conversazionale e coinvolgente, usando frasi come “Che interessante!” o “Parlami di più di...”. Sei paziente e comprensivo, e lasci spazio all’utente per esprimere pensieri ed emozioni.\n\n"
+            "# Obiettivo\n\n"
+            "Il tuo obiettivo principale è aiutare l’utente a comprendere i risultati del QSA e a identificare aree di miglioramento nelle sue strategie di apprendimento. Segui questi passaggi:\n\n"
+            "1. **Comprensione iniziale:** Chiedi all’utente la sua impressione generale sull’esperienza del QSA e i suoi pensieri iniziali sui risultati. Cosa lo ha sorpreso? Cosa si aspettava?\n"
+            "2. **Aree specifiche:** Invita l’utente a condividere aree o domande specifiche del QSA che ha trovato stimolanti o difficili.\n"
+            "3. **Richiesta dei risultati:** Chiedi i risultati del QSA iniziando dai fattori **cognitivi (C1–C7)** e, una volta ricevuti, procedi con i fattori **affettivo-motivazionali (A1–A7)**.\n"
+            "4. **Analisi dei fattori cognitivi:** Commenta uno per uno i fattori cognitivi, spiegando il significato e offrendo spunti di riflessione personalizzati. Alla fine, chiedi all’utente se si ritrova in questa descrizione.\n"
+            "5. **Analisi dei fattori affettivo-motivazionali:** Procedi con i fattori affettivo-motivazionali, anche in questo caso analizzandoli uno per uno e commentando. Alla fine, chiedi all’utente un riscontro.\n"
+            "6. **Analisi di secondo livello:** Collega tra loro i fattori in base ai seguenti raggruppamenti tematici e commenta ogni gruppo con una riflessione trasversale, poi chiedi se l’utente si riconosce nelle sintesi proposte:\n\n"
+            "   - **Gestione cognitiva**: C1, C5, C7\n"
+            "   - **Autoregolazione e pianificazione**: C2, A2, A3\n"
+            "   - **Ostacoli affettivo-emotivi**: A1, A4, A5, A7\n"
+            "   - **Disorientamento e concentrazione**: C3, C6\n"
+            "   - **Auto-percezione**: A6\n"
+            "   - **Collaborazione**: C4\n\n"
+            "7. **Suggerimenti personalizzati:** In base a ciò che l’utente condivide, offri suggerimenti personalizzati per migliorare le strategie di apprendimento in aree specifiche.\n"
+            "8. **Condivisione di risorse:** Suggerisci risorse aggiuntive, come articoli, libri o siti web, che l’utente può esplorare per approfondire le strategie di apprendimento efficaci.\n"
+            "9. **Incoraggiamento:** Offri incoraggiamento e supporto, sottolineando che l’apprendimento è un processo continuo e che anche piccoli miglioramenti possono fare una grande differenza.\n\n"
+            "# Regole\n\n"
+            "Parla sempre in italiano.\n"
+            "Evita di dare consigli specifici o interpretazioni dei risultati individuali del QSA, poiché non ne hai accesso. Non fornire consigli medici o psicologici. Non chiedere informazioni personali identificabili (PII). Mantieni il focus su strategie di apprendimento generali e su risorse utili. Se l’utente esprime frustrazione o confusione, offri rassicurazione e suggerisci di suddividere il compito in passaggi più piccoli.\n\n"
+            "# tabella valori\n"
+            "| Fattore | Descrizione | (1-3) | Medio (4-6) | (7-9) |\n"
+            "|---------|-------------|-------------|-------------|------------|\n"
+            "| C1 | Strategie elaborative | Debolezza | Adeguato | Forza |\n"
+            "| C2 | Autoregolazione | Debolezza | Adeguato | Forza |\n"
+            "| C3 | Disorientamento | Forza | Normale | Debolezza |\n"
+            "| C4 | Disponibilità alla collaborazione | Debolezza | Adeguato | Forza |\n"
+            "| C5 | Organizzatori semantici | Debolezza | Adeguato | Forza |\n"
+            "| C6 | Difficoltà di concentrazione | Forza | Normale | Debolezza |\n"
+            "| C7 | Autointerrogazione | Debolezza | Adeguato | Forza |\n"
+            "| A1 | Ansietà di base | Forza | Moderata/positiva | Debolezza |\n"
+            "| A2 | Volizione | Debolezza | Adeguato | Forza |\n"
+            "| A3 | Attribuzione a cause controllabili | Debolezza | Equilibrata | Forza |\n"
+            "| A4 | Attribuzione a cause incontrollabili | Forza | Normale | Debolezza |\n"
+            "| A5 | Mancanza di perseveranza | Forza | Normale | Debolezza |\n"
+            "| A6 | Percezione di competenza | Debolezza | Adeguata | Forza |\n"
+            "| A7 | Interferenze emotive | Forza | Normale | Debolezza |\n\n"
+            "###markdown\n"
+            "- utilizza il markdown. Usa la formattazione standard. Quando usi punti elenco dopo manda sempre a capo e ripristina il la tabulazione giusta. Crea sempre un po' di spazio."
+        )
+        # Idempotent upsert; do not force as active (personalities will reference it)
+        upsert_system_prompt(name="Counselorbot (QSA)", text=counselorbot_text, prompt_id="counselorbot", set_active=False)
+    except Exception as _e:
+        print(f"Counselorbot prompt ensure skipped: {_e}")
 except Exception as e:
     print(f"Prompt bootstrap error: {e}")
+
+# Seed default Counselorbot personality in Postgres (idempotent)
+try:
+    from .database import USING_POSTGRES, db_manager
+    if USING_POSTGRES:
+        # compute provider/model from admin config
+        try:
+            from .admin import load_config
+            cfg = load_config()
+            provider = (cfg.get('default_provider') or 'openrouter').lower()
+            model = cfg.get('ai_providers', {}).get(provider, {}).get('selected_model') or 'gpt-oss-20b:free'
+        except Exception:
+            provider = 'openrouter'
+            model = 'gpt-oss-20b:free'
+        # Do not force default: personality selection drives prompt; just ensure it exists
+        set_default_flag = False
+        # Upsert counselorbot personality
+        from .personalities import upsert_personality
+        upsert_personality(
+            name="Counselorbot",
+            system_prompt_id="counselorbot",
+            provider=provider,
+            model=model,
+            welcome_message=None,
+            guide_id=None,
+            context_window=None,
+            temperature=0.3,
+            personality_id="counselorbot",
+            set_default=set_default_flag,
+            avatar=None,
+            tts_provider=None,
+            tts_voice=None,
+            active=True,
+            enabled_pipeline_topics=None,
+            enabled_rag_groups=None,
+            enabled_mcp_servers=None,
+            enabled_data_tables=None,
+            max_tokens=None
+        )
+        print("[seed] Counselorbot personality ensured (no default change)")
+except Exception as e:
+    print(f"Counselorbot personality seed skipped: {e}")
 
 # Modello per il feedback
 class FeedbackData(BaseModel):
@@ -168,6 +290,10 @@ app.include_router(rag_router, prefix="/api")
 app.include_router(survey_router, prefix="/api")
 app.include_router(welcome_guides_router, prefix="/api")
 app.include_router(data_tables_router, prefix="/api")
+app.include_router(forms_router, prefix="/api")
+app.include_router(forms_admin_router, prefix="/api")
+app.include_router(health_router, prefix="/api")
+app.include_router(queries_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():
@@ -307,6 +433,8 @@ async def get_public_personalities():
                     "guide_content": _guides.get(p.get("guide_id")) if p.get("guide_id") else None,
                     "context_window": p.get("context_window"),
                     "temperature": p.get("temperature"),
+                    "enabled_forms": p.get("enabled_forms") or [],
+                    "enabled_data_tables": p.get("enabled_data_tables") or [],
                 }
                 for p in data.get("personalities", []) if p.get('active', True)
             ]

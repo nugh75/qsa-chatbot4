@@ -20,7 +20,9 @@ import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
 import APIDocsPanel from './components/APIDocsPanel'
 import RagDocumentsPanel from './components/RagDocumentsPanel'
+import FormsBuilderPanel from './components/FormsBuilderPanel'
 import DataTablesPanel from './components/DataTablesPanel'
+import ModelsManagerPanel from './components/ModelsManagerPanel'
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
@@ -70,9 +72,9 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-    { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
+    { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides', 'models_manager'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
-    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'data_tables', 'pipeline'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'data_tables', 'forms', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
@@ -96,12 +98,14 @@ const AdminPanel: React.FC = () => {
   embedding: false,
   ragdocs: false,
   data_tables: true,
+  forms: true,
   whisper_health: false,
   pipeline: false,
   welcome_guides: false,
   footer_settings: true,
   mcp_servers: true,
   backup_panel: true,
+  models_manager: false,
   })
 
   // Token test
@@ -734,20 +738,49 @@ const AdminPanel: React.FC = () => {
       </Accordion>
       )}
 
-      {/* Data Tables Management */}
-      {panelVisible('data_tables') && (
-        <Accordion expanded={expandedPanels.data_tables} onChange={handlePanelExpansion('data_tables')}>
-          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <StorageIcon fontSize="small" />
-              <Typography variant="h6">Tabelle Dati (CSV/XLSX)</Typography>
-            </Box>
-          </AccordionSummary>
-          <AccordionDetails>
-            <DataTablesPanel />
-          </AccordionDetails>
-        </Accordion>
-      )}
+  {/* Data Tables Management */}
+  {panelVisible('data_tables') && (
+    <Accordion expanded={expandedPanels.data_tables} onChange={handlePanelExpansion('data_tables')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <StorageIcon fontSize="small" />
+          <Typography variant="h6">Tabelle Dati (CSV/XLSX)</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <DataTablesPanel />
+      </AccordionDetails>
+    </Accordion>
+  )}
+
+  {/* Forms (Questionari) */}
+  {panelVisible('forms') && (
+    <Accordion expanded={expandedPanels.forms} onChange={handlePanelExpansion('forms')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <DescriptionIcon fontSize="small" />
+          <Typography variant="h6">Questionari (Forms)</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <FormsBuilderPanel />
+      </AccordionDetails>
+    </Accordion>
+  )}
+
+  {/* Models Manager (solo in Conversazione) */}
+  {panelVisible('models_manager') && (
+    <Accordion expanded={expandedPanels.models_manager} onChange={handlePanelExpansion('models_manager')} sx={{ mt:2 }}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+          <Typography variant="h6">Modelli AI</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <ModelsManagerPanel />
+      </AccordionDetails>
+    </Accordion>
+  )}
 
   {/* RAG Documenti */}
   {panelVisible('ragdocs') && (

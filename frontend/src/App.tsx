@@ -31,6 +31,7 @@ import LoginDialog from './components/LoginDialog'
 import FileUpload, { ProcessedFile } from './components/FileUpload'
 import FileManagerCompact from './components/FileManagerCompact'
 import ChatToolbar from './components/ChatToolbar'
+import FormRunnerDialog from './components/FormRunnerDialog'
 import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
@@ -72,6 +73,7 @@ type SourceDocs = {
   rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string; chunk_label?: string; download_url?: string }[]
   pipeline_topics?: { name: string; description?: string | null }[]
   rag_groups?: { id: any; name: string }[]
+  data_tables?: { table_id: string; title: string; download_url?: string; row_ids?: (string|number)[] }[]
 }
 
 type Msg = { 
@@ -245,6 +247,7 @@ const AppContent: React.FC = () => {
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
   const [showAttachments, setShowAttachments] = useState(false)
+  const [showFormDialog, setShowFormDialog] = useState(false)
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const isVerySmall = useMediaQuery('(max-width:420px)')
@@ -746,7 +749,22 @@ const AppContent: React.FC = () => {
     if(!text) {
       return
     }
-  const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
+    // Auto-open form dialog when user replies "no" after summary confirmation prompt
+    try {
+      const t = text.toLowerCase()
+      const wantsResubmit = /^(no[\s\.!\)]*|non\s+(va\s+bene|corretto|giusto)|sbagliato|correggi|reinvia)/.test(t)
+      if (wantsResubmit) {
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+        const la = (lastAssistant?.content || '').toLowerCase()
+        const isConfirmationContext = la.includes('i dati sono corretti?') || la.includes('riepilogo del tuo invio') || la.includes('grazie per i dati inviati')
+        if (isConfirmationContext) {
+          setShowFormDialog(true)
+          setInput('')
+          return
+        }
+      }
+    } catch {}
+    const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
   setMessages(next); setInput('')
   setLoading(true); setError(undefined)
     try {
@@ -1575,7 +1593,7 @@ const AppContent: React.FC = () => {
                     </Box>
                     </Box>
                     {/* Sezione Fonti (nuova) */}
-                    {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length) && (
+                    {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length || m.source_docs.data_tables?.length) && (
                       <Box sx={{ mt:1.5 }}>
                         <Paper variant="outlined" sx={{ p:1.1, bgcolor: '#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
                           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: m.__sourcesExpanded ? 0.5 : 0 }}>
@@ -1606,6 +1624,22 @@ const AppContent: React.FC = () => {
                                 {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
                                   <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
                                     <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
+                                  </Box>
+                                )}
+                                {/* Tabelle dati utilizzate */}
+                                {m.source_docs.data_tables && m.source_docs.data_tables.length>0 && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#6d4c41' }}>Tabelle:</strong>{' '}
+                                    {m.source_docs.data_tables.map((t, idx)=> (
+                                      <React.Fragment key={`dt-${t.table_id}`}>
+                                        {idx>0 ? ', ' : ''}
+                                        {t.download_url ? (
+                                          <a href={t.download_url} target="_blank" rel="noreferrer" style={{ textDecoration:'underline' }}>{t.title || t.table_id}</a>
+                                        ) : (
+                                          <span>{t.title || t.table_id}</span>
+                                        )}
+                                      </React.Fragment>
+                                    ))}
                                   </Box>
                                 )}
                                 {/* Documenti con grouping chunks */}
@@ -1849,6 +1883,7 @@ const AppContent: React.FC = () => {
                 onToggleAttachments={()=> setShowAttachments(o=> !o)}
                 attachmentsCount={attachedFiles.length}
                 attachmentsOpen={showAttachments}
+                onOpenFormDialog={() => setShowFormDialog(true)}
               />
             </Stack>
             {/* Inline attachments area (collapsed) */}
@@ -1933,6 +1968,14 @@ const AppContent: React.FC = () => {
           Vedi risultati
         </Link>
       </Box>
+
+      <FormRunnerDialog
+        open={showFormDialog}
+        onClose={()=> setShowFormDialog(false)}
+        enabledFormIds={(selectedPersonality as any)?.enabled_forms || []}
+        conversationId={currentConversationId || undefined}
+        personalityId={selectedPersonality?.id || undefined}
+      />
 
   <ConversationSidebar
         open={sidebarOpen}

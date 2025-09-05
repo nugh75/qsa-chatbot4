@@ -22,6 +22,7 @@ PROVIDER_TIMEOUTS: Dict[str, int] = {
 }
 
 VERBOSE = os.getenv("LLM_VERBOSE", "1").lower() in ("1","true","yes","on")
+GENERIC_FALLBACK_TEXT = "risposta non disponible, prova un altro modello o personalità"
 
 def debug_log(*args, provider: Optional[str] = None):  # lightweight wrapper
     if VERBOSE:
@@ -102,90 +103,12 @@ def _analyze_affective_factors(scores: List[int]) -> str:
     return analysis
 
 async def _local_reply(messages: List[Dict], context_hint: str) -> str:
-    user_text = next((m['content'] for m in reversed(messages) if m['role']=='user'), '')
-    
-    # Estrai il nome se fornito
-    name_match = re.search(r'mi chiamo (\w+)', user_text.lower())
-    name = name_match.group(1).title() if name_match else ""
-    
-    # Cerca punteggi numerici
-    scores = _extract_scores(user_text)
-    
-    # Se è il primo messaggio o un saluto
-    if any(word in user_text.lower() for word in ['ciao', 'salve', 'buongiorno', 'buonasera']):
-        if name:
-            return f"Ciao {name}! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
-        else:
-            return "Ciao! Sono Counselorbot, il tuo compagno di apprendimento! 🎓\n\nSono qui per aiutarti ad analizzare i tuoi risultati del QSA. Come è andata la compilazione? Hai qualche impressione generale da condividere?"
-    
-    # Se ci sono punteggi da analizzare
-    if scores:
-        if len(scores) >= 7:
-            # Analizza i fattori cognitivi
-            if len(scores) == 13 or len(scores) == 14:  # Tutti i punteggi
-                cognitive_analysis = _analyze_cognitive_factors(scores)
-                return cognitive_analysis
-            else:
-                # Solo primi 7 (cognitivi)
-                return _analyze_cognitive_factors(scores)
-        else:
-            return f"Vedo che hai condiviso alcuni numeri ({', '.join(map(str, scores))}). Per un'analisi completa dei fattori cognitivi ho bisogno di tutti e 7 i punteggi C1-C7. Puoi condividerli in ordine?"
-    
-    # Se menziona nome
-    if name and name not in [msg.get('content', '') for msg in messages[:-1]]:
-        return f"Piacere di conoscerti, {name}! Ora raccontami, come è andata con il QSA? Quali sono state le tue impressioni durante la compilazione?"
-    
-    # Risposta generica di default
-    if 'impressioni' in user_text.lower() or 'impressione' in user_text.lower():
-        return "Ottimo! Mi piacerebbe sentire di più. Cosa ti ha colpito di più durante la compilazione? E quando hai visto i risultati, c'è stato qualcosa che ti ha sorpreso? \n\nQuando sei pronto, puoi condividere i punteggi dei fattori cognitivi (C1-C7)."
-    
-    return "Che interessante! Per aiutarti al meglio, mi piacerebbe conoscere prima la tua impressione generale sul QSA. Poi, se vuoi, possiamo analizzare insieme i tuoi punteggi dei fattori cognitivi (C1–C7) e successivamente quelli affettivo-motivazionali (A1–A7)."
+    # Risposta fallback uniforme richiesta dal committente
+    return GENERIC_FALLBACK_TEXT
 
 async def _summary_fallback_reply(messages: List[Dict], context_hint: str = "") -> str:
-    """Fallback function specifically for summary generation when providers fail."""
-    # Count messages to provide basic statistics
-    user_messages = [m for m in messages if m.get('role') == 'user']
-    assistant_messages = [m for m in messages if m.get('role') == 'assistant']
-    
-    total_messages = len(messages)
-    user_count = len(user_messages)
-    assistant_count = len(assistant_messages)
-    
-    # Extract conversation topics from user messages
-    topics = []
-    for msg in user_messages:
-        content = msg.get('content', '').lower()
-        if 'qsa' in content or 'questionario' in content:
-            topics.append('QSA')
-        if 'puntegg' in content or 'score' in content:
-            topics.append('punteggi')
-        if 'analisi' in content or 'analysis' in content:
-            topics.append('analisi')
-        if 'impression' in content or 'sentir' in content:
-            topics.append('impressioni')
-    
-    topics = list(set(topics))  # Remove duplicates
-    
-    # Generate a basic summary based on available information
-    summary_parts = []
-    
-    if topics:
-        summary_parts.append(f"Questa conversazione riguarda principalmente: {', '.join(topics)}.")
-    
-    summary_parts.append(f"La conversazione è composta da {total_messages} messaggi totali:")
-    summary_parts.append(f"- {user_count} messaggi dell'utente")
-    summary_parts.append(f"- {assistant_count} messaggi del sistema")
-    
-    # Add context about the time period if available
-    if messages:
-        first_msg = messages[0]
-        last_msg = messages[-1]
-        if 'timestamp' in first_msg and 'timestamp' in last_msg:
-            summary_parts.append(f"Periodo della conversazione: dal {first_msg['timestamp']} al {last_msg['timestamp']}")
-    
-    summary_parts.append("\nNota: Questo è un riassunto di fallback generato perché il provider AI principale non è riuscito a elaborare la richiesta. Si consiglia di verificare la configurazione del provider o riprovare più tardi.")
-    
-    return "\n".join(summary_parts)
+    """Fallback uniforme per i summary quando i provider falliscono."""
+    return GENERIC_FALLBACK_TEXT
 
 async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3, is_summary_request: bool = False, ollama_base_url: Optional[str] = None) -> str:
     provider = (provider or 'local').lower()
@@ -193,7 +116,8 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
     debug_log(f"Provider selezionato: {provider} (strict={strict})")
 
     if provider == 'local':  # early exit micro-optimization
-        return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+        # Risposta fallback uniforme anche quando si usa 'local'
+        return GENERIC_FALLBACK_TEXT if not is_summary_request else GENERIC_FALLBACK_TEXT
 
     available_providers = _get_available_providers()
     debug_log(f"Provider disponibili: {available_providers}")
@@ -406,7 +330,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         if attempt_model:
             debug_log(f"Modello scelto: {attempt_model}", provider=attempt)
         if attempt == 'local':
-            return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+            return GENERIC_FALLBACK_TEXT if not is_summary_request else GENERIC_FALLBACK_TEXT
         adapter = adapter_map.get(attempt)
         if not adapter:
             continue
@@ -420,7 +344,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             continue
 
     debug_log(f"Tutti i provider hanno fallito: {errors}")
-    return await (_summary_fallback_reply(messages, context_hint) if is_summary_request else _local_reply(messages, context_hint))
+    return GENERIC_FALLBACK_TEXT if not is_summary_request else GENERIC_FALLBACK_TEXT
 
 def _prepare_messages_for_provider(messages: List[Dict], target: str) -> List[Dict]:
     """Normalize messages structure for provider target (supports images)."""

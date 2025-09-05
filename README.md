@@ -12,6 +12,13 @@
 - Markdown normalization (unescape literal \n, improved paragraph spacing, soft breaks via remark-breaks) for consistent rendering including "Fonti consultate:" section.
 - Removed decorative emojis across UI; standardized on clean SVG/MUI icons only.
 
+- Predefined Queries & NLQ (admin): safe, parameterized predefined queries with dropdown + dynamic form; simple NLQ endpoint to map natural requests to queries. See `docs/QUICK_QUERIES_GUIDE.md` for a non‑technical guide. Endpoints:
+  - `GET /api/queries` — list queries
+  - `GET /api/queries/{id}` — describe
+  - `POST /api/queries/{id}/preview|execute`
+  - `POST /api/queries/nlq`
+  - `POST /api/queries/{id}/export` — CSV export (admin)
+
 ### IT
 - Aggiunti download delle fonti RAG (`/api/rag/download/{document_id}`) con metadati `original_filename`, `stored_filename`, `download_url`.
 - Introdotta etichetta per chunk (`chunk_label`) in `source_docs.rag_chunks` per mappare le citazioni.

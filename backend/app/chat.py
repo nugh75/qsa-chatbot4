@@ -423,6 +423,7 @@ async def chat(
     # Optional: search in enabled data tables (if any)
     data_tables_context = ""
     data_tables_search_results = None
+    data_tables_agent_answer = None
     try:
         if personality_enabled_data_tables:
             from .data_tables import search_tables as _search_dt
@@ -453,10 +454,18 @@ async def chat(
                 used += len(block)
             if parts:
                 data_tables_context = "\n\n".join(parts)
+            # Sottoagente AI (configurabile) per sintetizzare una risposta mirata dalle tabelle
+            try:
+                from .data_tables_agent import run_agent as _run_dt_agent
+                data_tables_agent_answer = await _run_dt_agent(full_user_message, data_tables_search_results, personality_enabled_data_tables)
+            except Exception as _ae:
+                print(f"[data-tables-agent] errore run: {_ae}")
     except Exception as _dte:
         print(f"[data-tables] errore nel build contesto: {_dte}")
     if data_tables_context:
         sections.append(f"[SEZIONE TABELLE]\n{data_tables_context.strip()}")
+    if data_tables_agent_answer:
+        sections.append(f"[SEZIONE TABELLE – SINTESI]\n{data_tables_agent_answer.strip()}")
     context = "\n\n".join(sections)[:TOTAL_BUDGET]
     # Provide simple rag_context flag for downstream logic (used in logging)
     rag_context = rag_context_combined if rag_context_combined else ""
@@ -849,12 +858,14 @@ async def chat_stream(
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None
     personality_enabled_rag_groups = None
+    personality_enabled_data_tables = None
     if x_personality_id:
         try:
             p = get_personality(x_personality_id)
             if p:
                 personality_enabled_topics = p.get("enabled_pipeline_topics")
                 personality_enabled_rag_groups = p.get("enabled_rag_groups")
+                personality_enabled_data_tables = p.get("enabled_data_tables")
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
@@ -866,6 +877,47 @@ async def chat_stream(
     full_user_message = user_msg
     rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
+    # Optional: cerca nelle tabelle dati abilitate dalla personalità e aggiungi una sezione al contesto
+    data_tables_search_results = None
+    try:
+        if personality_enabled_data_tables:
+            from .data_tables import search_tables as _search_dt
+            dt_res = _search_dt(full_user_message, personality_enabled_data_tables, limit_per_table=8)
+            data_tables_search_results = dt_res.get('results') or []
+            # format risultati in una tabella markdown per ciascuna tabella (max 5 colonne visibili, 8 righe)
+            import os as _os
+            DT_BUDGET = int(_os.getenv('CONTEXT_MIN_DT_CHARS', '2000'))
+            parts = []
+            used = 0
+            for t in data_tables_search_results:
+                title = t.get('title') or t.get('table_name') or t.get('table_id')
+                disp_cols = t.get('display_columns') or (t.get('columns') or [])[:5]
+                if not disp_cols:
+                    continue
+                rows = t.get('rows') or []
+                header = "| " + " | ".join(disp_cols) + " |\n" + "|" + "|".join([" --- "] * len(disp_cols)) + "|\n"
+                body_lines = []
+                for r in rows[:8]:
+                    data = r.get('data') or {}
+                    vals = [str((data.get(c) if data.get(c) is not None else '')).replace('\n',' ').strip() for c in disp_cols]
+                    body_lines.append("| " + " | ".join(vals) + " |")
+                block = f"[Tabella: {title}]\n" + header + "\n".join(body_lines)
+                if used + len(block) > DT_BUDGET:
+                    break
+                parts.append(block)
+                used += len(block)
+            if parts:
+                context = (context + "\n\n[SEZIONE TABELLE]\n" + "\n\n".join(parts)).strip()
+            # Sottoagente: sintetizza una risposta mirata dai risultati tabellari
+            try:
+                from .data_tables_agent import run_agent as _run_dt_agent
+                _dt_ans = await _run_dt_agent(full_user_message, data_tables_search_results, personality_enabled_data_tables)
+                if _dt_ans:
+                    context = (context + "\n\n[SEZIONE TABELLE – SINTESI]\n" + _dt_ans.strip()).strip()
+            except Exception as _ae:
+                print(f"[data-tables-agent][stream] errore run: {_ae}")
+    except Exception as _dte:
+        print(f"[data-tables][stream] errore nel build contesto: {_dte}")
     # Personality override
     effective_provider = provider
     model_override: Optional[str] = None
@@ -1070,7 +1122,7 @@ async def chat_stream(
                         pass
                     # Data tables meta (if available in this request scope)
                     try:
-                        if 'data_tables_search_results' in locals() and data_tables_search_results:
+                        if data_tables_search_results:
                             for t in data_tables_search_results:
                                 sources["data_tables"].append({
                                     "table_id": t.get('table_id'),
@@ -1232,7 +1284,7 @@ async def chat_stream(
                     pass
                 # Data tables meta final
                 try:
-                    if 'data_tables_search_results' in locals() and data_tables_search_results:
+                    if data_tables_search_results:
                         for t in data_tables_search_results:
                             sources_final["data_tables"].append({
                                 "table_id": t.get('table_id'),

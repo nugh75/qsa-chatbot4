@@ -50,6 +50,7 @@ from .personalities import (
     set_default_personality,
 )
 from .logging_utils import LOG_DIR, get_system_logger
+from .database import db_manager, USING_POSTGRES
 import logging as _logging
 from fastapi.responses import FileResponse
 import glob
@@ -363,7 +364,82 @@ async def _fetch_openai_models(api_key: str) -> list[str]:
             # Heuristic: include chat/capable new naming patterns
             if any(tok in mid for tok in ["gpt-4", "gpt-4o", "gpt-4.1", "o3", "o1", "gpt-3.5", "mini"]):
                 keep.append(mid)
-        return sorted(set(keep))
+    return sorted(set(keep))
+
+async def _fetch_gemini_models(api_key: str) -> list[str]:
+    """Fetch Gemini models list via Google Generative Language API.
+    Filters to chat-capable models (exclude embed/vision-only/edits when detectable).
+    """
+    import httpx
+    out: list[str] = []
+    # Prefer v1beta for broader compatibility
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    params = {"key": api_key}
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.get(url, params=params)
+            r.raise_for_status()
+            data = r.json() or {}
+            for m in data.get('models', []):
+                # id may be in name as projects/*/models/{id} or directly
+                raw = m.get('name') or m.get('id') or ''
+                mid = raw.split('/')[-1]
+                if not isinstance(mid, str) or not mid:
+                    continue
+                # Keep only Gemini chat models
+                if not mid.startswith('gemini-'):
+                    continue
+                # Exclude embedding/edit models
+                if any(x in mid for x in ['embed', 'embedding', 'editor']):
+                    continue
+                out.append(mid)
+    except Exception:
+        out = []
+    # Stable curated order if API fails later
+    if not out:
+        out = [
+            'gemini-2.0-flash',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+        ]
+    # Dedup preserving seen order
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for m in out:
+        if m not in seen:
+            seen.add(m); ordered.append(m)
+    return ordered
+
+async def _fetch_anthropic_models(api_key: str) -> list[str]:
+    """Fetch Claude models list. If API fails, return a curated set."""
+    import httpx
+    out: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.get("https://api.anthropic.com/v1/models", headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+            if r.status_code == 200:
+                data = r.json() or {}
+                for m in data.get('data', []):
+                    mid = m.get('id') or m.get('name')
+                    if isinstance(mid, str) and mid.startswith('claude-'):
+                        out.append(mid)
+    except Exception:
+        out = []
+    if not out:
+        out = [
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-haiku-20241022',
+            'claude-3-opus-20240229',
+            'claude-3-sonnet-20240229',
+            'claude-3-haiku-20240307',
+        ]
+    # keep order
+    seen: set[str] = set(); ordered: list[str] = []
+    for m in out:
+        if m not in seen:
+            seen.add(m); ordered.append(m)
+    return ordered
 
 async def _fetch_ollama_models(base_url: str) -> list[str]:
     import httpx
@@ -387,11 +463,12 @@ def _static_models(provider: str) -> list[str]:
             'claude-3-haiku-20240307'
         ]
     if provider == 'gemini':
+        # Curated modern list (fallback if API listing not available)
         return [
+            'gemini-2.0-flash',
             'gemini-1.5-pro',
             'gemini-1.5-flash',
             'gemini-1.5-flash-8b',
-            'gemini-1.5-pro-exp'
         ]
     if provider == 'local':
         return ['local-fallback']
@@ -436,8 +513,26 @@ async def get_provider_models(provider: str, refresh: bool = False):
                 models = await _fetch_ollama_models(base_url)
             except Exception as e:
                 note = f"ollama_fetch_error:{e}"
-        elif provider in ('claude','gemini','local'):
-            models = _static_models(provider)
+        elif provider == 'gemini':
+            api_key = os.getenv('GOOGLE_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_gemini_models(api_key)
+                except Exception as e:
+                    note = f"gemini_fetch_error:{e}"
+            if not models:
+                models = _static_models('gemini')
+        elif provider == 'claude':
+            api_key = os.getenv('ANTHROPIC_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_anthropic_models(api_key)
+                except Exception as e:
+                    note = f"claude_fetch_error:{e}"
+            if not models:
+                models = _static_models('claude')
+        elif provider == 'local':
+            models = _static_models('local')
         else:
             return {"success": False, "error": "provider_not_supported"}
     except Exception as e:
@@ -1328,6 +1423,7 @@ class PersonalityIn(BaseModel):
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
     enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
+    enabled_forms: Optional[List[str]] = None  # questionari abilitati
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -1378,6 +1474,7 @@ async def upsert_personality_admin(p: PersonalityIn):
             enabled_rag_groups=p.enabled_rag_groups,
             enabled_mcp_servers=p.enabled_mcp_servers,
             enabled_data_tables=p.enabled_data_tables,
+            enabled_forms=p.enabled_forms,
             max_tokens=p.max_tokens
         )
         return {"success": True, **res}
@@ -2128,6 +2225,188 @@ async def db_dump(tables: Optional[str] = None):
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore DB dump: {e}")
+
+# ---- DB Explorer: tables, rows, columns, search, query, CRUD ----
+def _safe_table_name(name: str) -> str:
+    if not isinstance(name, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        raise HTTPException(status_code=400, detail='Invalid table name')
+    return name
+
+@router.get('/admin/db/tables')
+async def list_db_tables_api():
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            if USING_POSTGRES:
+                db_manager.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+                tables = [r[0] for r in cur.fetchall()]
+            else:
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                tables = [r[0] for r in cur.fetchall()]
+        return {"tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lista tabelle: {e}")
+
+@router.get('/admin/db/table/{table}')
+async def get_table_rows_api(table: str, limit: int = 100, offset: int = 0):
+    t = _safe_table_name(table)
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            sql = f'SELECT * FROM "{t}" LIMIT ? OFFSET ?'
+            db_manager.exec(cur, sql, (limit, offset))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura tabella: {e}")
+
+@router.get('/admin/db/columns/{table}')
+async def get_table_columns_api(table: str):
+    t = _safe_table_name(table)
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            out = []
+            if USING_POSTGRES:
+                db_manager.exec(cur, """
+                    SELECT c.column_name, c.data_type, (c.is_nullable='YES') AS is_nullable,
+                           EXISTS (
+                               SELECT 1 FROM information_schema.table_constraints tc
+                               JOIN information_schema.key_column_usage k
+                                 ON k.constraint_name=tc.constraint_name AND k.table_name=tc.table_name
+                               WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_name=c.table_name AND k.column_name=c.column_name
+                           ) AS is_primary
+                    FROM information_schema.columns c
+                    WHERE c.table_schema='public' AND c.table_name=%s
+                    ORDER BY c.ordinal_position
+                """, (t,))
+                for r in cur.fetchall():
+                    out.append({"name": r[0], "type": r[1], "is_nullable": bool(r[2]), "is_primary": bool(r[3])})
+            else:
+                cur.execute(f"PRAGMA table_info('{t}')")
+                for r in cur.fetchall():
+                    out.append({"name": r[1], "type": r[2], "is_nullable": not bool(r[3]), "is_primary": bool(r[5])})
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore colonne tabella: {e}")
+
+@router.post('/admin/db/query')
+async def run_free_query_api(payload: dict):
+    sql = (payload or {}).get('sql') or ''
+    limit = int((payload or {}).get('limit') or 100)
+    if not sql.strip().lower().startswith('select'):
+        raise HTTPException(status_code=400, detail='Only SELECT queries allowed')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            q = sql.strip().rstrip(';')
+            if ' limit ' not in q.lower():
+                q = f"{q} LIMIT {limit}"
+            cur.execute(db_manager.adapt_sql(q))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if cur.description else []
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore esecuzione query: {e}")
+
+@router.get('/admin/db/search')
+async def search_table_api(table: str, q: str, limit: int = 50):
+    t = _safe_table_name(table)
+    like = f"%{q}%"
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            if USING_POSTGRES:
+                db_manager.exec(cur, """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name=%s AND data_type IN ('text','character varying','character')
+                """, (t,))
+                text_cols = [r[0] for r in cur.fetchall()] or []
+                if not text_cols:
+                    sql = f"SELECT * FROM \"{t}\" WHERE CAST(row_to_json(\"{t}\") AS text) ILIKE %s LIMIT %s"
+                    db_manager.exec(cur, sql, (like, limit))
+                else:
+                    where = ' OR '.join([f'"{c}" ILIKE %s' for c in text_cols])
+                    params = tuple([like]*len(text_cols) + [limit])
+                    db_manager.exec(cur, f'SELECT * FROM "{t}" WHERE {where} LIMIT %s', params)
+            else:
+                cur.execute(f"SELECT * FROM \"{t}\" LIMIT ?", (limit,))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore ricerca: {e}")
+
+@router.post('/admin/db/update')
+async def update_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    key = (payload or {}).get('key') or {}
+    setv = (payload or {}).get('set') or {}
+    if not key or not setv:
+        raise HTTPException(status_code=400, detail='key and set are required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            set_parts = []
+            params = []
+            for k, v in setv.items():
+                set_parts.append(f'"{k}" = ?')
+                params.append(v)
+            where_parts = []
+            for k, v in key.items():
+                where_parts.append(f'"{k}" = ?')
+                params.append(v)
+            sql = f'UPDATE "{table}" SET ' + ', '.join(set_parts) + ' WHERE ' + ' AND '.join(where_parts)
+            db_manager.exec(cur, sql, tuple(params))
+            affected = cur.rowcount if hasattr(cur, 'rowcount') else None
+            conn.commit()
+        return {"updated": affected or 0}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore update: {e}")
+
+@router.post('/admin/db/insert')
+async def insert_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    values = (payload or {}).get('values') or {}
+    if not values:
+        raise HTTPException(status_code=400, detail='values required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            cols = list(values.keys())
+            placeholders = ','.join(['?']*len(cols))
+            sql = f'INSERT INTO "{table}" (' + ','.join([f'"{c}"' for c in cols]) + f') VALUES ({placeholders})'
+            db_manager.exec(cur, sql, tuple(values[c] for c in cols))
+            conn.commit()
+        return {"inserted": 1}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore insert: {e}")
+
+@router.post('/admin/db/delete')
+async def delete_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    key = (payload or {}).get('key') or {}
+    if not key:
+        raise HTTPException(status_code=400, detail='key required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            where_parts = []
+            params = []
+            for k, v in key.items():
+                where_parts.append(f'"{k}" = ?')
+                params.append(v)
+            sql = f'DELETE FROM "{table}" WHERE ' + ' AND '.join(where_parts)
+            db_manager.exec(cur, sql, tuple(params))
+            affected = cur.rowcount if hasattr(cur, 'rowcount') else None
+            conn.commit()
+        return {"deleted": affected or 0}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore delete: {e}")
 
 class RestoreOptions(BaseModel):
     allow_seed: bool = False
@@ -3965,3 +4244,60 @@ async def admin_test_users():
         "current_working_directory": os.getcwd(),
         "absolute_database_path": str(DATABASE_PATH.absolute())
     }
+
+# ---- Data Tables Agent settings (provider/model indipendenti) ----
+class DataTablesSettingsIn(BaseModel):
+    enabled: bool = True
+    provider: str = 'openrouter'
+    model: str | None = None
+    temperature: float | None = 0.2
+    limit_per_table: int | None = 8
+
+@router.get('/admin/data-tables/settings')
+async def get_data_tables_settings():
+    try:
+        cfg = load_config()
+        defaults = {"enabled": True, "provider": "openrouter", "model": None, "temperature": 0.2, "limit_per_table": 8}
+        settings = cfg.get('data_tables_settings') or {}
+        return {"success": True, "settings": {**defaults, **settings}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.post('/admin/data-tables/settings')
+async def set_data_tables_settings(payload: DataTablesSettingsIn):
+    try:
+        cfg = load_config()
+        ai = cfg.get('ai_providers', {}) or {}
+        prov = (payload.provider or 'openrouter').lower()
+        if prov not in ai:
+            return {"success": False, "error": f"provider_unknown:{prov}"}
+        cfg['data_tables_settings'] = {
+            'enabled': bool(payload.enabled),
+            'provider': prov,
+            'model': (payload.model or '').strip() or None,
+            'temperature': float(payload.temperature or 0.2),
+            'limit_per_table': int(payload.limit_per_table or 8)
+        }
+        save_config(cfg)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+class DataTablesAgentTestIn(BaseModel):
+    q: str
+    table_ids: list[str] | None = None
+
+@router.post('/admin/data-tables/agent-test')
+async def data_tables_agent_test(req: DataTablesAgentTestIn):
+    try:
+        from .data_tables import list_tables as _list
+        from .data_tables_agent import run_agent
+        if req.table_ids:
+            tids = req.table_ids
+        else:
+            tids = [t.get('id') for t in _list() if t.get('id')]
+        # Pass schemas via tids; lasciamo results vuoto (NL2SQL decide le condizioni)
+        answer = await run_agent(req.q, [], tids)
+        return {"success": True, "answer": answer, "table_ids": tids}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

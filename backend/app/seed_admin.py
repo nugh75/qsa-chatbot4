@@ -44,7 +44,7 @@ def ensure_tables_postgres():
         """)
         conn.commit()
 
-def seed_admin(email: str, password: str):
+def seed_admin(email: str, password: str, overwrite_password: bool = True):
     ensure_tables_postgres()
     pw_hash = hash_password(password)
     user_key_hash = hashlib.sha256((email+":user_key").encode()).hexdigest()
@@ -58,10 +58,16 @@ def seed_admin(email: str, password: str):
         if row:
             user_id, is_admin = row[0], row[1]
             if USING_POSTGRES:
-                c.execute("UPDATE users SET is_admin = %s, password_hash = %s WHERE id = %s", (True, pw_hash, user_id))
+                if overwrite_password:
+                    c.execute("UPDATE users SET is_admin = %s, password_hash = %s WHERE id = %s", (True, pw_hash, user_id))
+                else:
+                    c.execute("UPDATE users SET is_admin = %s WHERE id = %s", (True, user_id))
             else:
-                c.execute("UPDATE users SET is_admin = ?, password_hash = ? WHERE id = ?", (1, pw_hash, user_id))
-            action = "promoted" if not is_admin else "updated"
+                if overwrite_password:
+                    c.execute("UPDATE users SET is_admin = ?, password_hash = ? WHERE id = ?", (1, pw_hash, user_id))
+                else:
+                    c.execute("UPDATE users SET is_admin = ? WHERE id = ?", (1, user_id))
+            action = "promoted" if not is_admin else ("updated" if overwrite_password else "promoted")
         else:
             if USING_POSTGRES:
                 c.execute("INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted, is_admin) VALUES (%s, %s, %s, %s, %s) RETURNING id", (email, pw_hash, user_key_hash, DEFAULT_ESCROW_PLACEHOLDER, True))
@@ -80,8 +86,9 @@ def main():
     parser = argparse.ArgumentParser(description="Seed or promote admin user")
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
+    parser.add_argument("--no-overwrite", action='store_true', help='Do not overwrite password if user exists')
     args = parser.parse_args()
-    seed_admin(args.email, args.password)
+    seed_admin(args.email, args.password, overwrite_password=not args.no_overwrite)
 
 if __name__ == "__main__":
     main()

@@ -426,22 +426,65 @@ def export_table(table_id: str, fmt: str = "csv", limit: Optional[int] = None) -
 
 
 def search_tables(query: str, table_ids: List[str], limit_per_table: int = 10) -> Dict[str, Any]:
-    """Naive search across stringified JSON rows in the selected tables.
+    """Search across JSON rows for selected tables with light Italian-friendly normalization.
 
-    Ranking: simple occurrence count of unique keywords in the row JSON string (lowercased).
+    - Tokenizes query and expands simple variants (singolare/plurale, prefisso >= 5 chars)
+    - Recognizes Italian months (e.g., 'settembre' -> {'09','9','settembre','sett'})
+    - Ranks by count of distinct matched tokens/variants per row
     """
-    # tokenize query
-    tokens = [t for t in re.findall(r"[\w]+", (query or '').lower()) if len(t) > 2]
+    # Tokenize
+    raw = (query or '').lower()
+    tokens = [t for t in re.findall(r"[\w]+", raw) if len(t) > 2]
     if not tokens:
         return {"results": []}
+
+    # Expand token variants
+    MONTHS = {
+        'gennaio': ['01', '1', 'gen', 'genn'],
+        'febbraio': ['02', '2', 'feb'],
+        'marzo': ['03', '3', 'mar'],
+        'aprile': ['04', '4', 'apr'],
+        'maggio': ['05', '5', 'mag'],
+        'giugno': ['06', '6', 'giu'],
+        'luglio': ['07', '7', 'lug'],
+        'agosto': ['08', '8', 'ago'],
+        'settembre': ['09', '9', 'set', 'sett'],
+        'ottobre': ['10', 'ott'],
+        'novembre': ['11', 'nov'],
+        'dicembre': ['12', 'dic'],
+    }
+    def expand(tok: str) -> List[str]:
+        variants = {tok}
+        # Months
+        if tok in MONTHS:
+            variants.update(MONTHS[tok])
+        # Simple plural/singular heuristics
+        if tok.endswith('i'):
+            variants.add(tok[:-1])  # lezioni -> lezion
+            variants.add(tok[:-1] + 'o')  # lezioni -> lezione (approx)
+            variants.add(tok[:-1] + 'e')  # libri -> libre (approx fallback)
+        if tok.endswith('e'):
+            variants.add(tok[:-1])  # lezione -> lezion
+        # Prefix (>=5 chars) for fuzzy match
+        if len(tok) >= 5:
+            variants.add(tok[:5])
+        return [v for v in variants if v and len(v) >= 3]
+
+    variant_sets: List[set] = [set(expand(t)) for t in sorted(set(tokens))]
+
     results: List[Dict[str, Any]] = []
     for tid in table_ids:
-        rows = get_rows(tid, limit=500, offset=0)  # cap scan per table
+        # Scan all rows of the table to ensure the agent can consider the full dataset
+        rows = get_rows(tid, limit=1_000_000, offset=0)
         scored: List[Tuple[int, Dict[str, Any]]] = []
         for r in rows:
             payload = r.get('data') or {}
             s = json.dumps(payload, ensure_ascii=False).lower()
-            score = sum(1 for tok in set(tokens) if tok in s)
+            # Count distinct token matches (any variant per token)
+            score = 0
+            for vset in variant_sets:
+                if any(v in s for v in vset):
+                    score += 1
             if score > 0:
                 scored.append((score, r))
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -459,4 +502,3 @@ def search_tables(query: str, table_ids: List[str], limit_per_table: int = 10) -
                 "rows": top,
             })
     return {"results": results}
-

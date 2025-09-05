@@ -11,6 +11,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 import hashlib
 import os
+import base64
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # Configuration
 # In sviluppo senza docker-compose vogliamo una chiave stabile anche senza variabile d'ambiente.
@@ -238,24 +240,29 @@ class EscrowManager:
     
     @staticmethod
     def encrypt_with_escrow(data: str, escrow_key: str) -> str:
-        """Cripta dati con chiave escrow (placeholder per vera implementazione)"""
-        # Qui andrebbe implementata vera crittografia AES-256-GCM
-        # Per ora ritorna placeholder
-        import base64
-        combined = f"{escrow_key}:{data}"
-        return base64.b64encode(combined.encode()).decode()
+        """Cripta dati con chiave escrow usando AES-256-GCM"""
+        key = escrow_key.encode()[:32].ljust(32, b'0')
+        nonce = os.urandom(12)
+        cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
+        encryptor = cipher.encryptor()
+        ciphertext = encryptor.update(data.encode()) + encryptor.finalize()
+        package = nonce + encryptor.tag + ciphertext
+        return base64.b64encode(package).decode()
     
     @staticmethod
     def decrypt_with_escrow(encrypted_data: str, escrow_key: str) -> Optional[str]:
         """Decripta dati con chiave escrow"""
         try:
-            import base64
-            decoded = base64.b64decode(encrypted_data.encode()).decode()
-            stored_key, data = decoded.split(":", 1)
-            if stored_key == escrow_key:
-                return data
-            return None
-        except:
+            decoded = base64.b64decode(encrypted_data.encode())
+            nonce = decoded[:12]
+            tag = decoded[12:28]
+            ciphertext = decoded[28:]
+            key = escrow_key.encode()[:32].ljust(32, b'0')
+            cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag))
+            decryptor = cipher.decryptor()
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+            return plaintext.decode()
+        except Exception:
             return None
     
     @staticmethod

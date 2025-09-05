@@ -13,6 +13,7 @@ from datetime import datetime
 from .admin import load_config
 from .database import db_manager, USING_POSTGRES
 from .data_tables import get_table, get_rows
+from .data_tables import search_tables  # fallback rich search across rows
 from .llm import chat_with_provider
 
 
@@ -34,8 +35,8 @@ def build_system_prompt() -> str:
     return (
         "Sei un assistente dati. Riceverai: (1) la domanda dell'utente e (2) gli schemi delle tabelle disponibili (nome colonne).\n"
         "Compito: proponi query strutturate (nessun SQL libero) come JSON:\n"
-        "[{\"table_id\": str, \"conditions\":[{\"column\":str,\"op\":\"contains|equals|gte|lte|gt|lt|between|month\",\"type\":\"text|number|date\",\"value\":any}], \"order_by\":{\"column\":str,\"direction\":\"asc|desc\"}, \"limit\": int}]\n"
-        "Indicazioni:\n- Usa solo colonne dichiarate.\n- type è facoltativo ma consigliato: number/date evitano ambiguità.\n- Per date usare formato ISO YYYY-MM-DD.\n- between accetta [from,to] oppure {from:.., to:..}.\n- month accetta nome mese IT (es. 'settembre') o numero '09' (richiede type=date).\n- limit <= 50.\n- Se non serve interrogare, restituisci [].\n"
+        "[{\"table_id\": str, \"conditions\":[{\"column\":str,\"op\":\"contains|equals|gte|lte|gt|lt|between|month|weekday\",\"type\":\"text|number|date\",\"value\":any}], \"order_by\":{\"column\":str,\"direction\":\"asc|desc\"}, \"limit\": int}]\n"
+        "Indicazioni:\n- Usa solo colonne dichiarate.\n- type è facoltativo ma consigliato: number/date evitano ambiguità.\n- Per date usa SEMPRE formato italiano DD/MM/YYYY.\n- between accetta [from,to] oppure {from:.., to:..}.\n- month accetta nome mese IT (es. 'settembre') o numero '09' (richiede type=date).\n- weekday accetta giorno IT (es. 'venerdì', 'sabato') o abbreviazione ('ven','sab').\n- limit <= 50.\n- Se non serve interrogare, restituisci [].\n"
     )
 
 def _collect_schemas(table_ids: List[str]) -> List[Dict[str, Any]]:
@@ -63,13 +64,18 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
     if not tmeta:
         return [], []
     columns = tmeta.get('columns') or []
+    col_map = {str(c): str(c) for c in columns}
+    col_map_ci = {str(c).lower(): str(c) for c in columns}  # case-insensitive lookup
     limit = int(spec.get('limit') or limit_default)
     limit = max(1, min(limit, 100))
     # Validate conditions
     conds = []
     for c in (spec.get('conditions') or []):
-        col = c.get('column')
-        if not col or col not in columns:
+        raw_col = c.get('column')
+        col = None
+        if isinstance(raw_col, str):
+            col = col_map.get(raw_col) or col_map_ci.get(raw_col.lower())
+        if not col:
             continue
         op = (c.get('op') or 'contains').lower()
         val = c.get('value')
@@ -85,12 +91,31 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
             'gennaio':'01','febbraio':'02','marzo':'03','aprile':'04','maggio':'05','giugno':'06',
             'luglio':'07','agosto':'08','settembre':'09','ottobre':'10','novembre':'11','dicembre':'12'
         }
+        WEEKDAYS = {
+            'lunedì':'1','lunedi':'1','lun':'1',
+            'martedì':'2','martedi':'2','mar':'2',
+            'mercoledì':'3','mercoledi':'3','mer':'3',
+            'giovedì':'4','giovedi':'4','gio':'4',
+            'venerdì':'5','venerdi':'5','ven':'5',
+            'sabato':'6','sab':'6',
+            'domenica':'7','dom':'7'
+        }
+        # Helper: robust PG expression that parses date from DD/MM/YYYY or YYYY-MM-DD*
+        def _pg_date_expr(col: str) -> Tuple[str, List[Any]]:
+            expr = (
+                "CASE "
+                "WHEN (data->>%s) ~ '^\\d{2}/\\d{2}/\\d{4}$' THEN to_date(data->>%s,'DD/MM/YYYY') "
+                "WHEN (data->>%s) ~ '^\\d{4}-\\d{2}-\\d{2}' THEN to_date(substring(data->>%s from '^\\d{4}-\\d{2}-\\d{2}'),'YYYY-MM-DD') "
+                "ELSE NULL END"
+            )
+            return expr, [col, col, col, col]
         for (col, op, val, typ) in conds:
             if op == 'equals':
                 sval = str(val or '')
                 if typ == 'date':
-                    where_parts.append("((data->>%s) ~ '^\\d{4}-\\d{2}-\\d{2}$' AND (data->>%s)::date = %s::date)")
-                    params.extend([col, col, sval])
+                    dexpr, extra = _pg_date_expr(col)
+                    where_parts.append(f"({dexpr}) = to_date(%s,'DD/MM/YYYY')")
+                    params.extend(extra + [sval])
                 elif typ == 'number':
                     where_parts.append("(((data->>%s) ~ '^[0-9]+(\\.[0-9]+)?$') AND (data->>%s)::numeric = %s::numeric)")
                     params.extend([col, col, sval])
@@ -112,16 +137,18 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
                     elif isinstance(val, dict):
                         v1, v2 = str(val.get('from','')), str(val.get('to',''))
                     if v1 and v2 and (typ=='date' or (is_iso_date(v1) and is_iso_date(v2))):
-                        where_parts.append("((data->>%s) ~ '^\\d{4}-\\d{2}-\\d{2}$' AND (data->>%s)::date BETWEEN %s::date AND %s::date)")
-                        params.extend([col, col, v1, v2])
+                        dexpr, extra = _pg_date_expr(col)
+                        where_parts.append(f"({dexpr}) BETWEEN to_date(%s,'DD/MM/YYYY') AND to_date(%s,'DD/MM/YYYY')")
+                        params.extend(extra + [v1, v2])
                     elif v1 and v2:
                         where_parts.append("(((data->>%s) ~ '^[0-9]+(\\.[0-9]+)?$') AND (data->>%s)::numeric BETWEEN %s::numeric AND %s::numeric)")
                         params.extend([col, col, v1, v2])
                 else:
                     sval = str(val or '')
                     if typ=='date' or is_iso_date(sval):
-                        where_parts.append(f"((data->>%s) ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' AND (data->>%s)::date {comparator[op]} %s::date)")
-                        params.extend([col, col, sval])
+                        dexpr, extra = _pg_date_expr(col)
+                        where_parts.append(f"({dexpr}) {comparator[op]} to_date(%s,'DD/MM/YYYY')")
+                        params.extend(extra + [sval])
                     else:
                         where_parts.append(f"(((data->>%s) ~ '^[0-9]+(\\.[0-9]+)?$') AND (data->>%s)::numeric {comparator[op]} %s::numeric)")
                         params.extend([col, col, sval])
@@ -133,11 +160,25 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
                 mm = mm or sval
                 # match either ISO date month or textual month presence
                 if typ == 'date':
-                    where_parts.append("((data->>%s) ~ '^\\d{4}-\\d{2}-\\d{2}$' AND to_char((data->>%s)::date, 'MM') = %s)")
-                    params.extend([col, col, mm])
+                    dexpr, extra = _pg_date_expr(col)
+                    where_parts.append(f"({dexpr}) IS NOT NULL AND to_char(({dexpr}), 'MM') = %s")
+                    params.extend(extra + extra + [mm])
                 else:
-                    where_parts.append("(((data->>%s) ~ '^\\d{4}-\\d{2}-\\d{2}$' AND to_char((data->>%s)::date, 'MM') = %s) OR LOWER(data->>%s) LIKE LOWER(%s))")
-                    params.extend([col, col, mm, col, f"%{sval}%"]) 
+                    # tenta sia su data effettiva che su stringa contenente il mese
+                    dexpr, extra = _pg_date_expr(col)
+                    where_parts.append(f"((({dexpr}) IS NOT NULL AND to_char(({dexpr}), 'MM') = %s) OR LOWER(data->>%s) LIKE LOWER(%s))")
+                    params.extend(extra + extra + [mm, col, f"%{sval}%"]) 
+            elif op == 'weekday':
+                sval = str(val or '')
+                dd = WEEKDAYS.get(sval.lower()) or sval
+                if typ == 'date':
+                    dexpr, extra = _pg_date_expr(col)
+                    where_parts.append(f"({dexpr}) IS NOT NULL AND to_char(({dexpr}), 'ID') = %s")
+                    params.extend(extra + extra + [dd])
+                else:
+                    dexpr, extra = _pg_date_expr(col)
+                    where_parts.append(f"( (({dexpr}) IS NOT NULL AND to_char(({dexpr}), 'ID') = %s) OR LOWER(data->>%s) LIKE LOWER(%s) )")
+                    params.extend(extra + extra + [dd, col, f"%{sval}%"]) 
             else:
                 # unsupported op -> skip
                 continue
@@ -170,7 +211,8 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
             'luglio':'07','agosto':'08','settembre':'09','ottobre':'10','novembre':'11','dicembre':'12'
         }
         def parse_date(s: str) -> Optional[datetime]:
-            for fmt in ('%Y-%m-%d','%d/%m/%Y','%d-%m-%Y'):
+            # prefer Italian D/M/Y first
+            for fmt in ('%d/%m/%Y','%d-%m-%Y','%Y-%m-%d'):
                 try:
                     return datetime.strptime(s, fmt)
                 except Exception:
@@ -242,6 +284,16 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
                         if mm and dcur.strftime('%m') != mm: ok=False; break
                     else:
                         if sval.lower() not in curv.lower(): ok=False; break
+                elif op == 'weekday':
+                    sval = str(val or '').lower()
+                    DOW = { 'lunedi':0,'lunedì':0,'lun':0,'martedi':1,'martedì':1,'mar':1,'mercoledi':2,'mercoledì':2,'mer':2,
+                            'giovedi':3,'giovedì':3,'gio':3,'venerdi':4,'venerdì':4,'ven':4,'sabato':5,'sab':5,'domenica':6,'dom':6 }
+                    dcur = parse_date(curv)
+                    if dcur:
+                        want = DOW.get(sval)
+                        if want is not None and dcur.weekday() != want: ok=False; break
+                    else:
+                        if sval not in curv.lower(): ok=False; break
                 else:
                     ok=False; break
             if ok:
@@ -298,14 +350,85 @@ async def run_agent(user_query: str, table_results: List[Dict[str, Any]], table_
     ]
     try:
         raw = await chat_with_provider(messages, provider=provider, model=model, temperature=temperature, context_hint="data_tables_agent")
+
+        # ---- Parsing robusto del piano JSON ----
         import json as _json
-        try:
-            query_plan = _json.loads((raw or '').strip())
-        except Exception:
-            query_plan = []
+
+        def _extract_json_list(s: str) -> List[Dict[str, Any]]:
+            s = (s or '').strip()
+            # 1) pura lista JSON
+            try:
+                obj = _json.loads(s)
+                if isinstance(obj, list):
+                    return obj  # type: ignore
+                if isinstance(obj, dict):
+                    # accetta chiavi comuni
+                    for k in ('queries', 'plan', 'steps'):
+                        if isinstance(obj.get(k), list):
+                            return obj[k]  # type: ignore
+                # altrimenti prosegui estrazione
+            except Exception:
+                pass
+            # 2) blocco ```json ... ```
+            m = re.search(r"```json\s*(\[.*?\])\s*```", s, flags=re.S)
+            if m:
+                try:
+                    return _json.loads(m.group(1))
+                except Exception:
+                    pass
+            # 3) prima '[' fino all'ultima ']'
+            i1, i2 = s.find('['), s.rfind(']')
+            if 0 <= i1 < i2:
+                frag = s[i1:i2+1]
+                try:
+                    return _json.loads(frag)
+                except Exception:
+                    pass
+            return []
+
+        query_plan = _extract_json_list(raw)
         if not isinstance(query_plan, list):
             query_plan = []
-        # 2) Esegui piani
+
+        # ---- Fallback euristico se il piano è vuoto ----
+        if not query_plan:
+            # prova a dedurre mese/giorno-settimana e costruire condizioni
+            MONTHS = {"gennaio":"01","febbraio":"02","marzo":"03","aprile":"04","maggio":"05","giugno":"06",
+                      "luglio":"07","agosto":"08","settembre":"09","ottobre":"10","novembre":"11","dicembre":"12"}
+            WEEKDAYS = { 'lunedì': 'lunedi', 'lunedi':'lunedi','lun':'lunedi',
+                         'martedì':'martedi','martedi':'martedi','mar':'martedi',
+                         'mercoledì':'mercoledi','mercoledi':'mercoledi','mer':'mercoledi',
+                         'giovedì':'giovedi','giovedi':'giovedi','gio':'giovedi',
+                         'venerdì':'venerdi','venerdi':'venerdi','ven':'venerdi',
+                         'sabato':'sabato','sab':'sabato',
+                         'domenica':'domenica','dom':'domenica' }
+            ql = (user_query or '').lower()
+            month_token = next((m for m in MONTHS if m in ql or m[:3] in ql), None)
+            weekday_token = next((w for w in WEEKDAYS if w in ql), None)
+            schemas_map = {s['table_id']: s for s in schemas}
+            def pick_date_col(cols: List[str]) -> Optional[str]:
+                cand = [c for c in cols if re.search(r"data|date|giorno", c, re.I)]
+                return cand[0] if cand else (cols[0] if cols else None)
+            for tid in use_table_ids:
+                cols = (schemas_map.get(tid, {}).get('columns') or [])
+                plan_spec: Dict[str, Any] = {"table_id": tid, "conditions": [], "limit": limit}
+                if month_token:
+                    dc = pick_date_col(cols)
+                    if dc:
+                        plan_spec['conditions'].append({"column": dc, "op": "month", "type": "date", "value": month_token})
+                if weekday_token:
+                    dc = pick_date_col(cols)
+                    if dc:
+                        plan_spec['conditions'].append({"column": dc, "op": "weekday", "type": "date", "value": weekday_token})
+                # aggiungi filtro testuale generico su colonne comuni se presenti
+                for pref in ("Titolo","Materia","Descrizione","Professore","Titoli","Course","Title"):
+                    if pref in cols and 'lezion' in ql:
+                        plan_spec['conditions'].append({"column": pref, "op": "contains", "value": "lezione"})
+                        break
+                if plan_spec['conditions']:
+                    query_plan.append(plan_spec)
+
+        # 2) Esegui piani (max 5)
         collected_blocks: List[str] = []
         for spec in query_plan[:5]:  # sicurezza: max 5 query
             if not isinstance(spec, dict):
@@ -324,8 +447,23 @@ async def run_agent(user_query: str, table_results: List[Dict[str, Any]], table_
                 body.append("| " + " | ".join([str((r.get(c) if r.get(c) is not None else '')).replace('\n',' ') for c in use_cols]) + " |")
             block = f"[Tabella: {tid}]\n" + header + "\n".join(body)
             collected_blocks.append(block)
+
+        # ---- Ulteriore fallback: usa i risultati di search_tables o cerca ora ----
+        if not collected_blocks:
+            # Se table_results è passato dalla chat, formatta; altrimenti prova una ricerca leggera
+            formatted = _format_rows_for_prompt(table_results or [], limit_per_table=limit)
+            if not formatted and use_table_ids:
+                try:
+                    srch = search_tables(user_query, use_table_ids, limit_per_table=limit)
+                    formatted = _format_rows_for_prompt(srch.get('results') or [], limit_per_table=limit)
+                except Exception:
+                    formatted = ''
+            if formatted:
+                collected_blocks.append(formatted)
+
         if not collected_blocks:
             return None
+
         # 3) Sintesi finale usando i risultati
         final_system = (
             "Sei un assistente dati. Riceverai tabelle risultato (formato Markdown).\n"

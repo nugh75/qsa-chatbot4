@@ -170,6 +170,7 @@ async def chat(
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
     x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
     x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
+    x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -420,14 +421,53 @@ async def chat(
         sections.append(f"[SEZIONE TOPICS]\n{topic_context_combined.strip()}")
     if rag_context_combined:
         sections.append(f"[SEZIONE RAG]\n{rag_context_combined.strip()}")
-    # Optional: search in enabled data tables (if any)
+    # Optional: search in data tables (enabled by personality, or auto-detected)
     data_tables_context = ""
     data_tables_search_results = None
     data_tables_agent_answer = None
     try:
-        if personality_enabled_data_tables:
+        # Resolve candidate table_ids: personality -> auto detection (if enabled in config and query matches triggers)
+        candidate_dt_tables = personality_enabled_data_tables or []
+        if not candidate_dt_tables:
+            # Auto-detect if allowed and query suggests tabellare/date intent
+            from .admin import load_config as _load_cfg
+            cfg = _load_cfg()
+            dt_cfg = (cfg.get('data_tables_settings') or {}) if isinstance(cfg, dict) else {}
+            auto_enabled = bool(dt_cfg.get('enabled', True))
+            # Trigger words: lezioni/corsi/orari/calendario + mesi/giorni
+            ql = (full_user_message or '').lower()
+            MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
+            DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
+            # Trigger più ampi per richieste tabellari
+            KEYWORDS = [
+                'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
+                'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
+            ]
+            has_trigger = any(k in ql for k in KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            # Header force flag
+            _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
+            try:
+                from .data_tables import list_tables as _list_dt
+                _all_dt = _list_dt() or []
+                # Allenta i trigger: se abilitato e ci sono tabelle, usa sempre; header può forzare
+                if auto_enabled and _all_dt and (_force_dt or True):
+                    candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+                # Log diagnostico
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_candidates",
+                        "request_id": request_id,
+                        "forced": _force_dt,
+                        "has_trigger": has_trigger,
+                        "count": len(candidate_dt_tables)
+                    })
+                except Exception:
+                    pass
+            except Exception:
+                candidate_dt_tables = []
+        if candidate_dt_tables:
             from .data_tables import search_tables as _search_dt
-            dt_res = _search_dt(full_user_message, personality_enabled_data_tables, limit_per_table=8)
+            dt_res = _search_dt(full_user_message, candidate_dt_tables, limit_per_table=8)
             data_tables_search_results = dt_res.get('results') or []
             # Format as Markdown table per table (limit display columns to 5)
             parts = []
@@ -456,8 +496,21 @@ async def chat(
                 data_tables_context = "\n\n".join(parts)
             # Sottoagente AI (configurabile) per sintetizzare una risposta mirata dalle tabelle
             try:
-                from .data_tables_agent import run_agent as _run_dt_agent
-                data_tables_agent_answer = await _run_dt_agent(full_user_message, data_tables_search_results, personality_enabled_data_tables)
+                from .data_tables_agent import run_agent as _run_dt_agent, get_settings as _dt_get_settings
+                _dt_settings = _dt_get_settings()
+                # Log invocazione subagent
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_agent_invoked",
+                        "request_id": request_id,
+                        "provider": (_dt_settings or {}).get('provider'),
+                        "model": (_dt_settings or {}).get('model'),
+                        "tables": candidate_dt_tables,
+                        "result_tables": len(data_tables_search_results or [])
+                    })
+                except Exception:
+                    pass
+                data_tables_agent_answer = await _run_dt_agent(full_user_message, data_tables_search_results, candidate_dt_tables)
             except Exception as _ae:
                 print(f"[data-tables-agent] errore run: {_ae}")
     except Exception as _dte:
@@ -793,6 +846,7 @@ async def chat_stream(
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
     x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
     x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
+    x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
     current_user: dict = Depends(get_current_active_user)
 ):
     import uuid as _uuid
@@ -877,12 +931,45 @@ async def chat_stream(
     full_user_message = user_msg
     rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
-    # Optional: cerca nelle tabelle dati abilitate dalla personalità e aggiungi una sezione al contesto
+    # Optional: cerca nelle tabelle dati abilitate o auto-rilevate e aggiungi una sezione al contesto
     data_tables_search_results = None
     try:
-        if personality_enabled_data_tables:
+        candidate_dt_tables = personality_enabled_data_tables or []
+        if not candidate_dt_tables:
+            from .admin import load_config as _load_cfg
+            cfg = _load_cfg()
+            dt_cfg = (cfg.get('data_tables_settings') or {}) if isinstance(cfg, dict) else {}
+            auto_enabled = bool(dt_cfg.get('enabled', True))
+            ql = (full_user_message or '').lower()
+            MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
+            DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
+            # Trigger più ampi per richieste tabellari (stream)
+            KEYWORDS = [
+                'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
+                'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
+            ]
+            has_trigger = any(k in ql for k in KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
+            try:
+                from .data_tables import list_tables as _list_dt
+                _all_dt = _list_dt() or []
+                if auto_enabled and _all_dt and (_force_dt or True):
+                    candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_candidates_stream",
+                        "request_id": request_id,
+                        "forced": _force_dt,
+                        "has_trigger": has_trigger,
+                        "count": len(candidate_dt_tables)
+                    })
+                except Exception:
+                    pass
+            except Exception:
+                candidate_dt_tables = []
+        if candidate_dt_tables:
             from .data_tables import search_tables as _search_dt
-            dt_res = _search_dt(full_user_message, personality_enabled_data_tables, limit_per_table=8)
+            dt_res = _search_dt(full_user_message, candidate_dt_tables, limit_per_table=8)
             data_tables_search_results = dt_res.get('results') or []
             # format risultati in una tabella markdown per ciascuna tabella (max 5 colonne visibili, 8 righe)
             import os as _os
@@ -910,8 +997,20 @@ async def chat_stream(
                 context = (context + "\n\n[SEZIONE TABELLE]\n" + "\n\n".join(parts)).strip()
             # Sottoagente: sintetizza una risposta mirata dai risultati tabellari
             try:
-                from .data_tables_agent import run_agent as _run_dt_agent
-                _dt_ans = await _run_dt_agent(full_user_message, data_tables_search_results, personality_enabled_data_tables)
+                from .data_tables_agent import run_agent as _run_dt_agent, get_settings as _dt_get_settings
+                _dt_settings = _dt_get_settings()
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_agent_invoked_stream",
+                        "request_id": request_id,
+                        "provider": (_dt_settings or {}).get('provider'),
+                        "model": (_dt_settings or {}).get('model'),
+                        "tables": candidate_dt_tables,
+                        "result_tables": len(data_tables_search_results or [])
+                    })
+                except Exception:
+                    pass
+                _dt_ans = await _run_dt_agent(full_user_message, data_tables_search_results, candidate_dt_tables)
                 if _dt_ans:
                     context = (context + "\n\n[SEZIONE TABELLE – SINTESI]\n" + _dt_ans.strip()).strip()
             except Exception as _ae:

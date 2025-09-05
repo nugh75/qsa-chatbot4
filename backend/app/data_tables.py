@@ -112,6 +112,53 @@ def init_tables_schema():
 def _now_str() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
+def _looks_like_date_col(name: str) -> bool:
+    try:
+        return bool(re.search(r"\b(data|date|giorno|giornata)\b", str(name), re.I))
+    except Exception:
+        return False
+
+def _format_date_it(d: datetime) -> str:
+    return f"{d.day:02d}/{d.month:02d}/{d.year:04d}"
+
+def _parse_date_any(s: str) -> Optional[datetime]:
+    if s is None:
+        return None
+    ss = str(s).strip()
+    if not ss:
+        return None
+    # Strip time part if ISO with time
+    if 'T' in ss:
+        ss = ss.split('T', 1)[0]
+    # Try D/M/Y with 1-2 digits
+    m = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$", ss)
+    if m:
+        try:
+            d = int(m.group(1)); mth = int(m.group(2)); y = int(m.group(3))
+            return datetime(y, mth, d)
+        except Exception:
+            pass
+    # Try ISO YYYY-MM-DD
+    m2 = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", ss)
+    if m2:
+        try:
+            y = int(m2.group(1)); mth = int(m2.group(2)); d = int(m2.group(3))
+            return datetime(y, mth, d)
+        except Exception:
+            pass
+    return None
+
+def _maybe_normalize_date_value(col_name: str, val: Any) -> Any:
+    # If it's a datetime -> format Italian
+    if isinstance(val, datetime):
+        return _format_date_it(val)
+    # If it's a string and column looks like a date field -> try parse
+    if isinstance(val, str) and _looks_like_date_col(col_name):
+        d = _parse_date_any(val)
+        if d:
+            return _format_date_it(d)
+    return val
+
 
 def _detect_columns_from_rows(rows: Iterable[Dict[str, Any]], max_rows: int = 1000) -> List[str]:
     cols: List[str] = []
@@ -135,8 +182,16 @@ def _read_csv(file_bytes: bytes, encoding: Optional[str] = None) -> Tuple[List[s
     except Exception:
         dialect = csv.excel
     reader = csv.DictReader(f, dialect=dialect)
-    rows = [dict(row) for row in reader]
-    cols = reader.fieldnames or _detect_columns_from_rows(rows)
+    rows: List[Dict[str, Any]] = []
+    cols = reader.fieldnames
+    # Normalizza date in formato italiano su colonne "date-like"
+    for row in reader:
+        obj: Dict[str, Any] = {}
+        keys = cols or list(row.keys())
+        for k in keys:
+            obj[k] = _maybe_normalize_date_value(k, row.get(k))
+        rows.append(obj)
+    cols = cols or _detect_columns_from_rows(rows)
     return (cols or []), rows
 
 
@@ -159,9 +214,8 @@ def _read_xlsx(file_bytes: bytes) -> Tuple[List[str], List[Dict[str, Any]]]:
         obj: Dict[str, Any] = {}
         for i, c in enumerate(cols):
             val = r[i] if i < len(r) else None
-            if isinstance(val, datetime):
-                val = val.isoformat()
-            obj[c] = val
+            # normalizza: per date, usa sempre DD/MM/YYYY
+            obj[c] = _maybe_normalize_date_value(c, val)
         if any(v is not None and str(v) != '' for v in obj.values()):
             rows.append(obj)
     return cols, rows
@@ -369,10 +423,20 @@ def add_rows(table_id: str, rows: List[Dict[str, Any]]) -> int:
     init_tables_schema()
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
+        # Preleva schema colonne per normalizzare date
+        tmeta = get_table(table_id)
+        columns = (tmeta.get('columns') if tmeta else None) or []
         count = 0
         for r in rows:
             rid = f"row_{uuid.uuid4().hex}"
-            payload = json.dumps(r, ensure_ascii=False)
+            # normalizza valori data
+            if isinstance(r, dict):
+                r_norm: Dict[str, Any] = {}
+                for k, v in r.items():
+                    r_norm[k] = _maybe_normalize_date_value(k if k in columns else k, v)
+            else:
+                r_norm = r  # type: ignore
+            payload = json.dumps(r_norm, ensure_ascii=False)
             if USING_POSTGRES:
                 db_manager.exec(cur, "INSERT INTO data_table_rows (id, table_id, data) VALUES (?, ?, %s::jsonb)", (rid, table_id, payload))
             else:
@@ -388,7 +452,13 @@ def update_row(table_id: str, row_id: str, data: Dict[str, Any]) -> None:
     init_tables_schema()
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
-        payload = json.dumps(data, ensure_ascii=False)
+        # Normalizza date su colonne note
+        tmeta = get_table(table_id)
+        columns = (tmeta.get('columns') if tmeta else None) or []
+        norm: Dict[str, Any] = {}
+        for k, v in (data or {}).items():
+            norm[k] = _maybe_normalize_date_value(k if k in columns else k, v)
+        payload = json.dumps(norm, ensure_ascii=False)
         if USING_POSTGRES:
             db_manager.exec(cur, "UPDATE data_table_rows SET data = %s::jsonb, updated_at = NOW() WHERE id = ? AND table_id = ?", (payload, row_id, table_id))
         else:
@@ -453,11 +523,23 @@ def search_tables(query: str, table_ids: List[str], limit_per_table: int = 10) -
         'novembre': ['11', 'nov'],
         'dicembre': ['12', 'dic'],
     }
+    WEEKDAYS = {
+        'lunedi': ['lun'], 'lunedì': ['lun'],
+        'martedi': ['mar'], 'martedì': ['mar'],
+        'mercoledi': ['mer'], 'mercoledì': ['mer'],
+        'giovedi': ['gio'], 'giovedì': ['gio'],
+        'venerdi': ['ven'], 'venerdì': ['ven'],
+        'sabato': ['sab'],
+        'domenica': ['dom']
+    }
     def expand(tok: str) -> List[str]:
         variants = {tok}
         # Months
         if tok in MONTHS:
             variants.update(MONTHS[tok])
+        # Weekdays (text-only: utile se la colonna ha il nome del giorno)
+        if tok in WEEKDAYS:
+            variants.update(WEEKDAYS[tok])
         # Simple plural/singular heuristics
         if tok.endswith('i'):
             variants.add(tok[:-1])  # lezioni -> lezion

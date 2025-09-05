@@ -11,6 +11,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 import hashlib
 import os
+from .escrow import EscrowManager
 
 # Configuration
 # In sviluppo senza docker-compose vogliamo una chiave stabile anche senza variabile d'ambiente.
@@ -227,89 +228,8 @@ def is_admin_user(user: dict) -> bool:
         user.get("is_admin", False)
     )
 
-# Funzioni per password reset con escrow
-class EscrowManager:
-    """Gestisce il sistema escrow per reset password amministratore"""
-    
-    @staticmethod
-    def generate_escrow_key() -> str:
-        """Genera chiave escrow per utente"""
-        return secrets.token_urlsafe(32)
-    
-    @staticmethod
-    def encrypt_with_escrow(data: str, escrow_key: str) -> str:
-        """Cripta dati con chiave escrow (placeholder per vera implementazione)"""
-        # Qui andrebbe implementata vera crittografia AES-256-GCM
-        # Per ora ritorna placeholder
-        import base64
-        combined = f"{escrow_key}:{data}"
-        return base64.b64encode(combined.encode()).decode()
-    
-    @staticmethod
-    def decrypt_with_escrow(encrypted_data: str, escrow_key: str) -> Optional[str]:
-        """Decripta dati con chiave escrow"""
-        try:
-            import base64
-            decoded = base64.b64decode(encrypted_data.encode()).decode()
-            stored_key, data = decoded.split(":", 1)
-            if stored_key == escrow_key:
-                return data
-            return None
-        except:
-            return None
-    
-    @staticmethod
-    def generate_recovery_password() -> str:
-        """Genera password temporanea per recovery"""
-        return secrets.token_urlsafe(12)
-    
-    @staticmethod
-    def admin_reset_user_password(admin_email: str, target_email: str, 
-                                new_password: str, escrow_key: str) -> bool:
-        """Reset password utente da parte amministratore"""
-        from .database import UserModel, AdminModel
-        
-        try:
-            # Verifica esistenza utente
-            user = UserModel.get_user_by_email(target_email)
-            if not user:
-                AdminModel.log_admin_action(
-                    admin_email, "PASSWORD_RESET", None, target_email,
-                    "User not found", None, False
-                )
-                return False
-            
-            # Hash nuova password
-            new_password_hash = AuthManager.hash_password(new_password)
-            new_user_key_hash = AuthManager.generate_user_key_hash(new_password, target_email)
-            
-            # Aggiorna password nel database
-            from .database import db_manager
-            with db_manager.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE users 
-                    SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL
-                    WHERE email = ?
-                """, (new_password_hash, new_user_key_hash, target_email))
-                conn.commit()
-            
-            # Log azione
-            AdminModel.log_admin_action(
-                admin_email, "PASSWORD_RESET", user["id"], target_email,
-                f"Password reset for user {target_email}", None, True
-            )
-            
-            return True
-            
-        except Exception as e:
-            AdminModel.log_admin_action(
-                admin_email, "PASSWORD_RESET", None, target_email,
-                f"Password reset failed: {str(e)}", None, False
-            )
-            return False
-
 # Utilità per validazione password
+
 def validate_password_strength(password: str) -> Dict[str, Any]:
     """Valida forza password"""
     errors = []

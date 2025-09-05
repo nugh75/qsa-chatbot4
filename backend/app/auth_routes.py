@@ -9,12 +9,12 @@ import uuid
 from datetime import datetime, timedelta
 
 from .auth import (
-    AuthManager, EscrowManager, UserRegistration, UserLogin, TokenResponse,
+    AuthManager, UserRegistration, UserLogin, TokenResponse,
     get_current_user, get_current_active_user, get_current_admin_user, validate_password_strength, security, is_admin_user,
     MAX_LOGIN_ATTEMPTS, LOCKOUT_DURATION_MINUTES
 )
 from .database import UserModel, AdminModel
-from .escrow import EscrowManager as EscrowManagerAdvanced
+from .escrow import EscrowManager
 import os, jwt
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -41,7 +41,7 @@ async def register_user(user_data: UserRegistration):
     
     try:
         # Crea utente con sistema escrow avanzato
-        user_data_with_escrow = EscrowManagerAdvanced.create_user_with_escrow(
+        user_data_with_escrow = EscrowManager.create_user_with_escrow(
             user_data.email, user_data.password
         )
         
@@ -305,7 +305,7 @@ async def admin_reset_password(
     """Reset password utente da parte amministratore con sistema escrow"""
     
     # Usa sistema escrow avanzato
-    result = EscrowManagerAdvanced.admin_password_recovery(admin_email, target_email)
+    result = EscrowManager.admin_password_recovery(admin_email, target_email)
     
     if not result:
         raise HTTPException(
@@ -377,7 +377,7 @@ async def verify_escrow_integrity(
     """Verifica integrità sistema escrow"""
     
     try:
-        stats = EscrowManagerAdvanced.verify_escrow_integrity()
+        stats = EscrowManager.verify_escrow_integrity()
         
         # Log azione admin
         AdminModel.log_admin_action(

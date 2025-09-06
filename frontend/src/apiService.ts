@@ -4,6 +4,7 @@
 
 import { CredentialManager } from './crypto';
 import type { PersonalityEntry } from './types/admin';
+import type Msg from './types/message';
 
 // Dynamic API base resolution to avoid hard-coded localhost in deployed/tunneled environments.
 // Priority order:
@@ -55,19 +56,27 @@ export interface UserInfo {
 export interface ConversationData {
   id: string;
   title_encrypted: string;
+  // Server-side decrypted title when authenticated
+  title?: string;
   created_at: string;
   updated_at: string;
   message_count: number;
+  device_id?: string;
 }
 
 export interface MessageData {
   id: string;
   content_encrypted: string;
+  // Server-side decrypted content when authenticated
+  content?: string;
   role: 'user' | 'assistant';
   timestamp: string;
   token_count?: number;
   processing_time?: number;
 }
+
+// Typed message alias (frontend internal type)
+export type ApiMessage = Msg
 
 export interface SummaryPrompt {
   id: string;
@@ -761,6 +770,8 @@ class ApiService {
     metrics?: { fn: 'count'|'sum'|'avg'|'min'|'max'; column?: string; alias?: string }[];
     order_by?: { by: string; dir?: 'ASC'|'DESC' };
     limit?: number;
+    // Server-side decrypted title when authenticated
+    title?: string;
     offset?: number;
     distinct?: boolean;
   }): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
@@ -771,6 +782,8 @@ class ApiService {
   async listForms(): Promise<ApiResponse<{ forms: { id: string; name: string; description?: string; items_count: number }[] }>> {
     return this.makeRequest(`/forms`);
   }
+    // Server-side decrypted content when authenticated
+    content?: string;
   async getForm(formId: string): Promise<ApiResponse<{ form: { id: string; name: string; description?: string; items: any[] } }>> {
     return this.makeRequest(`/forms/${encodeURIComponent(formId)}`);
   }

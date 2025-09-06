@@ -25,12 +25,12 @@ import {
   Email as EmailIcon,
 } from '@mui/icons-material';
 import { apiService, handleApiError } from '../apiService';
-import { ChatCrypto, CredentialManager } from '../crypto';
+import { CredentialManager } from '../crypto';
 
 interface LoginDialogProps {
   open: boolean;
   onClose: () => void;
-  onLoginSuccess: (user: UserInfo, crypto: ChatCrypto) => void;
+  onLoginSuccess: (user: UserInfo, crypto: any | null) => void;
 }
 
 interface UserInfo {
@@ -134,27 +134,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
             userInfo
           );
 
-          // Inizializza crypto con password utente
-          const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(
-            loginForm.password,
-            loginForm.email,
-            !!loginForm.rememberMe // estraibile solo se vogliamo salvarla in sessione
-          );
-
-          // Se richiesto, salva la chiave in sessionStorage (valida finché il browser resta aperto)
-          if (loginForm.rememberMe) {
-            try {
-              const raw = await crypto.exportCurrentKeyRaw();
-              sessionStorage.setItem('qsa_crypto_key_raw', raw);
-              sessionStorage.setItem('qsa_crypto_key_user', loginForm.email);
-            } catch (e) {
-              console.warn('Impossibile salvare la chiave in sessione:', e);
-            }
-          }
-
-          // Ignora il flusso di cambio password forzato: accesso diretto
-          onLoginSuccess(userInfo, crypto);
+          // Client-side encryption disabled: no key derivation. Pass null for crypto
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           setError('Errore nel recupero delle informazioni utente');
@@ -180,13 +161,11 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
     try {
       const resp = await apiService.changePassword(loginForm.password, newPassword);
       if (resp.success) {
-        // re-derive crypto with new password
-        const crypto = new ChatCrypto();
-        await crypto.deriveKeyFromPassword(newPassword, loginForm.email);
+        // Client-side encryption disabled: do not derive key
         const me = await apiService.getCurrentUser();
         if (me.success && me.data) {
           const userInfo: UserInfo = { id: me.data.id, email: me.data.email, is_admin: (me.data as any).is_admin ?? false, created_at: me.data.created_at };
-          onLoginSuccess(userInfo, crypto);
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           onClose();
@@ -269,21 +248,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
             !!registerForm.rememberMe
           );
 
-          // Inizializza crypto
-          const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(registerForm.password, registerForm.email, !!registerForm.rememberMe);
-
-          if (registerForm.rememberMe) {
-            try {
-              const raw = await crypto.exportCurrentKeyRaw();
-              sessionStorage.setItem('qsa_crypto_key_raw', raw);
-              sessionStorage.setItem('qsa_crypto_key_user', registerForm.email);
-            } catch (e) {
-              console.warn('Impossibile salvare la chiave in sessione:', e);
-            }
-          }
-
-          onLoginSuccess(userInfo, crypto);
+          // Client-side encryption disabled: pass null for crypto
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           setError('Errore nel recupero delle informazioni utente');

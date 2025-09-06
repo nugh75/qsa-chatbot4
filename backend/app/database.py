@@ -424,13 +424,19 @@ class ConversationModel:
     def create_conversation(conversation_id: str, user_id: int, title_encrypted: str, device_id: str = None) -> bool:
         """Crea una nuova conversazione"""
         try:
-            title_hash = hashlib.sha256(title_encrypted.encode()).hexdigest()
+            # Ensure title is encrypted at rest
+            try:
+                from .crypto_at_rest import encrypt_text as _enc_text
+                _title_for_store = _enc_text(title_encrypted)
+            except Exception:
+                _title_for_store = title_encrypted
+            title_hash = hashlib.sha256((title_encrypted or '').encode()).hexdigest()
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 db_manager.exec(cursor, """
                     INSERT INTO conversations (id, user_id, title_encrypted, title_hash, device_id)
                     VALUES (?, ?, ?, ?, ?)
-                """, (conversation_id, user_id, title_encrypted, title_hash, device_id))
+                """, (conversation_id, user_id, _title_for_store, title_hash, device_id))
                 conn.commit()
                 return True
         except sqlite3.Error:
@@ -447,7 +453,14 @@ class ConversationModel:
                 ORDER BY updated_at DESC
                 LIMIT ?
             """, (user_id, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            # Normalize timestamps to ISO strings to avoid Pydantic errors
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    v = r.get(k)
+                    if isinstance(v, datetime):
+                        r[k] = v.isoformat()
+            return rows
     
     @staticmethod
     def get_conversation(conversation_id: str, user_id: int) -> Optional[Dict[str, Any]]:
@@ -459,7 +472,14 @@ class ConversationModel:
                 WHERE id = ? AND user_id = ? AND is_deleted = 0
             """, (conversation_id, user_id))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            r = dict(row)
+            for k in ("created_at", "updated_at"):
+                v = r.get(k)
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
+            return r
     
     @staticmethod
     def update_conversation_timestamp(conversation_id: str):
@@ -477,10 +497,19 @@ class MessageModel:
     
     @staticmethod
     def add_message(message_id: str, conversation_id: str, content_encrypted: str, 
-                   role: str, token_count: int = 0, processing_time: float = 0) -> bool:
+                   role: str, token_count: int = 0, processing_time: float = 0,
+                   content_plaintext_for_hash: Optional[str] = None) -> bool:
         """Aggiunge un messaggio alla conversazione"""
         try:
-            content_hash = hashlib.sha256(content_encrypted.encode()).hexdigest()
+            # Encrypt at rest (idempotent if already encrypted)
+            try:
+                from .crypto_at_rest import encrypt_text as _enc_text
+                _content_for_store = _enc_text(content_encrypted)
+            except Exception:
+                _content_for_store = content_encrypted
+            # Hash must be based on plaintext for search consistency
+            base_for_hash = content_plaintext_for_hash if content_plaintext_for_hash is not None else content_encrypted
+            content_hash = hashlib.sha256((base_for_hash or '').encode()).hexdigest()
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
@@ -489,7 +518,7 @@ class MessageModel:
                     INSERT INTO messages (id, conversation_id, content_encrypted, content_hash, 
                                         role, token_count, processing_time)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (message_id, conversation_id, content_encrypted, content_hash, 
+                """, (message_id, conversation_id, _content_for_store, content_hash, 
                      role, token_count, processing_time))
                 
                 # Aggiorna contatore messaggi nella conversazione
@@ -515,7 +544,13 @@ class MessageModel:
                 ORDER BY timestamp ASC
                 LIMIT ?
             """, (conversation_id, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            # Normalize timestamp field
+            for r in rows:
+                v = r.get("timestamp")
+                if isinstance(v, datetime):
+                    r["timestamp"] = v.isoformat()
+            return rows
 
 class DeviceModel:
     """Modello per gestire i dispositivi utente"""

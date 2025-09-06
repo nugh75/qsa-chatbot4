@@ -6,10 +6,18 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 
 from .auth import get_current_active_user
+from .crypto_at_rest import encrypt_text as _enc_text, decrypt_text as _dec_text, is_encrypted as _is_enc
+
+
+def _dec_safe(val: str) -> str:
+    try:
+        return _dec_text(val) if _is_enc(val) else val
+    except Exception:
+        return val
 from .database import ConversationModel, MessageModel, DeviceModel
 from .prompts import load_summary_prompt
 from .llm import chat_with_provider
@@ -35,6 +43,8 @@ class MessageCreate(BaseModel):
 class ConversationResponse(BaseModel):
     id: str
     title_encrypted: str
+    # New: server-side decrypted title for authenticated user
+    title: Optional[str] = None
     title_hash: str
     created_at: str
     updated_at: str
@@ -44,6 +54,8 @@ class ConversationResponse(BaseModel):
 class MessageResponse(BaseModel):
     id: str
     content_encrypted: str
+    # New: server-side decrypted content for authenticated user
+    content: Optional[str] = None
     content_hash: str
     role: str
     timestamp: str
@@ -65,10 +77,17 @@ async def create_conversation(
     """Crea una nuova conversazione crittografata"""
     try:
         conversation_id = f"conv_{uuid.uuid4().hex}"
+        # Accept either plaintext or ciphertext in title_encrypted; store encrypted, hash on plaintext
+        title_in = conversation_data.title_encrypted or ''
+        try:
+            title_plain = _dec_text(title_in) if _is_enc(title_in) else title_in
+        except Exception:
+            title_plain = title_in
+        # Store via model; model encrypts at rest, but keep input consistent
         success = ConversationModel.create_conversation(
             conversation_id=conversation_id,
             user_id=current_user["id"],
-            title_encrypted=conversation_data.title_encrypted,
+            title_encrypted=title_plain,
             device_id=conversation_data.device_id
         )
         if not success:
@@ -85,7 +104,13 @@ async def get_user_conversations(
     """Recupera le conversazioni dell'utente"""
     try:
         conversations = ConversationModel.get_user_conversations(user_id=current_user["id"], limit=limit)
-        return [ConversationResponse(**conv) for conv in conversations]
+        # Attach decrypted title alongside encrypted value
+        enriched = []
+        for conv in conversations:
+            conv_dict = dict(conv)
+            conv_dict["title"] = _dec_safe(conv_dict.get("title_encrypted") or "")
+            enriched.append(ConversationResponse(**conv_dict))
+        return enriched
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving conversations: {e}")
 
@@ -97,7 +122,9 @@ async def get_conversation(
     conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return ConversationResponse(**conversation)
+    conv_dict = dict(conversation)
+    conv_dict["title"] = _dec_safe(conv_dict.get("title_encrypted") or "")
+    return ConversationResponse(**conv_dict)
 
 @router.put("/{conversation_id}")
 async def update_conversation(
@@ -109,7 +136,14 @@ async def update_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     try:
-        title_hash = hashlib.sha256(update_data.title_encrypted.encode()).hexdigest()
+        # Normalize plaintext for hashing and encrypt for storage
+        incoming = update_data.title_encrypted or ''
+        try:
+            title_plain = _dec_text(incoming) if _is_enc(incoming) else incoming
+        except Exception:
+            title_plain = incoming
+        title_hash = hashlib.sha256((title_plain or '').encode()).hexdigest()
+        new_title_enc = _enc_text(title_plain)
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
@@ -117,7 +151,7 @@ async def update_conversation(
                 UPDATE conversations 
                 SET title_encrypted = ?, title_hash = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
-            """, (update_data.title_encrypted, title_hash, conversation_id, current_user["id"]))
+            """, (new_title_enc, title_hash, conversation_id, current_user["id"]))
             conn.commit()
         return {"message": "Conversation updated successfully"}
     except Exception as e:
@@ -153,7 +187,12 @@ async def get_conversation_messages(
         raise HTTPException(status_code=404, detail="Conversation not found")
     try:
         messages = MessageModel.get_conversation_messages(conversation_id=conversation_id, limit=limit)
-        return [MessageResponse(**msg) for msg in messages]
+        enriched = []
+        for msg in messages:
+            m = dict(msg)
+            m["content"] = _dec_safe(m.get("content_encrypted") or "")
+            enriched.append(MessageResponse(**m))
+        return enriched
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving messages: {e}")
 
@@ -170,13 +209,20 @@ async def add_message(
         raise HTTPException(status_code=400, detail="Invalid message role")
     try:
         message_id = f"msg_{uuid.uuid4().hex}"
+        # Compute plaintext for hashing if input appears encrypted with our format
+        content_in = message_data.content_encrypted or ''
+        try:
+            content_plain = _dec_text(content_in) if _is_enc(content_in) else content_in
+        except Exception:
+            content_plain = content_in
         success = MessageModel.add_message(
             message_id=message_id,
             conversation_id=conversation_id,
             content_encrypted=message_data.content_encrypted,
             role=message_data.role,
             token_count=message_data.token_count or 0,
-            processing_time=message_data.processing_time or 0.0
+            processing_time=message_data.processing_time or 0.0,
+            content_plaintext_for_hash=content_plain
         )
         if not success:
             raise HTTPException(status_code=500, detail="Failed to add message")
@@ -330,8 +376,9 @@ async def summarize_conversation(
     except Exception as log_err:
         print(f"Logging error in summary debug GET: {log_err}")
     
+    # Decrypt messages for LLM summary
     llm_messages = [{"role": "system", "content": summary_prompt}] + [
-        {"role": m['role'], "content": m['content_encrypted']} for m in messages
+        {"role": m['role'], "content": _dec_safe(m['content_encrypted'])} for m in messages
     ]
     
     # Log the messages being sent to LLM
@@ -428,6 +475,43 @@ async def export_conversation_with_report(
         if not messages:
             raise HTTPException(status_code=400, detail=f"Conversation {conversation_id} has no messages to export")
 
+        # Attempt to include active welcome message as the first exported message
+        try:
+            from . import welcome_guides as _wg
+            _wg_data = _wg.public_welcome_and_guide()
+            _welcome = _wg_data.get('welcome') if isinstance(_wg_data, dict) else None
+        except Exception:
+            _welcome = None
+
+        export_messages = list(messages)
+        if _welcome and isinstance(_welcome, dict):
+            # compute a timestamp just before the first message
+            first_ts = None
+            try:
+                if messages and messages[0].get('timestamp'):
+                    ts_s = messages[0].get('timestamp')
+                    if isinstance(ts_s, str) and ts_s.endswith('Z'):
+                        ts_s = ts_s[:-1]
+                    first_ts = datetime.fromisoformat(ts_s)
+            except Exception:
+                first_ts = None
+
+            if not first_ts:
+                try:
+                    first_ts = datetime.fromisoformat(conversation.get('created_at').rstrip('Z'))
+                except Exception:
+                    first_ts = datetime.utcnow()
+
+            welcome_ts = (first_ts - timedelta(seconds=1)).isoformat() + 'Z'
+            welcome_msg = {
+                'id': _welcome.get('id') or f"welcome_{uuid.uuid4().hex}",
+                'role': 'assistant',
+                'content': _welcome.get('content') or '',
+                'timestamp': welcome_ts,
+                'is_welcome': True
+            }
+            export_messages = [welcome_msg] + export_messages
+
         summary_prompt = load_summary_prompt()
         summary_provider = get_summary_provider()
         summary_model = get_summary_model()
@@ -449,6 +533,7 @@ async def export_conversation_with_report(
         except Exception as log_err:
             print(f"Logging error in summary debug export: {log_err}")
         
+        # For summary generation use the original messages (do not include welcome in the LLM prompt)
         llm_messages = [{"role": "system", "content": summary_prompt}] + [
             {"role": m['role'], "content": m['content_encrypted']} for m in messages
         ]
@@ -531,16 +616,17 @@ async def export_conversation_with_report(
                 "title_encrypted": conversation['title_encrypted'],
                 "created_at": conversation['created_at'],
                 "updated_at": conversation['updated_at'],
-                "message_count": conversation['message_count']
+                "message_count": len(export_messages)
             },
             "summary": summary_text,
             "messages": [
                 {
-                    "id": m['id'],
-                    "role": m['role'],
-                    "content": m['content_encrypted'],
-                    "timestamp": m['timestamp']
-                } for m in messages
+                    "id": m.get('id'),
+                    "role": m.get('role'),
+                    "content": (_dec_safe(m['content_encrypted']) if m.get('content_encrypted') is not None else m.get('content')),
+                    "timestamp": m.get('timestamp'),
+                    "is_welcome": bool(m.get('is_welcome'))
+                } for m in export_messages
             ]
         }
 
@@ -551,7 +637,7 @@ async def export_conversation_with_report(
             f"## Informazioni Generali\n"
             f"- Creata: {conversation['created_at']}\n"
             f"- Ultimo aggiornamento: {conversation['updated_at']}\n"
-            f"- Numero messaggi: {len(messages)}\n\n"
+            f"- Numero messaggi: {len(export_messages)}\n\n"
             f"## Riassunto\n\n{summary_text}\n"
         )
 
@@ -560,7 +646,7 @@ async def export_conversation_with_report(
             "user_id": current_user['id'],
             "conversation_id": conversation_id,
             "files": ["chat.json", "report.md", "metadata.json"],
-            "message_count": len(messages),
+            "message_count": len(export_messages),
             "summary_provider": summary_provider,
             "summary_model": summary_model,
             "summary_chars": len(summary_text or ''),
@@ -599,7 +685,7 @@ async def export_conversation_with_report(
             )
             lines.append(f"Creata: {conversation['created_at']}")
             lines.append(f"Ultimo aggiornamento: {conversation['updated_at']}")
-            lines.append(f"Messaggi: {len(messages)}")
+            lines.append(f"Messaggi: {len(export_messages)}")
             lines.append(f"Provider riassunto: {summary_provider}")
             if summary_model:
                 lines.append(f"Modello riassunto: {summary_model}")
@@ -607,8 +693,8 @@ async def export_conversation_with_report(
             lines.append("=== SUMMARY ===")
             lines.append(_strip_markdown(summary_text or '(nessun riassunto)'))
             lines.append("\n=== MESSAGGI ===")
-            for msg in messages:
-                lines.append(f"[{msg['timestamp']}] {msg['role']}: {_strip_markdown(msg['content_encrypted'])}")
+            for msg in export_messages:
+                lines.append(f"[{msg.get('timestamp')}] {msg.get('role')}: {_strip_markdown(_dec_safe(msg.get('content_encrypted')) if msg.get('content_encrypted') is not None else msg.get('content'))}{' [WELCOME]' if msg.get('is_welcome') else ''}")
             txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
             created_short = conversation['created_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
             exported_short = metadata['exported_at'].replace(':', '').replace('-', '').replace('T', '_').split('.')[0]
@@ -673,7 +759,7 @@ async def export_conversation_with_report(
                 page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
                 y_cursor += 30
                 for msg in messages:
-                    block = f"[{msg['timestamp']}] {msg['role']}:\n{_strip_markdown(msg['content_encrypted'])}\n"
+                    block = f"[{msg['timestamp']}] {msg['role']}:\n{_strip_markdown(_dec_safe(msg['content_encrypted']))}\n"
                     page, y_cursor = _add_wrapped_text(page, block, top=y_cursor)
                     y_cursor += 4
                     if y_cursor > page.rect.height - 80:
@@ -769,6 +855,42 @@ async def export_conversation_with_report_post(
             if not messages:
                 raise HTTPException(status_code=400, detail=f"Conversation {conversation_id} has no messages to export")
 
+        # Try to retrieve active welcome and prepend to export messages (POST)
+        try:
+            from . import welcome_guides as _wg
+            _wg_data = _wg.public_welcome_and_guide()
+            _welcome = _wg_data.get('welcome') if isinstance(_wg_data, dict) else None
+        except Exception:
+            _welcome = None
+
+        export_messages = list(messages)
+        if _welcome and isinstance(_welcome, dict):
+            first_ts = None
+            try:
+                if messages and messages[0].get('timestamp'):
+                    ts_s = messages[0].get('timestamp')
+                    if isinstance(ts_s, str) and ts_s.endswith('Z'):
+                        ts_s = ts_s[:-1]
+                    first_ts = datetime.fromisoformat(ts_s)
+            except Exception:
+                first_ts = None
+
+            if not first_ts:
+                try:
+                    first_ts = datetime.fromisoformat(conversation.get('created_at').rstrip('Z'))
+                except Exception:
+                    first_ts = datetime.utcnow()
+
+            welcome_ts = (first_ts - timedelta(seconds=1)).isoformat() + 'Z'
+            welcome_msg = {
+                'id': _welcome.get('id') or f"welcome_{uuid.uuid4().hex}",
+                'role': 'assistant',
+                'content': _welcome.get('content') or '',
+                'timestamp': welcome_ts,
+                'is_welcome': True
+            }
+            export_messages = [welcome_msg] + export_messages
+
         summary_prompt = load_summary_prompt()
         summary_provider = get_summary_provider()
         summary_model = get_summary_model()
@@ -791,7 +913,7 @@ async def export_conversation_with_report_post(
             print(f"Logging error in summary debug: {log_err}")
         
         llm_messages = [{"role": "system", "content": summary_prompt}] + [
-            {"role": m['role'], "content": m.get('content_encrypted')}
+            {"role": m['role'], "content": _dec_safe(m.get('content_encrypted'))}
             for m in messages
         ]
         
@@ -868,22 +990,24 @@ async def export_conversation_with_report_post(
                 f"Conversazione con {len(messages)} messaggi dal {conversation['created_at']} al {conversation['updated_at']}"
             )
 
+        # Build export payload using export_messages (which may include welcome)
         chat_payload = {
             "conversation": {
                 "id": conversation['id'],
                 "title_encrypted": conversation['title_encrypted'],
                 "created_at": conversation['created_at'],
                 "updated_at": conversation['updated_at'],
-                "message_count": conversation['message_count']
+                "message_count": len(export_messages)
             },
             "summary": summary_text,
             "messages": [
                 {
                     "id": m.get('id'),
-                    "role": m['role'],
-                    "content": m.get('content_encrypted'),
-                    "timestamp": m.get('timestamp')
-                } for m in messages
+                    "role": m.get('role'),
+                    "content": (m.get('content_encrypted') if m.get('content_encrypted') is not None else m.get('content')),
+                    "timestamp": m.get('timestamp'),
+                    "is_welcome": bool(m.get('is_welcome'))
+                } for m in export_messages
             ]
         }
 
@@ -903,7 +1027,7 @@ async def export_conversation_with_report_post(
             "user_id": current_user['id'],
             "conversation_id": conversation_id,
             "files": ["chat.json", "report.md", "metadata.json"],
-            "message_count": len(messages),
+            "message_count": len(export_messages),
             "summary_provider": summary_provider,
             "summary_model": summary_model,
             "summary_chars": len(summary_text or ''),
@@ -948,8 +1072,8 @@ async def export_conversation_with_report_post(
             lines.append("=== SUMMARY ===")
             lines.append(_strip_markdown(summary_text or '(nessun riassunto)'))
             lines.append("\n=== MESSAGGI ===")
-            for msg in messages:
-                lines.append(f"[{msg.get('timestamp')}] {msg['role']}: {_strip_markdown(msg.get('content_encrypted'))}")
+            for msg in export_messages:
+                lines.append(f"[{msg.get('timestamp')}] {msg.get('role')}: {_strip_markdown(_dec_safe(msg.get('content_encrypted')) if msg.get('content_encrypted') is not None else msg.get('content'))}{' [WELCOME]' if msg.get('is_welcome') else ''}")
             txt_buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
             created_short = conversation['created_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
             exported_short = metadata['exported_at'].replace(':','').replace('-','').replace('T','_').split('.')[0]
@@ -999,7 +1123,7 @@ async def export_conversation_with_report_post(
                 meta_lines = [
                     f"Creato: {conversation['created_at']}",
                     f"Ultimo aggiornamento: {conversation['updated_at']}",
-                    f"Messaggi: {len(messages)}",
+                    f"Messaggi: {len(export_messages)}",
                     f"Provider summary: {summary_provider}" + (f" / model: {summary_model}" if summary_model else '')
                 ]
                 y_meta = 70
@@ -1012,8 +1136,8 @@ async def export_conversation_with_report_post(
                 page, y_cursor = _add_wrapped_text(page, _strip_markdown(summary_text or '(nessun riassunto)'), top=y_meta)
                 page.insert_text((50, y_cursor + 10), "Messaggi:", fontsize=13)
                 y_cursor += 30
-                for msg in messages:
-                    block = f"[{msg.get('timestamp')}] {msg['role']}:\n{_strip_markdown(msg.get('content_encrypted'))}\n"
+                for msg in export_messages:
+                    block = f"[{msg.get('timestamp')}] {msg.get('role')}:\n{_strip_markdown(_dec_safe(msg.get('content_encrypted')) if msg.get('content_encrypted') is not None else msg.get('content'))}{' [WELCOME]' if msg.get('is_welcome') else ''}\n"
                     page, y_cursor = _add_wrapped_text(page, block, top=y_cursor)
                     y_cursor += 4
                     if y_cursor > page.rect.height - 80:

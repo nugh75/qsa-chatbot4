@@ -37,7 +37,6 @@ import {
   Sync as SyncIcon,
 } from '@mui/icons-material';
 import { apiService } from '../apiService';
-import { chatCrypto } from '../crypto';
 
 interface LocalStorageConversation {
   id: string;
@@ -143,10 +142,7 @@ export const MigrationWizard: React.FC<MigrationWizardProps> = ({
 
   // Migrazione conversazioni selezionate
   const migrateConversations = async () => {
-    if (!chatCrypto.isKeyInitialized()) {
-      setError('Chiave di crittografia non inizializzata. Per migrare le conversazioni, è necessario effettuare nuovamente il login.');
-      return;
-    }
+    // Encryption disabled: proceed without requiring a local key
 
     setMigrating(true);
     setMigrationProgress(0);
@@ -160,11 +156,10 @@ export const MigrationWizard: React.FC<MigrationWizardProps> = ({
       const conversation = conversationsToMigrate[i];
       
       try {
-        // 1. Cripta titolo
-        const encryptedTitle = await chatCrypto.encryptMessage(conversation.title);
-        
-        // 2. Crea conversazione
-        const createResponse = await apiService.createConversation(encryptedTitle);
+  // 1. Use plaintext title (no encryption)
+  const titlePlain = conversation.title;
+  // 2. Crea conversazione
+  const createResponse = await apiService.createConversation(titlePlain);
         
         if (!createResponse.success || !createResponse.data) {
           throw new Error(createResponse.error || 'Errore creazione conversazione');
@@ -175,12 +170,11 @@ export const MigrationWizard: React.FC<MigrationWizardProps> = ({
         
         // 3. Aggiungi messaggi
         for (const message of conversation.messages) {
-          try {
-            const encryptedContent = await chatCrypto.encryptMessage(message.content);
-            
+            try {
+            const contentPlain = message.content;
             const messageResponse = await apiService.sendMessage(
               conversationId,
-              encryptedContent,
+              contentPlain,
               message.role
             );
             

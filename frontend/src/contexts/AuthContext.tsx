@@ -88,24 +88,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           );
         }
         setUser(response.data);
-        // Prova a ripristinare la chiave dalla sessione, se presente e coerente con l'utente
-        try {
-          const raw = sessionStorage.getItem('qsa_crypto_key_raw');
-          const uemail = sessionStorage.getItem('qsa_crypto_key_user');
-          if (raw && uemail && uemail === response.data.email) {
-            const cryptoInst = new ChatCrypto();
-            await cryptoInst.importKeyFromRaw(raw);
-            setCrypto(cryptoInst);
-            setNeedsCryptoReauth(false);
-          } else {
-            setCrypto(null);
-            setNeedsCryptoReauth(true); // Utente autenticato ma senza chiave crypto
-          }
-        } catch (e) {
-          console.warn('Ripristino chiave sessione fallito:', e);
-          setCrypto(null);
-          setNeedsCryptoReauth(true);
-        }
+  // Client-side encryption is disabled: no per-user key to restore
+  setCrypto(null);
+  setNeedsCryptoReauth(false);
         setMustChangePassword(!!response.data.must_change_password);
         // Non possiamo ricreare la chiave crittografica senza password – l'utente dovrà riloggarsi per operazioni di decrittazione se necessario
       } else {
@@ -113,7 +98,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const storedInfo = CredentialManager.getUserInfo();
         if (storedInfo) {
           setUser(storedInfo);
-          setNeedsCryptoReauth(true);
+          setNeedsCryptoReauth(false);
         } else {
           clearStoredTokens();
           setUser(null);
@@ -128,7 +113,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const storedInfo = CredentialManager.getUserInfo();
       if (storedInfo) {
         setUser(storedInfo);
-        setNeedsCryptoReauth(true);
+        setNeedsCryptoReauth(false);
       } else {
         clearStoredTokens();
         setUser(null);
@@ -152,11 +137,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setCrypto(null);
     setNeedsCryptoReauth(false);
     clearStoredTokens();
-    // Rimuovi eventuale chiave salvata in sessione
-    try {
-      sessionStorage.removeItem('qsa_crypto_key_raw');
-      sessionStorage.removeItem('qsa_crypto_key_user');
-    } catch {}
+  // No client-side crypto keys to remove
     
     // Opzionale: notifica il backend del logout
     const token = getStoredToken();

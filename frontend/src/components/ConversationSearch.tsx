@@ -50,7 +50,6 @@ import { it } from 'date-fns/locale';
 
 // Import dei servizi esistenti
 import { apiService } from '../apiService';
-import { chatCrypto } from '../crypto';
 
 // Simple debounce implementation
 const debounce = (func: Function, wait: number) => {
@@ -268,19 +267,10 @@ const ConversationSearch: React.FC<ConversationSearchProps> = ({
 
   // Funzioni di utilità
   const decryptResult = useCallback(async (result: SearchResult) => {
-    try {
-      const title = await chatCrypto.decryptMessage(result.title_encrypted);
-      let content = '';
-      
-      if (result.content_encrypted) {
-        content = await chatCrypto.decryptMessage(result.content_encrypted);
-      }
-
-      return { title, content };
-    } catch (error) {
-      console.error('Decryption error:', error);
-      return { title: 'Errore decrittazione', content: '' };
-    }
+    // Encryption disabled: server fields are treated as plaintext
+    const title = result.title_encrypted || '';
+    const content = result.content_encrypted || '';
+    return { title, content };
   }, []);
 
   const handleResultClick = (result: SearchResult) => {
@@ -303,34 +293,12 @@ const ConversationSearch: React.FC<ConversationSearchProps> = ({
   // Componente risultato ricerca
   const SearchResultItem: React.FC<{ result: SearchResult; index: number }> = ({ result, index }) => {
     const [decrypted, setDecrypted] = useState<{ title: string; content: string } | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
       let mounted = true;
-      
-      decryptResult(result).then(data => {
-        if (mounted) {
-          setDecrypted(data);
-          setIsLoading(false);
-        }
-      });
-
+      decryptResult(result).then(data => { if (mounted) setDecrypted(data); });
       return () => { mounted = false; };
     }, [result]);
-
-    if (isLoading) {
-      return (
-        <ListItem>
-          <ListItemAvatar>
-            <Skeleton variant="circular" width={40} height={40} />
-          </ListItemAvatar>
-          <ListItemText
-            primary={<Skeleton variant="text" width="60%" />}
-            secondary={<Skeleton variant="text" width="40%" />}
-          />
-        </ListItem>
-      );
-    }
 
     const isSelected = selectedResults.has(`${result.conversation_id}-${result.message_id || 'title'}`);
     const isCurrentConversation = result.conversation_id === selectedConversationId;

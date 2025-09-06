@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import type { PersonalityEntry } from './types/admin'
+import type Msg from './types/message'
+import type { SourceDocs } from './types/message'
 import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText, LinearProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
@@ -67,24 +69,9 @@ type RAGResult = {
   content?: string
 }
 
-// Nuova struttura fonti consolidata dal backend (source_docs)
-type SourceDocs = {
-  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string; chunk_label?: string; download_url?: string }[]
-  pipeline_topics?: { name: string; description?: string | null }[]
-  rag_groups?: { id: any; name: string }[]
-  data_tables?: { table_id: string; title: string; download_url?: string; row_ids?: (string|number)[] }[]
-}
+// SourceDocs moved to shared types (`./types/message`)
 
-type Msg = { 
-  role:'user'|'assistant'|'system', 
-  content:string, 
-  ts:number,
-  topic?: string,
-  // Nuova chiave unificata
-  source_docs?: SourceDocs | null,
-  __sourcesExpanded?: boolean
-  // (Campi legacy rimossi: rag_results, pipeline_topics, rag_group_names)
-}
+/* Msg type imported from ./types/message */
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
@@ -247,6 +234,8 @@ const AppContent: React.FC = () => {
   const [showSurvey, setShowSurvey] = useState(false)
   const [showAttachments, setShowAttachments] = useState(false)
   const [showFormDialog, setShowFormDialog] = useState(false)
+  // Traccia file già annunciati in chat per non duplicare il riepilogo
+  const announcedUploadIdsRef = React.useRef<Set<string>>(new Set())
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const isVerySmall = useMediaQuery('(max-width:420px)')
@@ -366,6 +355,8 @@ const AppContent: React.FC = () => {
   }
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
+  // (Rimossa) Bolla iniziale "Ho caricato X file" – manteniamo solo il riepilogo dettagliato
+
   // Avatar assistente: fisso (rimuoviamo avatar legati alla personalità)
   // Avatar dinamico: se personalità ha avatar_url usa quello, altrimenti fallback statico
   const selectedPersonality = personalities.find(p=> p.id === selectedPersonalityId)
@@ -443,10 +434,13 @@ const AppContent: React.FC = () => {
             setTtsVoice(def.tts_voice)
           }
           // Se la chat è allo stato iniziale, sostituisci welcome con quello della personalità
-          if (def && messages.length <= 1 && messages[0].content === 'Caricamento messaggio di benvenuto…') {
-            const welcomeText = def.welcome_message_content || def.welcome_message
-            if (welcomeText) {
-              setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
+          if (def && messages.length <= 1) {
+            const currentFirst = messages[0]?.content || '';
+            if (toPlainText(currentFirst).trim().toLowerCase() === toPlainText('Caricamento messaggio di benvenuto…').trim().toLowerCase()) {
+              const welcomeText = def.welcome_message_content || def.welcome_message
+              if (welcomeText) {
+                setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
+              }
             }
           }
         }
@@ -477,11 +471,8 @@ const AppContent: React.FC = () => {
     logout();
     
     // Azzera tutto lo stato dell'interfaccia
-    setMessages([{
-      role: 'assistant', 
-      content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
-      ts: Date.now()
-    }]);
+  // Usa il placeholder di caricamento: verrà sostituito dal welcome pubblico o dalla personalità al caricamento
+  setMessages([{ role: 'assistant', content: 'Caricamento messaggio di benvenuto…', ts: Date.now() }]);
     setInput('');
     setError(undefined);
     setLoading(false);
@@ -504,11 +495,41 @@ const AppContent: React.FC = () => {
     setAttachedFiles(files);
   };
 
+  // Quando vengono aggiunti nuovi PDF/TXT, inserisci un messaggio di riepilogo con toggle testo completo
+  useEffect(() => {
+    if (!attachedFiles || attachedFiles.length === 0) return;
+    const newlyAdded = attachedFiles.filter(f => {
+      const already = announcedUploadIdsRef.current.has(f.id)
+      const ft = (f.file_type || '').toLowerCase()
+      return !already && (ft === 'pdf' || ft === 'txt')
+    })
+    if (newlyAdded.length === 0) return;
+    // segna come annunciati
+    newlyAdded.forEach(f => announcedUploadIdsRef.current.add(f.id))
+    // costruisci riepilogo
+    const summary = newlyAdded.map(f => ({ id: f.id, filename: f.filename, size: f.size, file_type: f.file_type, content: f.content || '' }))
+    setMessages(prev => ([
+      ...prev,
+      {
+        role: 'assistant' as const,
+        content: summary.length === 1 ? `Ho elaborato il file «${summary[0].filename}».` : `Ho elaborato ${summary.length} file.`,
+        ts: Date.now(),
+        uploadSummary: summary,
+        __uploadExpanded: {}
+      }
+    ]))
+  }, [attachedFiles])
+
   const send = async ()=>{
     const text = input.trim()
     if(!text) {
       return
     }
+    // Prepara testo combinato da mostrare nella bolla utente (include testo estratto dagli allegati)
+    const attachmentTextParts = (attachedFiles || [])
+      .filter(f => (f && typeof f.content === 'string' && f.content.trim().length > 0))
+      .map(f => `\n\n[Contenuto di ${f.filename}]:\n${f.content}`)
+    const combinedForDisplay = text + (attachmentTextParts.length ? attachmentTextParts.join('') : '')
     // Auto-open form dialog when user replies "no" after summary confirmation prompt
     try {
       const t = text.toLowerCase()
@@ -524,7 +545,7 @@ const AppContent: React.FC = () => {
         }
       }
     } catch {}
-    const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
+  const next: Msg[] = [...messages, {role:'user' as const, content: combinedForDisplay, ts:Date.now()}]
   setMessages(next); setInput('')
   setLoading(true); setError(undefined)
     try {
@@ -563,10 +584,8 @@ const AppContent: React.FC = () => {
           const title = text.length > 50 ? text.substring(0, 50) + '...' : text;
           let titleToSend = title;
           
-          // Critta il titolo se abbiamo la chiave crypto
-          if (crypto && crypto.isKeyInitialized()) {
-            titleToSend = await crypto.encryptMessage(title);
-          }
+          // Title sent as plaintext (encryption disabled)
+          titleToSend = title;
 
           const convResponse = await authFetch(`${BACKEND}/api/conversations`, {
             method: 'POST',
@@ -590,28 +609,19 @@ const AppContent: React.FC = () => {
   console.log('Continuo conversazione esistente:', conversationId);
       }
 
-      // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
-      const messageToSend = text;
+  // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
+  // (Non includere qui il testo degli allegati per evitare duplicazioni: il backend li aggiunge al prompt)
+  const messageToSend = text;
       
       // Se l'utente è autenticato, prepara anche la versione crittografata per il database
-      let messageEncrypted = null;
-      if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
-        try {
-          messageEncrypted = await crypto.encryptMessage(text);
-        } catch (cryptoError) {
-          console.warn('Failed to encrypt message for database storage:', cryptoError);
-        }
-      }
-      
+  // No client-side encryption: store/display plaintext
+  let messageEncrypted = null;
       const requestBody: any = { 
         message: messageToSend,  // Messaggio in chiaro per LLM
         sessionId: 'dev' 
       };
       
-      // Aggiungi messaggio crittografato se disponibile
-      if (messageEncrypted) {
-        requestBody.message_encrypted = messageEncrypted;
-      }
+  // No client-side encryption: do not send message_encrypted
       
       // Aggiungi allegati se presenti
       if (attachedFiles.length > 0) {
@@ -1166,7 +1176,7 @@ const AppContent: React.FC = () => {
         <Alert severity="info" sx={{ mb: 2 }}>
           <Box display="flex" alignItems="center" sx={{ gap: 1 }}>
             <Typography sx={{ lineHeight: 1.4 }}>
-              Accedi per salvare le conversazioni e usare la crittografia end-to-end
+              Accedi per salvare le conversazioni e riprenderle da altri dispositivi.
             </Typography>
           </Box>
         </Alert>
@@ -1212,36 +1222,89 @@ const AppContent: React.FC = () => {
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
                     '& p': { m: 0 },
                   }}>
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkBreaks]}
-                      components={{
-                        a: ({node, href, children, ...props}) => {
-                          const h = href || ''
-                          const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
-                          if (!isDoc) {
-                            return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                    {m.uploadSummary && m.uploadSummary.length > 0 ? (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                          Riepilogo caricamento file ({m.uploadSummary.length})
+                        </Typography>
+                        <Stack spacing={1}>
+                          {m.uploadSummary.map(f => {
+                            const expanded = !!m.__uploadExpanded?.[f.id]
+                            const sizeLabel = (bytes: number) => bytes < 1024 ? `${bytes} B` : (bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1024/1024).toFixed(1)} MB`)
+                            const chars = (f.content || '').length
+                            const preview = (f.content || '').slice(0, 240).replace(/\s+/g,' ').trim()
+                            return (
+                              <Paper key={f.id} variant="outlined" sx={{ p: 1, bgcolor: '#fff' }}>
+                                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                                  <Box>
+                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{f.filename}</Typography>
+                                    <Stack direction="row" spacing={0.8} sx={{ mt: 0.3 }}>
+                                      <Chip size="small" label={f.file_type.toUpperCase()} variant="outlined" />
+                                      <Chip size="small" label={sizeLabel(f.size)} variant="outlined" />
+                                      <Chip size="small" color="success" label={`${chars} caratteri`} variant="outlined" />
+                                    </Stack>
+                                  </Box>
+                                  <Button size="small" variant="text" onClick={() => {
+                                    setMessages(prev => prev.map((mm, mi) => {
+                                      if (mi !== i) return mm
+                                      const next = { ...(mm as any) }
+                                      next.__uploadExpanded = { ...(mm.__uploadExpanded || {}) }
+                                      next.__uploadExpanded[f.id] = !expanded
+                                      return next
+                                    }))
+                                  }}>
+                                    {expanded ? 'Nascondi' : 'Mostra tutto'}
+                                  </Button>
+                                </Stack>
+                                {!expanded && (
+                                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                                    {preview}{(f.content || '').length > 240 ? '…' : ''}
+                                  </Typography>
+                                )}
+                                {expanded && (
+                                  <Box sx={{ mt: 0.5, p: 1, bgcolor: 'grey.50', borderRadius: 1, maxHeight: 320, overflow: 'auto' }}>
+                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' }}>
+                                      {f.content || '(contenuto non disponibile)'}
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </Paper>
+                            )
+                          })}
+                        </Stack>
+                      </Box>
+                    ) : (
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                        components={{
+                          a: ({node, href, children, ...props}) => {
+                            const h = href || ''
+                            const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
+                            if (!isDoc) {
+                              return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                            }
+                            return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
+                          },
+                          table: ({node, ...props}) => (
+                            <Box className="markdown-table-wrapper" sx={{ width:'100%', overflowX:'auto', my:1 }}>
+                              <table {...props} />
+                            </Box>
+                          ),
+                          th: ({node, ...props}) => <th {...props} style={{ ...props.style, background:'rgba(0,0,0,0.04)' }} />,
+                          code: ({inline, className, children, ...props}: any) => {
+                            const txt = String(children)
+                            if (inline) return <code {...props}>{children}</code>
+                            return (
+                              <pre style={{ margin: '8px 0', padding: '8px', background:'rgba(0,0,0,0.06)', borderRadius:4, overflowX:'auto' }}>
+                                <code>{txt}</code>
+                              </pre>
+                            )
                           }
-                          return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
-                        },
-                        table: ({node, ...props}) => (
-                          <Box className="markdown-table-wrapper" sx={{ width:'100%', overflowX:'auto', my:1 }}>
-                            <table {...props} />
-                          </Box>
-                        ),
-                        th: ({node, ...props}) => <th {...props} style={{ ...props.style, background:'rgba(0,0,0,0.04)' }} />,
-                        code: ({inline, className, children, ...props}: any) => {
-                          const txt = String(children)
-                          if (inline) return <code {...props}>{children}</code>
-                          return (
-                            <pre style={{ margin: '8px 0', padding: '8px', background:'rgba(0,0,0,0.06)', borderRadius:4, overflowX:'auto' }}>
-                              <code>{txt}</code>
-                            </pre>
-                          )
-                        }
-                      }}
-                    >
-                      {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
-                    </ReactMarkdown>
+                        }}
+                      >
+                        {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
+                      </ReactMarkdown>
+                    )}
                   </Box>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
@@ -1757,47 +1820,77 @@ const AppContent: React.FC = () => {
           setLoading(true);
           
           try {
-            // Carica i messaggi della conversazione selezionata
-            if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
-              const apiService = await import('./apiService').then(m => m.apiService);
-              const response = await apiService.getConversationMessages(id);
-              
+            // Carica i messaggi della conversazione selezionata (senza decriptazione client-side)
+            const apiService = await import('./apiService').then(m => m.apiService);
+            const response = await apiService.getConversationMessages(id);
               if (response.success && response.data) {
-                // Decripta e carica i messaggi
-                const decryptedMessages = await Promise.all(
-                  response.data.map(async (msg: any) => {
-                    try {
-                      const decryptedContent = msg.role === 'user' 
-                        ? await crypto.decryptMessage(msg.content_encrypted)
-                        : msg.content_encrypted; // Messaggi assistant in chiaro
-                      
-                      return {
-                        role: msg.role,
-                        content: decryptedContent,
-                        ts: new Date(msg.timestamp).getTime()
-                      };
-                    } catch (error) {
-                      console.warn('Failed to decrypt message:', error);
-                      return {
-                        role: msg.role,
-                        content: '[Messaggio crittografato - Login per decrittare]',
-                        ts: new Date(msg.timestamp).getTime()
-                      };
+              let normalized: Msg[] = response.data.map((msg: any) => {
+                const ts = new Date(msg.timestamp).getTime();
+                const serverPlain = (typeof msg.content === 'string' ? msg.content : '').trim();
+                // Preferisci il contenuto fornito dal server; se mancante, usa content_encrypted se presente, altrimenti placeholder
+                if (serverPlain) return { role: msg.role, content: serverPlain, ts };
+                if (msg.content_encrypted) return { role: msg.role, content: msg.content_encrypted, ts };
+                return { role: msg.role, content: '[Messaggio non disponibile]', ts };
+              });
+
+              try {
+                // Recupera il welcome pubblico (o della personalità) e prepende alla cronologia se presente
+                const { apiService } = await import('./apiService');
+                const wg = await apiService.getPublicWelcomeGuide();
+                let welcomeText: string | null = null;
+                if (wg.success && wg.data?.welcome?.content) {
+                  welcomeText = wg.data.welcome.content;
+                } else {
+                  const p = personalities.find(pp => pp.id === selectedPersonalityId);
+                  welcomeText = p?.welcome_message || p?.welcome_message_content || null;
+                }
+
+                if (welcomeText) {
+                  const first = normalized[0];
+                  // Determine timestamp: place welcome just before first message if present, otherwise now
+                  let welcomeTs = Date.now();
+                  if (first && typeof first.ts === 'number') {
+                    welcomeTs = Math.max(0, first.ts - 1);
+                  }
+
+                  // If the conversation already contains the public welcome as the first stored message
+                  // and the selected personality provides its own welcome, replace the stored
+                  // public welcome with the personality welcome so users see the configured personality text.
+                  const publicWelcome = wg.success && wg.data?.welcome?.content ? wg.data.welcome.content : null;
+                  const personalityWelcome = selectedPersonality ? (selectedPersonality.welcome_message_content || selectedPersonality.welcome_message) : null;
+
+                  const firstPlain = first && first.content ? toPlainText(first.content).trim().toLowerCase() : '';
+                  const publicPlain = publicWelcome ? toPlainText(publicWelcome).trim().toLowerCase() : '';
+                  const personalityPlain = personalityWelcome ? toPlainText(personalityWelcome).trim().toLowerCase() : '';
+
+                  // Debug info to help diagnose why a stored public welcome isn't being replaced
+                  try {
+                    console.debug('[welcome-debug] first:', first?.content);
+                    console.debug('[welcome-debug] publicWelcome:', publicWelcome);
+                    console.debug('[welcome-debug] personalityWelcome:', personalityWelcome);
+                    console.debug('[welcome-debug] normalized forms:', { firstPlain, publicPlain, personalityPlain });
+                  } catch (e) { /* ignore debug errors */ }
+
+                  if (first && publicPlain && firstPlain === publicPlain && personalityWelcome) {
+                    // replace stored public welcome with personality welcome
+                    normalized[0] = { ...first, content: personalityWelcome, isWelcome: true } as Msg;
+                  } else if (!first || firstPlain !== toPlainText(welcomeText).trim().toLowerCase()) {
+                    normalized = [{ role: 'assistant' as const, content: welcomeText, ts: welcomeTs, isWelcome: true }, ...normalized];
+                  } else {
+                    // Fallback: if first assistant message mentions 'counselorbot' (legacy variants),
+                    // prefer replacing it with the personality welcome when available.
+                    if (first && first.role === 'assistant' && firstPlain.includes('counselorbot') && personalityWelcome) {
+                      normalized[0] = { ...first, content: personalityWelcome, isWelcome: true } as Msg;
                     }
-                  })
-                );
-                
-                setMessages(decryptedMessages);
-              } else {
-                setError('Errore nel caricamento dei messaggi');
+                  }
+                }
+              } catch (e) {
+                // ignore welcome failures
               }
+
+              setMessages(normalized);
             } else {
-              // Utente non autenticato - mostra messaggio generico
-              setMessages([{
-                role: 'assistant' as const,
-                content: 'Questa conversazione è crittografata. Effettua il login per visualizzare i messaggi.',
-                ts: Date.now()
-              }]);
+              setError('Errore nel caricamento dei messaggi');
             }
           } catch (error) {
             console.error('Failed to load conversation messages:', error);

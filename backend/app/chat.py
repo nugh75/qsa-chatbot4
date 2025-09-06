@@ -242,7 +242,8 @@ async def chat(
                 content_encrypted=user_msg_encrypted,  # Versione crittografata per database
                 role="user",
                 token_count=0,
-                processing_time=0.0
+                processing_time=0.0,
+                content_plaintext_for_hash=user_msg
             )
             
             if not success:
@@ -697,7 +698,8 @@ async def chat(
                 content_encrypted=answer,  # TODO: Implementare crittografia server-side
                 role="assistant",
                 token_count=token_count,
-                processing_time=processing_time
+                processing_time=processing_time,
+                content_plaintext_for_hash=answer
             )
             
             if not success:
@@ -900,7 +902,8 @@ async def chat_stream(
                 content_encrypted=req.message_encrypted or user_msg,
                 role="user",
                 token_count=0,
-                processing_time=0.0
+                processing_time=0.0,
+                content_plaintext_for_hash=user_msg
             )
             if not success:
                 print("Warning: Failed to save user message to database (stream)")
@@ -923,12 +926,12 @@ async def chat_stream(
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
-    topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
-    topics_multi = detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None)
+    # Costruisci full_user_message coerente col non-stream (include allegati)
+    full_user_message = user_msg + _process_attachments(attachments)
+    topic = detect_topic(full_user_message, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(full_user_message, enabled_topics=personality_enabled_topics, max_topics=None)
     if not topic:
         topic = 'generale'
-    # Costruisci full_user_message coerente col non-stream (allegati non gestiti qui per semplicità futura estensione)
-    full_user_message = user_msg
     rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
     context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
     # Optional: cerca nelle tabelle dati abilitate o auto-rilevate e aggiungi una sezione al contesto
@@ -1051,7 +1054,7 @@ async def chat_stream(
 
     if use_memory_buffer:
         memory = get_memory()
-        memory.add_message(session_id, "user", user_msg, {"topic": topic})
+        memory.add_message(session_id, "user", full_user_message, {"topic": topic})
         conversation_history = memory.get_conversation_history(session_id)
     else:
         conversation_history = frontend_history
@@ -1060,8 +1063,18 @@ async def chat_stream(
         {"role": "system", "content": system},
         {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"}
     ] + conversation_history
-    if not any(m.get('role') == 'user' and m.get('content') == user_msg for m in conversation_history):
-        messages.append({"role": "user", "content": user_msg})
+    # Aggiungi il messaggio utente corrente (con allegati) se non già presente in cronologia
+    if not any(m.get('role') == 'user' and m.get('content') == full_user_message for m in conversation_history):
+        user_message_for_llm = {"role": "user", "content": full_user_message}
+        # Per modelli che supportano immagini (Claude/GPT-4V), inserisci immagini base64
+        if attachments and x_llm_provider in ['anthropic', 'openai']:
+            image_attachments = [att for att in attachments if att.base64_data and att.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']]
+            if image_attachments:
+                user_message_for_llm["images"] = [
+                    {"type": "image", "data": att.base64_data, "filename": att.filename}
+                    for att in image_attachments
+                ]
+        messages.append(user_message_for_llm)
 
     start_time = asyncio.get_event_loop().time()
     answer_accum = []  # parti accumulate
@@ -1088,7 +1101,11 @@ async def chat_stream(
         try:
             if provider == 'ollama':
                 # Streaming reale da Ollama
-                import httpx, json as _json, os as _os
+                import json as _json, os as _os, importlib
+                try:
+                    _httpx = importlib.import_module('httpx')
+                except Exception:
+                    _httpx = None
                 base_url_env = x_ollama_base_url or _os.getenv('OLLAMA_BASE_URL')
                 base_url_cfg = None
                 try:
@@ -1114,7 +1131,9 @@ async def chat_stream(
                     "stream": True,
                     "options": {"temperature": 0.3, "top_p": 0.9}
                 }
-                async with httpx.AsyncClient(timeout=None) as cx:
+                if _httpx is None:
+                    raise RuntimeError("httpx is required for Ollama streaming but not installed")
+                async with _httpx.AsyncClient(timeout=None) as cx:
                     async with cx.stream('POST', f"{base_url}/api/chat", json=payload) as resp:
                         async for line in resp.aiter_lines():
                             if not line:
@@ -1289,7 +1308,8 @@ async def chat_stream(
                             content_encrypted=full_answer,
                             role='assistant',
                             token_count=tokens_full.get('total', 0),
-                            processing_time=duration_ms/1000.0
+                            processing_time=duration_ms/1000.0,
+                            content_plaintext_for_hash=full_answer
                         )
                         if not success:
                             print("Warning: failed to save assistant message (stream)")

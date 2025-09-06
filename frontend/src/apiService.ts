@@ -752,6 +752,21 @@ class ApiService {
     return this.makeRequest<{ deleted: number }>(`/admin/db/delete`, { method: 'POST', body: JSON.stringify({ table, key }) });
   }
 
+  // === DB Query Builder ===
+  async dbQueryBuilder(payload: {
+    table: string;
+    select?: string[];
+    filters?: { column: string; op: string; value?: any }[];
+    group_by?: string[];
+    metrics?: { fn: 'count'|'sum'|'avg'|'min'|'max'; column?: string; alias?: string }[];
+    order_by?: { by: string; dir?: 'ASC'|'DESC' };
+    limit?: number;
+    offset?: number;
+    distinct?: boolean;
+  }): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/query-builder`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
   // === Forms (Questionari) ===
   async listForms(): Promise<ApiResponse<{ forms: { id: string; name: string; description?: string; items_count: number }[] }>> {
     return this.makeRequest(`/forms`);

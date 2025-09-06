@@ -2413,6 +2413,216 @@ async def delete_row_api(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore delete: {e}")
 
+# ---- Query Builder (structured, safe) ----
+class QBFilter(BaseModel):
+    column: str
+    op: str  # '=', '!=', '>', '<', '>=', '<=', 'like', 'ilike', 'contains', 'startswith', 'endswith', 'in', 'not in', 'is null', 'is not null', 'between'
+    value: Any | None = None  # list for IN, tuple/list for BETWEEN, ignored for IS NULL
+
+class QBMetric(BaseModel):
+    fn: str  # count | sum | avg | min | max
+    column: Optional[str] = None  # None allowed for count(*)
+    alias: Optional[str] = None
+
+class QBOrder(BaseModel):
+    by: str
+    dir: str = 'ASC'  # ASC | DESC
+
+class QueryBuilderIn(BaseModel):
+    table: str
+    select: Optional[List[str]] = None        # columns when not aggregating
+    filters: Optional[List[QBFilter]] = None
+    group_by: Optional[List[str]] = None
+    metrics: Optional[List[QBMetric]] = None  # when aggregating
+    order_by: Optional[QBOrder] = None
+    limit: Optional[int] = 100
+    offset: Optional[int] = 0
+    distinct: Optional[bool] = False
+
+def _safe_ident(name: str) -> str:
+    """Validate identifier and return quoted version for SQL."""
+    if not isinstance(name, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        raise HTTPException(status_code=400, detail='Invalid identifier')
+    return '"' + name + '"'
+
+def _list_columns_for_table(conn, table: str) -> list[str]:
+    cur = conn.cursor()
+    if USING_POSTGRES:
+        db_manager.exec(cur, """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position
+        """, (table,))
+        return [r[0] for r in cur.fetchall()]
+    else:
+        cur.execute(f"PRAGMA table_info('{table}')")
+        return [r[1] for r in cur.fetchall()]
+
+@router.post('/admin/db/query-builder')
+async def query_builder(req: QueryBuilderIn):
+    """Esegue una SELECT costruita in modo sicuro a partire da un payload strutturato.
+
+    Supporta filtri semplici, group by + metriche e ordinamento. Forza limiti ragionevoli.
+    """
+    table = _safe_table_name(req.table)
+    limit = int(req.limit or 100)
+    if limit <= 0:
+        limit = 100
+    limit = min(limit, 1000)
+    offset = int(req.offset or 0)
+    if offset < 0:
+        offset = 0
+    distinct = bool(req.distinct or False)
+
+    allowed_ops = {
+        '=', '!=', '>', '<', '>=', '<=', 'like', 'ilike',
+        'contains', 'startswith', 'endswith', 'in', 'not in', 'is null', 'is not null', 'between'
+    }
+    allowed_fns = {'count', 'sum', 'avg', 'min', 'max'}
+
+    try:
+        with db_manager.get_connection() as conn:
+            cols = set(_list_columns_for_table(conn, table))
+            if not cols:
+                raise HTTPException(status_code=400, detail='Table has no columns or not found')
+
+            params: list[Any] = []
+            select_parts: list[str] = []
+            group_by_parts: list[str] = []
+            metrics_aliases: set[str] = set()
+
+            # Build SELECT
+            if req.group_by or req.metrics:
+                # Aggregation mode
+                gb = list(req.group_by or [])
+                for c in gb:
+                    if c not in cols:
+                        raise HTTPException(status_code=400, detail=f'group_by invalid column: {c}')
+                    group_by_parts.append(_safe_ident(c))
+                    select_parts.append(_safe_ident(c))
+                for m in req.metrics or []:
+                    fn = (m.fn or '').lower()
+                    if fn not in allowed_fns:
+                        raise HTTPException(status_code=400, detail=f'Invalid metric fn: {fn}')
+                    if fn == 'count' and not m.column:
+                        alias = m.alias or 'count'
+                        # validate alias if present
+                        if alias and not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', alias):
+                            raise HTTPException(status_code=400, detail='Invalid alias')
+                        select_parts.append(f"COUNT(*) AS {alias}")
+                        metrics_aliases.add(alias)
+                    else:
+                        if not m.column or m.column not in cols:
+                            raise HTTPException(status_code=400, detail='Invalid metric column')
+                        colq = _safe_ident(m.column)
+                        alias = m.alias or f"{fn}_{m.column}"
+                        if alias and not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', alias):
+                            raise HTTPException(status_code=400, detail='Invalid alias')
+                        select_parts.append(f"{fn.upper()}({colq}) AS {alias}")
+                        metrics_aliases.add(alias)
+                if not select_parts:
+                    raise HTTPException(status_code=400, detail='Empty select in aggregation mode')
+            else:
+                # Row mode
+                if req.select:
+                    for c in req.select:
+                        if c == '*':
+                            select_parts.append('*')
+                        else:
+                            if c not in cols:
+                                raise HTTPException(status_code=400, detail=f'select invalid column: {c}')
+                            select_parts.append(_safe_ident(c))
+                else:
+                    select_parts.append('*')
+
+            # Build WHERE
+            where_parts: list[str] = []
+            for f in (req.filters or []):
+                op = (f.op or '').lower().strip()
+                if op not in allowed_ops:
+                    raise HTTPException(status_code=400, detail=f'Invalid operator: {op}')
+                if op in {'is null', 'is not null'}:
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    where_parts.append(f"{_safe_ident(f.column)} IS {'NOT ' if op=='is not null' else ''}NULL")
+                    continue
+                if op == 'between':
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    if not isinstance(f.value, (list, tuple)) or len(f.value) != 2:
+                        raise HTTPException(status_code=400, detail='between requires [min,max]')
+                    where_parts.append(f"{_safe_ident(f.column)} BETWEEN ? AND ?")
+                    params.extend([f.value[0], f.value[1]])
+                    continue
+                if op in {'in', 'not in'}:
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    if not isinstance(f.value, (list, tuple)) or len(f.value) == 0:
+                        raise HTTPException(status_code=400, detail='in/not in requires non-empty array')
+                    placeholders = ','.join(['?']*len(f.value))
+                    where_parts.append(f"{_safe_ident(f.column)} {'NOT ' if op=='not in' else ''}IN ({placeholders})")
+                    params.extend(list(f.value))
+                    continue
+                # LIKE family
+                if f.column not in cols:
+                    raise HTTPException(status_code=400, detail='Invalid filter column')
+                if op in {'like', 'ilike', 'contains', 'startswith', 'endswith'}:
+                    pattern = str(f.value or '')
+                    if op == 'contains':
+                        pattern = f"%{pattern}%"
+                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                    elif op == 'startswith':
+                        pattern = f"{pattern}%"
+                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                    elif op == 'endswith':
+                        pattern = f"%{pattern}"
+                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                    else:
+                        oper = 'ILIKE' if (op=='ilike' and USING_POSTGRES) else 'LIKE'
+                    where_parts.append(f"{_safe_ident(f.column)} {oper} ?")
+                    params.append(pattern)
+                else:
+                    # Binary comparisons
+                    where_parts.append(f"{_safe_ident(f.column)} {op} ?")
+                    params.append(f.value)
+
+            # ORDER BY
+            order_sql = ''
+            if req.order_by and req.order_by.by:
+                by = req.order_by.by
+                direction = (req.order_by.dir or 'ASC').upper()
+                if direction not in ('ASC','DESC'):
+                    direction = 'ASC'
+                # Allow ordering by group_by columns or metric aliases
+                if (req.group_by and by in req.group_by) or (by in metrics_aliases) or (by in cols):
+                    order_sql = f" ORDER BY {by} {direction}"
+
+            sql = 'SELECT ' + (('DISTINCT ' if distinct else '') + ', '.join(select_parts))
+            sql += f" FROM {_safe_ident(table)}"
+            if where_parts:
+                sql += ' WHERE ' + ' AND '.join(where_parts)
+            if group_by_parts:
+                sql += ' GROUP BY ' + ', '.join(group_by_parts)
+            sql += order_sql
+            # LIMIT/OFFSET as params for safety
+            if USING_POSTGRES:
+                # use placeholders, adapted by db_manager
+                sql += ' LIMIT ? OFFSET ?'
+                params.extend([limit, offset])
+            else:
+                sql += ' LIMIT ? OFFSET ?'
+                params.extend([limit, offset])
+
+            cur = conn.cursor()
+            db_manager.exec(cur, sql, tuple(params))
+            rows = cur.fetchall()
+            cols_out = [d[0] for d in cur.description] if cur.description else []
+            data = [dict(zip(cols_out, r)) for r in rows]
+            return {"columns": cols_out, "rows": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore query builder: {e}")
+
 class RestoreOptions(BaseModel):
     allow_seed: bool = False
     dry_run: bool = False

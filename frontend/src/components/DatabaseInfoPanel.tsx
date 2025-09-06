@@ -44,20 +44,86 @@ const DatabaseInfoPanel: React.FC = () => {
   const [searchCols, setSearchCols] = useState<string[]>([]);
   const [searchRows, setSearchRows] = useState<any[]>([]);
 
-  // --- Predefined Queries & NLQ ---
-  const [queries, setQueries] = useState<any[]>([]);
-  const [queriesLoading, setQueriesLoading] = useState<boolean>(false);
-  const [selectedQueryId, setSelectedQueryId] = useState<string>('');
-  const [queryMeta, setQueryMeta] = useState<any|null>(null);
-  const [queryParams, setQueryParams] = useState<Record<string, any>>({});
-  const [queryOrderBy, setQueryOrderBy] = useState<string>('');
-  const [queryOrderDir, setQueryOrderDir] = useState<'ASC'|'DESC'>('DESC');
-  const [queryLimit, setQueryLimit] = useState<number>(50);
-  const [queryRows, setQueryRows] = useState<any[]>([]);
-  const [queryCols, setQueryCols] = useState<string[]>([]);
-  const [queryError, setQueryError] = useState<string|null>(null);
-  const [nlqText, setNlqText] = useState<string>('');
-  const [nlqHint, setNlqHint] = useState<string>('');
+  // --- Query Builder (simple UI) ---
+  const [qbTable, setQbTable] = useState<string>('');
+  const [qbMode, setQbMode] = useState<'rows'|'agg'>('rows');
+  const [qbSelect, setQbSelect] = useState<string>('');
+  const [qbFilters, setQbFilters] = useState<{ column: string; op: string; value?: string }[]>([]);
+  const [qbOrderBy, setQbOrderBy] = useState<string>('');
+  const [qbOrderDir, setQbOrderDir] = useState<'ASC'|'DESC'>('DESC');
+  const [qbLimit, setQbLimit] = useState<number>(50);
+  const [qbCols, setQbCols] = useState<string[]>([]);
+  const [qbRows, setQbRows] = useState<any[]>([]);
+  const [qbError, setQbError] = useState<string|undefined>();
+  const [qbColsForTable, setQbColsForTable] = useState<string[]>([]);
+  const exportQbCsv = () => {
+    if (!qbCols.length) return;
+    const esc = (v: any) => {
+      if (v === null || v === undefined) return '';
+      let s = typeof v === 'string' ? v : JSON.stringify(v);
+      // Normalize newlines and escape quotes
+      s = s.replace(/\r?\n/g, '\n').replace(/"/g, '""');
+      // Wrap if contains separators or quotes
+      if (/[",\n]/.test(s)) return '"' + s + '"';
+      return s;
+    };
+    const lines: string[] = [];
+    lines.push(qbCols.map(esc).join(','));
+    qbRows.forEach(r => {
+      const row = qbCols.map(c => esc((r && typeof r === 'object') ? r[c] : ''));
+      lines.push(row.join(','));
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const fname = qbTable ? `query_${qbTable}.csv` : 'query.csv';
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  useEffect(() => {
+    if (!qbTable) { setQbColsForTable([]); return }
+    (async () => {
+      const r = await apiService.getTableColumns(qbTable)
+      if (r.success && Array.isArray(r.data)) {
+        setQbColsForTable((r.data as any[]).map(c => c.name))
+      } else setQbColsForTable([])
+    })()
+  }, [qbTable])
+
+  const addFilter = () => {
+    if (!qbTable) return
+    setQbFilters(f => [...f, { column: qbColsForTable[0] || 'id', op: 'contains', value: '' }])
+  }
+  const removeFilter = (idx: number) => setQbFilters(f => f.filter((_,i)=> i!==idx))
+  const runQb = async () => {
+    setQbError(undefined)
+    setQbCols([]); setQbRows([])
+    if (!qbTable) { setQbError('Seleziona una tabella'); return }
+    try {
+      const payload: any = { table: qbTable, limit: qbLimit }
+      if (qbMode === 'rows') {
+        if (qbSelect.trim()) payload.select = qbSelect.split(',').map(s=> s.trim()).filter(Boolean)
+      } else {
+        // basic aggregation: group by selected columns; one metric count(*)
+        if (qbSelect.trim()) payload.group_by = qbSelect.split(',').map(s=> s.trim()).filter(Boolean)
+        payload.metrics = [{ fn: 'count', alias: 'count' }]
+      }
+      if (qbFilters.length) payload.filters = qbFilters.map(f => ({ column: f.column, op: f.op, value: f.value }))
+      if (qbOrderBy) payload.order_by = { by: qbOrderBy, dir: qbOrderDir }
+      const r = await apiService.dbQueryBuilder(payload)
+      if (r.success && r.data) {
+        setQbCols(r.data.columns || [])
+        setQbRows(r.data.rows || [])
+      } else setQbError(r.error || 'Errore esecuzione')
+    } catch (e:any) {
+      setQbError(e?.message || 'Errore esecuzione')
+    }
+  }
 
   const load = async (sizes = withSizes, ord = order, force = false) => {
     setLoading(true); setError(null);
@@ -73,18 +139,6 @@ const DatabaseInfoPanel: React.FC = () => {
 
   useEffect(() => { load(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [withSizes, order, forceRefreshFlag]);
-
-  // Load predefined queries list (once)
-  useEffect(() => {
-    (async () => {
-      setQueriesLoading(true);
-      try {
-        const r = await apiService.listQueries();
-        if (r.success && (r.data as any)?.queries) setQueries((r.data as any).queries);
-      } catch {/* ignore */}
-      setQueriesLoading(false);
-    })()
-  }, []);
 
   const isPostgres = /postgres/i.test(info?.engine || '');
   const isSQLite = /sqlite/i.test(info?.engine || '');
@@ -266,71 +320,6 @@ const DatabaseInfoPanel: React.FC = () => {
     setDeleteOpen(true);
   };
 
-  // ---------------------- Predefined Queries helpers ----------------------
-  const loadQueryMeta = async (qid: string) => {
-    setQueryError(null);
-    setQueryRows([]); setQueryCols([]);
-    if (!qid) { setQueryMeta(null); setQueryParams({}); return }
-    const res = await apiService.describeQuery(qid)
-    if (res.success && (res.data as any)?.query) {
-      const meta = (res.data as any).query
-      setQueryMeta(meta)
-      // Defaults
-      const initParams: Record<string, any> = {}
-      ;(meta.params || []).forEach((p:any) => {
-        if (p.default !== undefined) initParams[p.name] = p.default
-        else if (p.type === 'integer') initParams[p.name] = undefined
-        else initParams[p.name] = ''
-      })
-      setQueryParams(initParams)
-      const obDef = meta.order_by?.default || {}
-      const firstCol = (meta.order_by?.allowed || [])[0] || 'id'
-      setQueryOrderBy(obDef.column || firstCol)
-      setQueryOrderDir((obDef.direction || 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC')
-      const lim = meta.limit?.default || 50
-      setQueryLimit(lim)
-    } else setQueryMeta(null)
-  }
-
-  const onChangeQuery = async (qid: string) => {
-    setSelectedQueryId(qid)
-    await loadQueryMeta(qid)
-  }
-
-  const runPredef = async (mode: 'preview'|'execute') => {
-    if (!selectedQueryId) return
-    setQueryError(null)
-    try {
-      const payload: any = { ...queryParams, order_by: { column: queryOrderBy, direction: queryOrderDir }, limit: queryLimit }
-      const r = mode==='preview' ? await apiService.previewQuery(selectedQueryId, payload) : await apiService.executeQuery(selectedQueryId, payload)
-      if (r.success && (r.data as any)?.rows) {
-        const rows = (r.data as any).rows
-        const cols = rows.length ? Object.keys(rows[0]) : []
-        setQueryRows(rows)
-        setQueryCols(cols)
-      } else {
-        setQueryError(r.error || 'Errore esecuzione')
-      }
-    } catch (e:any) {
-      setQueryError(e?.message || 'Errore esecuzione')
-    }
-  }
-
-  const runNlq = async () => {
-    setNlqHint('')
-    if (!nlqText.trim()) return
-    const r = await apiService.nlq(nlqText.trim())
-    if ((r.data as any)?.matched && (r.data as any)?.query_id) {
-      const qid = (r.data as any).query_id as string
-      setSelectedQueryId(qid)
-      await loadQueryMeta(qid)
-      const p = (r.data as any).params || {}
-      setQueryParams(prev => ({ ...prev, ...p }))
-      setNlqHint((r.data as any).label || 'Riconosciuta')
-    } else {
-      setNlqHint((r.data as any)?.message || 'Non riconosciuta')
-    }
-  }
   const doDelete = async () => {
     try {
       const key = JSON.parse(deleteKeyText || '{}');
@@ -422,6 +411,113 @@ const DatabaseInfoPanel: React.FC = () => {
             </Box>
 
             <Divider sx={{ my:2 }} />
+            <Typography variant="subtitle2" gutterBottom>Query Builder (senza SQL)</Typography>
+            <Paper variant="outlined" sx={{ p:1, mb:2 }}>
+              <Grid container spacing={1} alignItems="center">
+                <Grid item xs={12} sm={6} md={3}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Tabella</InputLabel>
+                    <Select label="Tabella" value={qbTable} onChange={(e)=> setQbTable(String(e.target.value))}>
+                      <MenuItem value=""><em>Seleziona…</em></MenuItem>
+                      {tableList.map(t => <MenuItem key={t.name} value={t.name}>{t.name}</MenuItem>)}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} sm={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Modo</InputLabel>
+                    <Select label="Modo" value={qbMode} onChange={(e)=> setQbMode(e.target.value as any)}>
+                      <MenuItem value="rows">Righe</MenuItem>
+                      <MenuItem value="agg">Aggregazione</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} md={4}>
+                  <TextField size="small" fullWidth label={qbMode==='rows' ? 'Colonne (es: id,name)' : 'Group by (es: user_id)'} value={qbSelect} onChange={(e)=> setQbSelect(e.target.value)} placeholder={qbMode==='rows' ? 'vuoto = tutte' : 'colonne separate da virgola'} />
+                </Grid>
+                <Grid item xs={6} md={1}>
+                  <TextField size="small" type="number" label="Limite" value={qbLimit} onChange={(e)=> setQbLimit(Math.max(1, Math.min(1000, Number(e.target.value||0))))} />
+                </Grid>
+                <Grid item xs={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Ordina per</InputLabel>
+                    <Select label="Ordina per" value={qbOrderBy} onChange={(e)=> setQbOrderBy(String(e.target.value))}>
+                      <MenuItem value=""><em>-</em></MenuItem>
+                      {qbMode==='agg' ? (
+                        [ ...(qbSelect? qbSelect.split(',').map(s=> s.trim()).filter(Boolean) : []), 'count' ].map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)
+                      ) : (
+                        qbColsForTable.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)
+                      )}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={6} md={1}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Dir</InputLabel>
+                    <Select label="Dir" value={qbOrderDir} onChange={(e)=> setQbOrderDir(String(e.target.value) as any)}>
+                      <MenuItem value="ASC">ASC</MenuItem>
+                      <MenuItem value="DESC">DESC</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              </Grid>
+              <Box sx={{ mt:1 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography variant="body2" sx={{ fontWeight:600 }}>Filtri</Typography>
+                  <Button size="small" variant="outlined" onClick={addFilter} disabled={!qbTable}>Aggiungi filtro</Button>
+                </Stack>
+                <Grid container spacing={1} sx={{ mt:0.5 }}>
+                  {qbFilters.map((f, idx) => (
+                    <Grid key={idx} item xs={12}>
+                      <Stack direction={{ xs:'column', sm:'row' }} spacing={1} alignItems={{ sm:'center' }}>
+                        <FormControl size="small" sx={{ minWidth:160 }}>
+                          <InputLabel>Colonna</InputLabel>
+                          <Select label="Colonna" value={f.column} onChange={(e)=> setQbFilters(v=> v.map((x,i)=> i===idx? { ...x, column: String(e.target.value) }: x))}>
+                            {qbColsForTable.map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                          </Select>
+                        </FormControl>
+                        <FormControl size="small" sx={{ minWidth:160 }}>
+                          <InputLabel>Operatore</InputLabel>
+                          <Select label="Operatore" value={f.op} onChange={(e)=> setQbFilters(v=> v.map((x,i)=> i===idx? { ...x, op: String(e.target.value) }: x))}>
+                            {['=','!=','>','<','>=','<=','contains','startswith','endswith','like','in','is null','is not null'].map(o => <MenuItem key={o} value={o}>{o}</MenuItem>)}
+                          </Select>
+                        </FormControl>
+                        {!['is null','is not null'].includes(f.op) && (
+                          <TextField size="small" label="Valore" value={f.value ?? ''} onChange={(e)=> setQbFilters(v=> v.map((x,i)=> i===idx? { ...x, value: e.target.value }: x))} sx={{ flex:1 }} />
+                        )}
+                        <Button size="small" color="error" onClick={()=> removeFilter(idx)}>Rimuovi</Button>
+                      </Stack>
+                    </Grid>
+                  ))}
+                </Grid>
+                <Stack direction="row" spacing={1} sx={{ mt:1 }}>
+                  <Button variant="contained" onClick={runQb} disabled={!qbTable}>Esegui</Button>
+                  <Button variant="outlined" onClick={exportQbCsv} disabled={!qbCols.length}>Esporta CSV</Button>
+                  {qbError && <Alert severity="error">{qbError}</Alert>}
+                </Stack>
+              </Box>
+            </Paper>
+            {qbCols.length>0 && (
+              <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 320, mb:2 }}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      {qbCols.map(c => <TableCell key={c} sx={{ fontWeight:600 }}>{c}</TableCell>)}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {qbRows.map((r, idx) => (
+                      <TableRow key={idx}>
+                        {qbCols.map(c => <TableCell key={c}>{typeof r==='object' ? (r[c] ?? '') : ''}</TableCell>)}
+                      </TableRow>
+                    ))}
+                    {qbRows.length === 0 && (
+                      <TableRow><TableCell colSpan={qbCols.length || 1}><Typography variant="body2" color="text.secondary">Nessun risultato</Typography></TableCell></TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
             <Stack direction="row" alignItems="center" justifyContent="space-between">
               <Typography variant="subtitle2" gutterBottom>Anteprima tabella {selectedTable ? `“${selectedTable}”` : ''} (clic su una tabella sopra)</Typography>
               {selectedTable && <Button size="small" startIcon={<AddIcon />} variant="outlined" onClick={openInsert}>Inserisci riga</Button>}
@@ -465,70 +561,7 @@ const DatabaseInfoPanel: React.FC = () => {
                     ))}
                     {sampleRows.length === 0 && (
                       <TableRow><TableCell colSpan={(sampleCols.length || 1) + 1}><Typography variant="body2" color="text.secondary">Nessun dato</Typography></TableCell></TableRow>
-      )}
-
-      {/* Tabella selezionata (editable) */}
-      {selectedTable && sampleCols.length>0 && (
-        <Box sx={{ mt:2 }}>
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb:1 }}>
-            <Typography variant="subtitle2">Tabella: <code>{selectedTable}</code></Typography>
-            {pkCols.length>0 ? (
-              <Chip size="small" label={`PK: ${pkCols.join(', ')}`} />
-            ) : (
-              <Chip size="small" color="warning" label="PK non rilevata" />
-            )}
-          </Stack>
-          <TableContainer component={Paper} variant="outlined">
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  {sampleCols.map(c => <TableCell key={c} sx={{ fontWeight:600 }}>{c}</TableCell>)}
-                  <TableCell align="right">Azioni</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {sampleRows.map((row, idx) => (
-                  <TableRow key={idx}>
-                    {sampleCols.map(col => (
-                      <TableCell key={`${idx}-${col}`} onDoubleClick={()=> startEditCell(idx, col)} sx={{ cursor:'text' }}>
-                        {editingCell && editingCell.rowIndex===idx && editingCell.col===col ? (
-                          <TextField
-                            size="small"
-                            autoFocus
-                            value={editCellValue}
-                            onChange={e=> setEditCellValue(e.target.value)}
-                            onBlur={commitEditCell}
-                            onKeyDown={(e)=> {
-                              if (e.key==='Enter') { e.preventDefault(); commitEditCell() }
-                              if (e.key==='Escape') { e.preventDefault(); cancelEditCell() }
-                            }}
-                          />
-                        ) : (
-                          editingRow===idx ? (
-                            <TextField size="small" value={editValues[col] ?? ''} onChange={e=> setEditValues(v=> ({...v, [col]: e.target.value}))} />
-                          ) : (
-                            <Typography variant="body2" sx={{ whiteSpace:'pre-wrap' }}>{String(row[col] ?? '')}</Typography>
-                          )
-                        )}
-                      </TableCell>
-                    ))}
-                    <TableCell align="right">
-                      {editingRow===idx ? (
-                        <Stack direction="row" spacing={1} justifyContent="flex-end">
-                          <Button size="small" onClick={cancelEdit}>Annulla</Button>
-                          <Button size="small" variant="contained" onClick={saveRow}>Salva</Button>
-                        </Stack>
-                      ) : (
-                        <Button size="small" onClick={()=> startEdit(idx)}>Modifica</Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Box>
-      )}
+                    )}
                   </TableBody>
                 </Table>
               </TableContainer>
@@ -616,102 +649,7 @@ const DatabaseInfoPanel: React.FC = () => {
               </TableContainer>
             )}
 
-            <Divider sx={{ my:2 }} />
-            <Typography variant="subtitle2" gutterBottom>Query predefinite</Typography>
-            <Stack direction={{ xs:'column', md:'row' }} spacing={1} alignItems={{ md:'center' }} sx={{ mb:1 }}>
-              <FormControl size="small" sx={{ minWidth:260 }}>
-                <InputLabel id="predef-query-label">Seleziona query</InputLabel>
-                <Select labelId="predef-query-label" label="Seleziona query" value={selectedQueryId} onChange={(e)=> onChangeQuery(String(e.target.value))}>
-                  <MenuItem value=""><em>Nessuna</em></MenuItem>
-                  {queries.map((q:any)=> <MenuItem key={q.id} value={q.id}>{q.label || q.id}</MenuItem>)}
-                </Select>
-              </FormControl>
-              <Box sx={{ flex:1 }} />
-              <TextField size="small" label="Query uman-like" value={nlqText} onChange={(e)=> setNlqText(e.target.value)} placeholder="es. conversazioni utente 42" sx={{ minWidth: 260 }} />
-              <Button variant="outlined" onClick={runNlq}>Interpreta</Button>
-              {nlqHint && <Chip size="small" color="info" label={nlqHint} />}
-            </Stack>
-            {queryMeta && (
-              <>
-                <Typography variant="body2" color="text.secondary" sx={{ mb:1 }}>{queryMeta.description}</Typography>
-                <Grid container spacing={2}>
-                  {(queryMeta.params||[]).map((p:any)=> (
-                    <Grid item xs={12} sm={6} md={4} key={p.name}>
-                      {p.type === 'enum' ? (
-                        <FormControl fullWidth size="small">
-                          <InputLabel>{p.name}</InputLabel>
-                          <Select label={p.name} value={queryParams[p.name] ?? ''} onChange={(e)=> setQueryParams(v=> ({ ...v, [p.name]: e.target.value }))}>
-                            {Array.isArray(p.enum) ? p.enum.map((v:any)=> <MenuItem key={String(v)} value={v}>{String(v)}</MenuItem>) : null}
-                          </Select>
-                        </FormControl>
-                      ) : (
-                        <TextField fullWidth size="small" type={p.type==='integer'||p.type==='number'?'number':(p.type==='date'?'date':'text')} label={p.name} value={queryParams[p.name] ?? ''} onChange={(e)=> setQueryParams(v=> ({ ...v, [p.name]: (p.type==='integer'||p.type==='number') ? (e.target.value===''? '' : Number(e.target.value)) : e.target.value }))} InputLabelProps={p.type==='date'?{ shrink: true }: undefined} />
-                      )}
-                    </Grid>
-                  ))}
-                  <Grid item xs={12} sm={6} md={4}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Ordina per</InputLabel>
-                      <Select label="Ordina per" value={queryOrderBy} onChange={(e)=> setQueryOrderBy(String(e.target.value))}>
-                        {(queryMeta.order_by?.allowed||[]).map((c:string)=> <MenuItem key={c} value={c}>{c}</MenuItem>)}
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12} sm={6} md={4}>
-                    <FormControl fullWidth size="small">
-                      <InputLabel>Direzione</InputLabel>
-                      <Select label="Direzione" value={queryOrderDir} onChange={(e)=> setQueryOrderDir(String(e.target.value) as any)}>
-                        <MenuItem value="ASC">ASC</MenuItem>
-                        <MenuItem value="DESC">DESC</MenuItem>
-                      </Select>
-                    </FormControl>
-                  </Grid>
-                  <Grid item xs={12} sm={6} md={4}>
-                    <TextField fullWidth size="small" type="number" label="Limite" value={queryLimit} onChange={(e)=> setQueryLimit(Math.max(1, Math.min(1000, Number(e.target.value||0))))} />
-                  </Grid>
-                </Grid>
-                <Stack direction="row" spacing={1} sx={{ mt:1 }}>
-                  <Button variant="outlined" onClick={()=> runPredef('preview')}>Anteprima</Button>
-                  <Button variant="contained" onClick={()=> runPredef('execute')}>Esegui</Button>
-                  <Button variant="text" onClick={async ()=> {
-                    try {
-                      const payload: any = { ...queryParams, order_by: { column: queryOrderBy, direction: queryOrderDir }, limit: queryLimit }
-                      const blob = await apiService.exportQueryCsv(selectedQueryId, payload)
-                      const url = URL.createObjectURL(blob)
-                      const a = document.createElement('a')
-                      a.href = url
-                      a.download = `${selectedQueryId}.csv`
-                      document.body.appendChild(a)
-                      a.click()
-                      a.remove()
-                      URL.revokeObjectURL(url)
-                    } catch (e:any) { setQueryError(e?.message || 'Export fallito') }
-                  }}>Esporta CSV</Button>
-                  {queryError && <Alert severity="error" sx={{ ml:2 }}>{queryError}</Alert>}
-                </Stack>
-                {queryRows.length>0 && (
-                  <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 320, mt:1 }}>
-                    <Table size="small" stickyHeader>
-                      <TableHead>
-                        <TableRow>
-                          {queryCols.map(c => <TableCell key={c} sx={{ fontWeight:600 }}>{c}</TableCell>)}
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {queryRows.map((r, idx) => (
-                          <TableRow key={idx}>
-                            {queryCols.map(c => <TableCell key={c}>{typeof r === 'object' ? (r[c] ?? '') : ''}</TableCell>)}
-                          </TableRow>
-                        ))}
-                        {queryRows.length === 0 && (
-                          <TableRow><TableCell colSpan={queryCols.length || 1}><Typography variant="body2" color="text.secondary">Nessun risultato</Typography></TableCell></TableRow>
-                        )}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                )}
-              </>
-            )}
+            {/* Sezione "Query predefinite" e NLQ rimossa su richiesta */}
 
             {/* Edit dialog */}
             <Dialog open={editOpen} onClose={()=> setEditOpen(false)} maxWidth="md" fullWidth>

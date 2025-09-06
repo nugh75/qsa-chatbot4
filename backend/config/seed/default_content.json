@@ -1,0 +1,42 @@
+{
+  "system_prompts": {
+    "active_id": "counselorbot",
+    "prompts": [
+      {
+        "id": "counselorbot",
+        "name": "Counselorbot (QSA)",
+        "text": "# Prompt di sistema\n\nSei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+      }
+    ]
+  },
+  "summary_prompts": {
+    "active_id": "default",
+    "prompts": [
+      {
+        "id": "default",
+        "name": "Default",
+        "text": "Sei un assistente che genera un REPORT di una conversazione tra utente e counselorbot. Obiettivo: riassunto strutturato in italiano."
+      }
+    ]
+  },
+  "welcome": {
+    "active_id": "wm_default",
+    "messages": [
+      {
+        "id": "wm_default",
+        "title": "Benvenuto",
+        "content": "Ciao! Sono Counselorbot. Posso aiutarti a riflettere sulle tue strategie di apprendimento."
+      }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_default",
+    "guides": [
+      {
+        "id": "gd_default",
+        "title": "Guida rapida",
+        "content": "Condividi i tuoi risultati QSA o le aree che vuoi esplorare. Io ti farò domande e ti darò spunti."
+      }
+    ]
+  }
+}

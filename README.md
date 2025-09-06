@@ -29,58 +29,223 @@
 
 ---
 
-## Configuration & Backup (Seed vs Runtime)
+## Initial Setup & Backup – How it works (EN/IT)
 
-English:
-The project now distinguishes between versioned seed configuration (immutable defaults) and runtime mutable data.
+### English
 
-Seed directory (versioned): backend/config/seed
-  - system_prompts.json (default multi system prompts source)
-  - summary_prompt.md (initial summary prompt source; migrated into runtime summary_prompts.json)
-  - personalities.json (initial personalities set)
+This project separates first‑start seeding (one‑time or idempotent) from day‑to‑day runtime data. On backend startup (`app.main` lifespan), the following happens in order:
 
-Runtime directories (persistent volume):
-  - /app/storage/prompts (system_prompts.json, summary_prompts.json, summary_prompt.md migrated)
-  - /app/storage/summary (legacy summary prompt location; summary_prompts.json produced here)
-  - /app/storage/personalities (personalities.json)
+1) Load .env and diagnose storage
+  - `.env` is loaded from `backend/.env` (inside the container path `/app/backend/.env`).
+  - A lightweight storage diagnostic prints a `[storage-diag]` line for `/app/storage`, avatars, and personalities folders.
 
-Lowercase naming is enforced. Legacy uppercase files (SYSTEM_PROMPTS.json, SUMMARY_PROMPT.md, PERSONALITIES.json) and the old /app/data mount are only read as fallback. They will never be updated and can be removed after migration.
+2) Ensure admin and default AI provider
+  - Default admin is ensured from env (idempotent):
+    - DEFAULT_ADMIN_EMAIL (default: ai4educ@gmail.com)
+    - DEFAULT_ADMIN_PASSWORD (default: admin123!)
+    - DEFAULT_ADMIN_OVERWRITE (0/1) to force reset the password
+  - A default AI provider/model entry is ensured if missing.
 
-Backup endpoint (admin auth required):
-  GET /api/admin/config/backup?include_seed=true&include_avatars=false&dry_run=false
-    Returns a ZIP containing manifest.json + selected files with per-file sha256.
+3) Prompts and content seeding (env + JSON)
+  - Runtime prompt files are ensured to exist (created under `/app/storage/...` if missing):
+    - System prompts: `/app/storage/prompts/system_prompts.json`
+    - Summary prompts: `/app/storage/summary/summary_prompts.json`
+  - Optional JSON seed import if configured via env:
+    - SEED_CONTENT_JSON: absolute path to a JSON file; recommended: `/app/config/seed/default_content.json`
+    - SEED_CONTENT_OVERWRITE: `true/false` (default false). If false, the import MERGES (upserts) items; if true, it OVERWRITES the whole section.
+    - Supported sections in the JSON file:
+      - `system_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `summary_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `welcome`: `{ active_id?: string, messages: [{ id, title?, content }] }`
+      - `guides`: `{ active_id?: string, guides: [{ id, title?, content }] }`
+  - Env‑driven, idempotent upsert after the JSON step (useful to enforce a default):
+    - DEFAULT_SYSTEM_PROMPT_ID | DEFAULT_SYSTEM_PROMPT_NAME | DEFAULT_SYSTEM_PROMPT_TEXT | DEFAULT_SYSTEM_PROMPT_SET_ACTIVE
+    - DEFAULT_SUMMARY_PROMPT_ID | DEFAULT_SUMMARY_PROMPT_NAME | DEFAULT_SUMMARY_PROMPT_TEXT | DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
 
-Restore endpoint:
-  POST /api/admin/config/restore (multipart file=backup.zip, allow_seed=false, dry_run=true)
-    Validates structure & hashes; with dry_run=true nothing is written.
-    Set allow_seed=true to also restore seed files (normally you restore only runtime files).
+4) Default personality in Postgres (idempotent)
+  - A default Counselorbot personality is upserted into PostgreSQL with env overrides:
+    - DEFAULT_PERSONALITY_ID | DEFAULT_PERSONALITY_NAME | DEFAULT_PERSONALITY_PROVIDER | DEFAULT_PERSONALITY_MODEL
+    - DEFAULT_PERSONALITY_WELCOME_ID | DEFAULT_PERSONALITY_GUIDE_ID
+    - DEFAULT_PERSONALITY_SET_DEFAULT (0/1), DEFAULT_PERSONALITY_ACTIVE (0/1)
+  - Note: Personalities are stored in the database, not in the runtime JSON seed.
 
-Integrity status endpoint:
-  GET /api/admin/config/status -> per-file hashes + aggregate hash for monitoring drift.
+5) Optional Whisper warm‑up
+  - WHISPER_WARMUP (default 1/true) to asynchronously warm the "small" model at startup.
 
-Italiano:
-Il progetto distingue ora tra configurazione seed versionata (default immutabili) e dati runtime mutabili.
+Where things live (runtime vs. seed):
+  - Runtime JSON files (persist across restarts via Docker volumes):
+    - System prompts: `/app/storage/prompts/system_prompts.json`
+    - Summary prompts: `/app/storage/summary/summary_prompts.json`
+    - Welcome & Guides: `/app/storage/welcome-guide/welcome_guide.json`
+  - Database (PostgreSQL):
+    - Personalities (including default and activation flags)
+  - Versioned seed content (repo):
+    - `backend/config/seed/default_content.json` (sample content for system/summary prompts and welcome/guides). Mount it in the container at `/app/config/seed/default_content.json`.
 
-Seed (versionato): backend/config/seed
-  - system_prompts.json
-  - summary_prompt.md (sorgente iniziale, poi migrata in summary_prompts.json runtime)
-  - personalities.json
+Environment variables quick reference (subset):
+  - SEED_CONTENT_JSON=/app/config/seed/default_content.json
+  - SEED_CONTENT_OVERWRITE=false
+  - DEFAULT_SYSTEM_PROMPT_ID=counselorbot
+  - DEFAULT_SYSTEM_PROMPT_NAME="Counselorbot (QSA)"
+  - DEFAULT_SYSTEM_PROMPT_TEXT="..."  (optional; if omitted, a built‑in Italian prompt text is used)
+  - DEFAULT_SYSTEM_PROMPT_SET_ACTIVE=true|false
+  - DEFAULT_SUMMARY_PROMPT_ID, DEFAULT_SUMMARY_PROMPT_NAME, DEFAULT_SUMMARY_PROMPT_TEXT, DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+  - DEFAULT_PERSONALITY_ID=counselorbot, DEFAULT_PERSONALITY_NAME=Counselorbot
+  - DEFAULT_PERSONALITY_PROVIDER=openrouter, DEFAULT_PERSONALITY_MODEL=gpt-oss-20b:free (or from admin config)
+  - DEFAULT_PERSONALITY_WELCOME_ID=wm_default, DEFAULT_PERSONALITY_GUIDE_ID=gd_default
+  - DEFAULT_PERSONALITY_SET_DEFAULT=false, DEFAULT_PERSONALITY_ACTIVE=true
 
-Runtime:
-  - /app/storage/prompts (system_prompts.json, summary_prompts.json, summary_prompt.md migrata)
-  - /app/storage/summary
-  - /app/storage/personalities
+Backup and restore
+There are two compatible paths: the advanced flow (with conflict preview) and the legacy simple admin flow.
 
-Nomi lowercase obbligatori. File legacy maiuscoli e vecchio mount /app/data sono solo fallback in lettura e possono essere eliminati dopo la migrazione.
+Advanced backup (used by Admin UI → Backup panel):
+  - Export ZIP: `GET /api/backup/export`
+    - Contains: prompts JSONs, welcome/guide JSON, database personalities (as JSON), and metadata.
+  - Import Preview: `POST /api/backup/import/preview` (multipart file=ZIP)
+    - Returns an `import_id`, `conflicts` with sections and items categorized as `add`, `update`, `missing_in_incoming`, plus `active_current` and `active_incoming` for applicable sections.
+  - Import Apply: `POST /api/backup/import/apply` with body `{ import_id, decisions }`
+    - Decisions per section: `{ apply_ids: string[], use_incoming_active?: boolean }`. Only selected IDs are applied; optional switch changes the active ID to the incoming one.
+  - Cleanup: `DELETE /api/backup/import/{import_id}` to remove the staged import.
 
-Backup:
-  GET /api/admin/config/backup?include_seed=true&dry_run=false
+Legacy admin backup (also supported):
+  - Status / integrity: `GET /api/admin/config/status` (per‑file hashes + aggregate)
+  - Export ZIP: `GET /api/admin/config/backup?include_seed=true&include_avatars=false&include_db=true&dry_run=false`
+  - Restore: `POST /api/admin/config/restore?allow_seed=false&dry_run=true` (multipart file=backup.zip)
+    - `dry_run=true` validates without writing
+    - `allow_seed=true` permits writing seed files (usually you restore only runtime files)
 
-Ripristino:
-  POST /api/admin/config/restore (allow_seed=false, dry_run=true per simulazione)
+Admin UI guidance (Backup panel)
+  - You can run an Import Preview to see differences and select exactly which items to apply.
+  - For sections with an "active" concept (system prompts, summary prompts, welcome, guides), the UI shows both "Active (current)" and "Active (in import)" and lets you toggle "Use import active".
+  - A dry‑run/manifest generation is also available via the legacy export with `dry_run` option for auditing.
 
-Stato/Integrità:
-  GET /api/admin/config/status (hash per file + hash aggregato) utile per monitoraggio o CI.
+Example: minimal seed file (`backend/config/seed/default_content.json`)
+
+```json
+{
+  "system_prompts": {
+    "active_id": "counselorbot",
+    "prompts": [
+      { "id": "counselorbot", "name": "Counselorbot (QSA)", "text": "You are Counselorbot... (IT text allowed)" }
+    ]
+  },
+  "summary_prompts": {
+    "active_id": "default",
+    "prompts": [
+      { "id": "default", "name": "Default", "text": "Summarize the conversation in Italian in 3-5 bullet points." }
+    ]
+  },
+  "welcome": {
+    "active_id": "wm_default",
+    "messages": [
+      { "id": "wm_default", "title": "Benvenuto", "content": "Ciao! Posso aiutarti a interpretare i risultati del QSA." }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_default",
+    "guides": [
+      { "id": "gd_default", "title": "Guida rapida", "content": "1) Condividi i risultati C1–C7, poi A1–A7. 2) Fai domande..." }
+    ]
+  }
+}
+```
+
+Enable it with env (container):
+
+```env
+SEED_CONTENT_JSON=/app/config/seed/default_content.json
+SEED_CONTENT_OVERWRITE=false
+```
+
+---
+
+### Italiano
+
+Il progetto separa il seeding iniziale (una tantum o idempotente) dai dati operativi runtime. All’avvio del backend (lifespan in `app.main`), avviene quanto segue:
+
+1) Caricamento .env e diagnostica storage
+  - `.env` è caricato da `backend/.env` (nel container: `/app/backend/.env`).
+  - Una diagnostica leggera stampa una riga `[storage-diag]` per `/app/storage`, avatars e personalities.
+
+2) Admin e provider AI di default
+  - L’utente admin di default è garantito da env (idempotente):
+    - DEFAULT_ADMIN_EMAIL (default: ai4educ@gmail.com)
+    - DEFAULT_ADMIN_PASSWORD (default: admin123!)
+    - DEFAULT_ADMIN_OVERWRITE (0/1) per forzare il reset password
+  - È garantita una voce di provider/modello AI di default se assente.
+
+3) Seeding di prompt e contenuti (env + JSON)
+  - I file runtime dei prompt sono garantiti (creati in `/app/storage/...` se mancanti):
+    - Prompt di sistema: `/app/storage/prompts/system_prompts.json`
+    - Prompt di riassunto: `/app/storage/summary/summary_prompts.json`
+  - Import opzionale da JSON se configurato via env:
+    - SEED_CONTENT_JSON: percorso assoluto del file JSON; consigliato: `/app/config/seed/default_content.json`
+    - SEED_CONTENT_OVERWRITE: `true/false` (default false). Se false, l’import UNISCE (upsert) gli elementi; se true, SOVRASCRIVE l’intera sezione.
+    - Sezioni supportate nel JSON:
+      - `system_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `summary_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `welcome`: `{ active_id?: string, messages: [{ id, title?, content }] }`
+      - `guides`: `{ active_id?: string, guides: [{ id, title?, content }] }`
+  - Upsert idempotente guidato da env dopo l’import (utile per imporre un default):
+    - DEFAULT_SYSTEM_PROMPT_ID | DEFAULT_SYSTEM_PROMPT_NAME | DEFAULT_SYSTEM_PROMPT_TEXT | DEFAULT_SYSTEM_PROMPT_SET_ACTIVE
+    - DEFAULT_SUMMARY_PROMPT_ID | DEFAULT_SUMMARY_PROMPT_NAME | DEFAULT_SUMMARY_PROMPT_TEXT | DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+
+4) Personalità di default in Postgres (idempotente)
+  - Una personalità Counselorbot è upsertata nel database con override da env:
+    - DEFAULT_PERSONALITY_ID | DEFAULT_PERSONALITY_NAME | DEFAULT_PERSONALITY_PROVIDER | DEFAULT_PERSONALITY_MODEL
+    - DEFAULT_PERSONALITY_WELCOME_ID | DEFAULT_PERSONALITY_GUIDE_ID
+    - DEFAULT_PERSONALITY_SET_DEFAULT (0/1), DEFAULT_PERSONALITY_ACTIVE (0/1)
+  - Nota: Le personalità vivono nel database, non nel seed JSON runtime.
+
+5) Warm‑up Whisper opzionale
+  - WHISPER_WARMUP (default 1/true) per scaldare in modo asincrono il modello "small" all’avvio.
+
+Dove stanno i dati (runtime vs. seed):
+  - File JSON runtime (persistenti con volumi Docker):
+    - Prompt di sistema: `/app/storage/prompts/system_prompts.json`
+    - Prompt di riassunto: `/app/storage/summary/summary_prompts.json`
+    - Welcome & Guide: `/app/storage/welcome-guide/welcome_guide.json`
+  - Database (PostgreSQL):
+    - Personalità (inclusi default e flag di attivazione)
+  - Contenuto seed versionato (nel repo):
+    - `backend/config/seed/default_content.json` (esempi per prompts di sistema/riassunto e welcome/guide). Montalo nel container come `/app/config/seed/default_content.json`.
+
+Variabili d’ambiente principali (estratto):
+  - SEED_CONTENT_JSON=/app/config/seed/default_content.json
+  - SEED_CONTENT_OVERWRITE=false
+  - DEFAULT_SYSTEM_PROMPT_ID=counselorbot
+  - DEFAULT_SYSTEM_PROMPT_NAME="Counselorbot (QSA)"
+  - DEFAULT_SYSTEM_PROMPT_TEXT="..."  (opzionale; se omessa, viene usato un testo italiano built‑in)
+  - DEFAULT_SYSTEM_PROMPT_SET_ACTIVE=true|false
+  - DEFAULT_SUMMARY_PROMPT_ID, DEFAULT_SUMMARY_PROMPT_NAME, DEFAULT_SUMMARY_PROMPT_TEXT, DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+  - DEFAULT_PERSONALITY_ID=counselorbot, DEFAULT_PERSONALITY_NAME=Counselorbot
+  - DEFAULT_PERSONALITY_PROVIDER=openrouter, DEFAULT_PERSONALITY_MODEL=gpt-oss-20b:free (o da config admin)
+  - DEFAULT_PERSONALITY_WELCOME_ID=wm_default, DEFAULT_PERSONALITY_GUIDE_ID=gd_default
+  - DEFAULT_PERSONALITY_SET_DEFAULT=false, DEFAULT_PERSONALITY_ACTIVE=true
+
+Backup e ripristino
+Sono disponibili due percorsi compatibili: il flusso avanzato (con anteprima conflitti) e quello admin semplice legacy.
+
+Backup avanzato (usato dal pannello Admin → Backup):
+  - Esporta ZIP: `GET /api/backup/export`
+    - Contiene: JSON dei prompt, JSON di welcome/guide, personalità DB (in JSON) e metadati.
+  - Anteprima Import: `POST /api/backup/import/preview` (multipart file=ZIP)
+    - Restituisce un `import_id`, `conflicts` con sezioni e voci classificate in `add`, `update`, `missing_in_incoming`, più `active_current` e `active_incoming` dove applicabile.
+  - Applica Import: `POST /api/backup/import/apply` con body `{ import_id, decisions }`
+    - Decisioni per sezione: `{ apply_ids: string[], use_incoming_active?: boolean }`. Solo gli ID selezionati vengono applicati; lo switch opzionale imposta l’attivo a quello dell’import.
+  - Pulizia: `DELETE /api/backup/import/{import_id}` per eliminare l’import in staging.
+
+Backup admin legacy (ancora supportato):
+  - Stato / integrità: `GET /api/admin/config/status` (hash per file + aggregato)
+  - Esporta ZIP: `GET /api/admin/config/backup?include_seed=true&include_avatars=false&include_db=true&dry_run=false`
+  - Ripristino: `POST /api/admin/config/restore?allow_seed=false&dry_run=true` (multipart file=backup.zip)
+    - `dry_run=true` valida senza scrivere
+    - `allow_seed=true` consente di scrivere anche i file seed (in genere si ripristinano solo i file runtime)
+
+Guida UI (pannello Backup)
+  - Puoi lanciare una Anteprima Import per vedere le differenze e selezionare esattamente cosa applicare.
+  - Per le sezioni con concetto di "attivo" (prompt di sistema, prompt di riassunto, welcome, guide), l’interfaccia mostra “Attivo corrente” e “Attivo nell’import” e permette di attivare “Usa active dell’import”.
+  - È disponibile anche un dry‑run/manifest (export legacy con `dry_run`) utile per audit.
 
 ---
 

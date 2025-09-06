@@ -953,6 +953,7 @@ class ApiService {
   async getConfigStatus(): Promise<ApiResponse<{ files: {id:string; relative:string; filename:string; kind:string; required:boolean; sha256?:string; exists:boolean}[]; aggregate_sha256: string }>> {
     return this.makeRequest('/admin/config/status');
   }
+  // Legacy/simple backup (admin endpoints)
   async downloadConfigBackup(params: { include_seed?: boolean; include_avatars?: boolean; include_db?: boolean; dry_run?: boolean } = {}): Promise<Response> {
     const q = new URLSearchParams();
     if (params.include_seed) q.set('include_seed','true');
@@ -992,6 +993,35 @@ class ApiService {
     } catch (e:any) {
       return { success: false, error: e?.message || 'Network error' };
     }
+  }
+
+  // Advanced backup (new endpoints with conflict preview/apply)
+  async backupExportZipAdvanced(): Promise<Response> {
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}/backup/export`, { headers });
+  }
+  async backupImportPreview(file: File): Promise<ApiResponse<{ import_id: string; conflicts: any; summary: any }>> {
+    const form = new FormData();
+    form.append('file', file, file.name || 'backup.zip');
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    try {
+      const res = await fetch(`${API_BASE_URL}/backup/import/preview`, { method: 'POST', headers, body: form });
+      const data = await res.json();
+      if (res.ok) return { success: true, data } as any;
+      return { success: false, error: data?.detail || data?.error || 'Preview failed' };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+  async backupImportApply(import_id: string, decisions: any): Promise<ApiResponse<{ ok: boolean }>> {
+    return this.makeRequest<{ ok: boolean }>(`/backup/import/apply`, { method: 'POST', body: JSON.stringify({ import_id, decisions }) });
+  }
+  async backupImportDelete(import_id: string): Promise<ApiResponse<{ deleted: string }>> {
+    return this.makeRequest<{ deleted: string }>(`/backup/import/${encodeURIComponent(import_id)}`, { method: 'DELETE' });
   }
 }
 

@@ -32,6 +32,7 @@ from .logging_utils import get_system_logger, log_system
 from .health_routes import router as health_router
 from .database import db_manager as _dbm
 from .queries_routes import router as queries_router
+from .backup import router as backup_router
 
 # Carica le variabili di ambiente dal file .env (path esplicito) e log mascherato
 _env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -167,9 +168,77 @@ try:
     # 1) Ensure runtime prompt files exist (copy from seed if first run)
     _ = load_system_prompts()
     _ = load_summary_prompt()
-    # 2) Ensure Counselorbot system prompt exists even on existing installs
+    # 2) Optional: import seed content from JSON if configured
+    try:
+        seed_json_path = os.getenv('SEED_CONTENT_JSON')
+        if seed_json_path and os.path.exists(seed_json_path):
+            import json as _json
+            print(f"[seed] Importing seed from {seed_json_path}")
+            with open(seed_json_path, 'r', encoding='utf-8') as _sf:
+                seed_data = _json.load(_sf)
+            # System prompts
+            try:
+                from .prompts import save_system_prompts
+                if isinstance(seed_data.get('system_prompts'), dict):
+                    if os.getenv('SEED_CONTENT_OVERWRITE', 'false').lower() in ('1','true','yes','on'):
+                        save_system_prompts(seed_data['system_prompts'])
+                    else:
+                        # merge: upsert all prompts; keep existing active unless provided
+                        from .prompts import load_system_prompts as _lsp, upsert_system_prompt as _usp
+                        cur = _lsp()
+                        for p in seed_data['system_prompts'].get('prompts', []) or []:
+                            pid = p.get('id')
+                            name = p.get('name') or pid
+                            text = p.get('text') or ''
+                            if pid and text is not None:
+                                _usp(name=name, text=text, prompt_id=pid, set_active=False)
+                        if seed_data['system_prompts'].get('active_id'):
+                            from .prompts import set_active_system_prompt
+                            try:
+                                set_active_system_prompt(seed_data['system_prompts']['active_id'])
+                            except Exception:
+                                pass
+            except Exception as _e:
+                print(f"[seed] system_prompts import skipped: {_e}")
+            # Summary prompts
+            try:
+                from .prompts import save_summary_prompts, load_summary_prompts as _lsump, upsert_summary_prompt as _usump, set_active_summary_prompt as _setsum
+                if isinstance(seed_data.get('summary_prompts'), dict):
+                    if os.getenv('SEED_CONTENT_OVERWRITE', 'false').lower() in ('1','true','yes','on'):
+                        save_summary_prompts(seed_data['summary_prompts'])
+                    else:
+                        cur = _lsump()
+                        for p in seed_data['summary_prompts'].get('prompts', []) or []:
+                            pid = p.get('id')
+                            name = p.get('name') or pid
+                            text = p.get('text') or ''
+                            if pid and text is not None:
+                                _usump(name=name, text=text, prompt_id=pid, set_active=False)
+                        if seed_data['summary_prompts'].get('active_id'):
+                            try:
+                                _setsum(seed_data['summary_prompts']['active_id'])
+                            except Exception:
+                                pass
+            except Exception as _e:
+                print(f"[seed] summary_prompts import skipped: {_e}")
+            # Welcome/Guides
+            try:
+                from .welcome_guides import apply_seed as _wg_apply
+                wg_seed = {k: seed_data.get(k) for k in ('welcome','guides') if k in seed_data}
+                if wg_seed:
+                    _wg_apply(wg_seed, overwrite=os.getenv('SEED_CONTENT_OVERWRITE','false').lower() in ('1','true','yes','on'))
+            except Exception as _e:
+                print(f"[seed] welcome/guides import skipped: {_e}")
+    except Exception as _e:
+        print(f"[seed] JSON import error: {_e}")
+    # 3) Ensure default system prompt exists (env-overridable) even on existing installs
     try:
         from .prompts import upsert_system_prompt
+        # Read defaults from env; allow overriding the shipped text
+        _sp_id = os.getenv('DEFAULT_SYSTEM_PROMPT_ID', 'counselorbot')
+        _sp_name = os.getenv('DEFAULT_SYSTEM_PROMPT_NAME', 'Counselorbot (QSA)')
+        _sp_text_env = os.getenv('DEFAULT_SYSTEM_PROMPT_TEXT')
+        _sp_set_active = os.getenv('DEFAULT_SYSTEM_PROMPT_SET_ACTIVE', 'false').lower() in ('1','true','yes','on')
         counselorbot_text = (
             "# Prompt di sistema\n\n"
             "# Personalità\n\n"
@@ -218,10 +287,31 @@ try:
             "###markdown\n"
             "- utilizza il markdown. Usa la formattazione standard. Quando usi punti elenco dopo manda sempre a capo e ripristina il la tabulazione giusta. Crea sempre un po' di spazio."
         )
-        # Idempotent upsert; do not force as active (personalities will reference it)
-        upsert_system_prompt(name="Counselorbot (QSA)", text=counselorbot_text, prompt_id="counselorbot", set_active=False)
+        # Idempotent upsert; activation flag from env (default False)
+        upsert_system_prompt(
+            name=_sp_name,
+            text=(_sp_text_env if (_sp_text_env and _sp_text_env.strip()) else counselorbot_text),
+            prompt_id=_sp_id,
+            set_active=_sp_set_active
+        )
     except Exception as _e:
         print(f"Counselorbot prompt ensure skipped: {_e}")
+    # 4) Optionally upsert a summary prompt variant from env and set active if requested
+    try:
+        from .prompts import upsert_summary_prompt, set_active_summary_prompt
+        _sum_id = os.getenv('DEFAULT_SUMMARY_PROMPT_ID')
+        _sum_name = os.getenv('DEFAULT_SUMMARY_PROMPT_NAME')
+        _sum_text = os.getenv('DEFAULT_SUMMARY_PROMPT_TEXT')
+        _sum_set_active = os.getenv('DEFAULT_SUMMARY_PROMPT_SET_ACTIVE', 'false').lower() in ('1','true','yes','on')
+        if _sum_id and _sum_name and _sum_text and _sum_text.strip():
+            res = upsert_summary_prompt(_sum_name, _sum_text, _sum_id, _sum_set_active)
+            if _sum_set_active and res and res.get('id'):
+                try:
+                    set_active_summary_prompt(res['id'])
+                except Exception:
+                    pass
+    except Exception as _e:
+        print(f"Summary prompt ensure skipped: {_e}")
 except Exception as e:
     print(f"Prompt bootstrap error: {e}")
 
@@ -238,28 +328,34 @@ try:
         except Exception:
             provider = 'openrouter'
             model = 'gpt-oss-20b:free'
-        # Do not force default: personality selection drives prompt; just ensure it exists
-        set_default_flag = False
+        # Environment overrides for personality defaults
+        _p_id = os.getenv('DEFAULT_PERSONALITY_ID', 'counselorbot')
+        _p_name = os.getenv('DEFAULT_PERSONALITY_NAME', 'Counselorbot')
+        provider = os.getenv('DEFAULT_PERSONALITY_PROVIDER', provider) or provider
+        model = os.getenv('DEFAULT_PERSONALITY_MODEL', model) or model
+        _p_welcome = os.getenv('DEFAULT_PERSONALITY_WELCOME_ID') or None
+        _p_guide = os.getenv('DEFAULT_PERSONALITY_GUIDE_ID') or None
+        set_default_flag = os.getenv('DEFAULT_PERSONALITY_SET_DEFAULT', 'false').lower() in ('1','true','yes','on')
+        _p_active = os.getenv('DEFAULT_PERSONALITY_ACTIVE', 'true').lower() in ('1','true','yes','on')
         # Upsert counselorbot personality
         from .personalities import upsert_personality
         upsert_personality(
-            name="Counselorbot",
-            system_prompt_id="counselorbot",
+            name=_p_name,
+            system_prompt_id=os.getenv('DEFAULT_SYSTEM_PROMPT_ID', 'counselorbot'),
             provider=provider,
             model=model,
-            welcome_message=None,
-            guide_id=None,
+            welcome_message=_p_welcome,
+            guide_id=_p_guide,
             context_window=None,
             temperature=0.3,
-            personality_id="counselorbot",
+            personality_id=_p_id,
             set_default=set_default_flag,
             avatar=None,
             tts_provider=None,
             tts_voice=None,
-            active=True,
+            active=_p_active,
             enabled_pipeline_topics=None,
             enabled_rag_groups=None,
-            enabled_mcp_servers=None,
             enabled_data_tables=None,
             max_tokens=None
         )
@@ -294,6 +390,7 @@ app.include_router(forms_router, prefix="/api")
 app.include_router(forms_admin_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(queries_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():

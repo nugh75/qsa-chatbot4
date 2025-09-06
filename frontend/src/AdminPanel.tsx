@@ -72,7 +72,7 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-    { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides', 'models_manager'] },
+  { id: 'conversation', label: 'LLM & Chat', panels: ['prompts', 'personalities', 'memory', 'welcome_guides', 'models_manager'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'data_tables', 'forms', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
@@ -87,25 +87,25 @@ const AdminPanel: React.FC = () => {
   // UI stato locale
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
     tts: false,
-  transcription: false,
+    transcription: false,
     prompts: false,
     personalities: false,
-    user_management: true,
-  usage: false,
-  memory: false,
-  apidocs: false,
-  dbinfo: true,
-  embedding: false,
-  ragdocs: false,
-  data_tables: true,
-  forms: true,
-  whisper_health: false,
-  pipeline: false,
-  welcome_guides: false,
-  footer_settings: true,
-  mcp_servers: true,
-  backup_panel: true,
-  models_manager: false,
+    user_management: false,
+    usage: false,
+    memory: false,
+    apidocs: false,
+    dbinfo: false,
+    embedding: false,
+    ragdocs: false,
+    data_tables: false,
+    forms: false,
+    whisper_health: false,
+    pipeline: false,
+    welcome_guides: false,
+    footer_settings: false,
+    mcp_servers: false,
+    backup_panel: false,
+    models_manager: false,
   })
 
   // Token test
@@ -581,7 +581,7 @@ const AdminPanel: React.FC = () => {
         <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Welcome & Guide</Typography>
+            <Typography variant="h6">Welcome & Guide chat</Typography>
           </Box>
         </AccordionSummary>
         <AccordionDetails>
@@ -616,30 +616,6 @@ const AdminPanel: React.FC = () => {
         <AccordionDetails>
           <Stack spacing={3}>
             <PersonalitiesPanel />
-            {/* Sezione Test LLM (spostata dal tab provider) */}
-            <Card variant="outlined">
-              <CardContent>
-                <Typography variant="subtitle2" gutterBottom>Test rapido LLM (usa provider configurazione o personalità selezionata)</Typography>
-                <Stack direction={{ xs:'column', sm:'row' }} spacing={2} alignItems="flex-start">
-                  <TextField
-                    label="Messaggio di test"
-                    value={tokenTestInput}
-                    onChange={e=> setTokenTestInput(e.target.value)}
-                    size="small"
-                    fullWidth
-                    multiline
-                    minRows={2}
-                  />
-                  <Button variant="contained" size="small" onClick={runTokenTest} disabled={testingTokens || !tokenTestInput.trim()}>Invia</Button>
-                </Stack>
-                {testingTokens && <LinearProgress sx={{ mt:1 }} />}
-                {tokenTestResult && (
-                  <Paper variant="outlined" sx={{ p:1, mt:2, maxHeight:200, overflow:'auto', fontFamily:'monospace', fontSize:12 }}>
-                    <pre style={{ margin:0, whiteSpace:'pre-wrap' }}>{JSON.stringify(tokenTestResult, null, 2)}</pre>
-                  </Paper>
-                )}
-              </CardContent>
-            </Card>
           </Stack>
         </AccordionDetails>
       </Accordion>

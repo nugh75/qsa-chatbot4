@@ -93,14 +93,15 @@ show_main_menu() {
     echo "  15) Aggiorna analizzatori"
     echo "  16) Verifica integrità progetto"
     echo "  17) Backup completo prima pulizia"
+    echo "  18) 🔄 Riorganizza Import Python"
     echo ""
     echo "❓ AIUTO:"
-    echo "  18) Documentazione"
-    echo "  19) Esempi utilizzo"
+    echo "  19) Documentazione"
+    echo "  20) Esempi utilizzo"
     echo ""
     echo "  0) Esci"
     echo ""
-    echo -n "Scegli un'opzione (0-19): "
+    echo -n "Scegli un'opzione (0-20): "
 }
 
 # Funzione analisi backend
@@ -449,6 +450,23 @@ cleanup_temp_backup() {
     fi
 }
 
+# Riorganizzazione import
+reorganize_imports() {
+    print_header "🔄 RIORGANIZZAZIONE IMPORT PYTHON"
+    echo ""
+    
+    if [ ! -f "$TOOLS_DIR/reorganize_imports_cli.sh" ]; then
+        print_error "Script riorganizzazione import non trovato in $TOOLS_DIR"
+        return 1
+    fi
+    
+    # Rendi eseguibile lo script se necessario
+    chmod +x "$TOOLS_DIR/reorganize_imports_cli.sh"
+    
+    # Esegui l'interfaccia dedicata
+    "$TOOLS_DIR/reorganize_imports_cli.sh"
+}
+
 # Menu loop principale
 main_loop() {
     while true; do
@@ -496,8 +514,9 @@ main_loop() {
                 git add -A && git commit -m "🧹 Backup automatico cleaner $(date)"
                 print_success "Backup creato!"
                 ;;
-            18) show_documentation ;;
-            19) 
+            18) reorganize_imports ;;
+            19) show_documentation ;;
+            20) 
                 print_info "Esempi utilizzo disponibili nella documentazione"
                 ;;
             0) 

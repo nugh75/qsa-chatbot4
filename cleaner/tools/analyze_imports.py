@@ -26,6 +26,15 @@ class ImportAnalyzer:
         self.module_to_file: Dict[str, str] = {}  # module name -> file path
         self.file_to_module: Dict[str, str] = {}  # file path -> module name
         
+        # FIXED: Lista file critici che non dovrebbero mai essere rimossi automaticamente
+        self.critical_files = {
+            'main.py', 'admin.py', 'database.py', 'config.py',
+            # Pattern per manager, engine, provider
+            '*_manager.py', '*_engine.py', '*_provider.py', '*_routes.py',
+            # Core dell'applicazione  
+            'auth.py', 'chat.py', 'llm.py', '__init__.py'
+        }
+        
     def find_python_files(self) -> None:
         """Trova tutti i file Python nella directory."""
         for root, dirs, files in os.walk(self.directory):
@@ -73,8 +82,14 @@ class ImportAnalyzer:
                     # Gestisci import relativi (from .module import ...)
                     if node.level > 0:  # import relativo
                         for alias in node.names:
-                            # Ricostruisci il path relativo
-                            relative_module = self._resolve_relative_import(file_path, node.level, node.module, alias.name)
+                            # FIXED: Gestisci "from . import module_name" 
+                            if node.module is None:
+                                # Caso: from . import embedding_manager
+                                relative_module = self._resolve_relative_import(file_path, node.level, alias.name, alias.name)
+                            else:
+                                # Caso: from .submodule import name
+                                relative_module = self._resolve_relative_import(file_path, node.level, node.module, alias.name)
+                                
                             if relative_module and self._is_local_import(relative_module):
                                 local_imports.add(relative_module)
                                 
@@ -206,7 +221,12 @@ class ImportAnalyzer:
         if unused_list:
             print("\n🗑️  FILE NON UTILIZZATI:")
             for file_path, data in sorted(unused_list):
-                self._print_file_info(file_path, data, show_external, "❌")
+                # FIXED: Controlla se è un file critico
+                if self._is_critical_file(file_path):
+                    print(f"\n⚠️  {file_path} (CRITICO - non rimuovere automaticamente)")
+                    self._print_file_info(file_path, data, show_external, "⚠️ ")
+                else:
+                    self._print_file_info(file_path, data, show_external, "❌")
         
         # Statistiche
         print(f"\n📊 STATISTICHE:")
@@ -214,6 +234,26 @@ class ImportAnalyzer:
         print(f"   • Entry points: {len(entry_points)}")
         print(f"   • File importati: {len(imported_files)}")
         print(f"   • File inutilizzati: {len(unused_list)}")
+        critical_unused = sum(1 for file_path, _ in unused_list if self._is_critical_file(file_path))
+        print(f"   • File critici inutilizzati: {critical_unused}")
+        
+    def _is_critical_file(self, file_path: str) -> bool:
+        """Verifica se un file è critico e non dovrebbe essere rimosso automaticamente."""
+        filename = Path(file_path).name
+        
+        # Controllo diretto
+        if filename in self.critical_files:
+            return True
+            
+        # Controllo pattern (es: *_manager.py)
+        for pattern in self.critical_files:
+            if '*' in pattern:
+                if pattern.startswith('*') and filename.endswith(pattern[1:]):
+                    return True
+                elif pattern.endswith('*') and filename.startswith(pattern[:-1]):
+                    return True
+        
+        return False
     
     def _print_file_info(self, file_path: str, data: Dict, show_external: bool, icon: str) -> None:
         """Stampa le informazioni di un singolo file."""

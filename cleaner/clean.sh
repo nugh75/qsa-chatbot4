@@ -79,26 +79,28 @@ show_main_menu() {
     echo "  5) Pulisci Backend (automatico)"
     echo "  6) Pulisci Frontend (automatico)"
     echo "  7) Pulizia completa (Backend + Frontend)"
-    echo "  8) Trova file backup/temporanei"
+    echo "  8) Elimina file uno per uno (manuale)"
+    echo "  9) Elimina tutto insieme (massa)"
+    echo "  10) Gestisci file temporanei/backup"
     echo ""
     echo "📄 REPORT:"
-    echo "  9) Visualizza ultimo report Backend"
-    echo "  10) Visualizza ultimo report Frontend"
-    echo "  11) Confronta report (prima/dopo pulizia)"
-    echo "  12) Esporta report completo"
+    echo "  11) Visualizza ultimo report Backend"
+    echo "  12) Visualizza ultimo report Frontend"
+    echo "  13) Confronta report (prima/dopo pulizia)"
+    echo "  14) Esporta report completo"
     echo ""
     echo "🛠️  MANUTENZIONE:"
-    echo "  13) Aggiorna analizzatori"
-    echo "  14) Verifica integrità progetto"
-    echo "  15) Backup completo prima pulizia"
+    echo "  15) Aggiorna analizzatori"
+    echo "  16) Verifica integrità progetto"
+    echo "  17) Backup completo prima pulizia"
     echo ""
     echo "❓ AIUTO:"
-    echo "  16) Documentazione"
-    echo "  17) Esempi utilizzo"
+    echo "  18) Documentazione"
+    echo "  19) Esempi utilizzo"
     echo ""
     echo "  0) Esci"
     echo ""
-    echo -n "Scegli un'opzione (0-17): "
+    echo -n "Scegli un'opzione (0-19): "
 }
 
 # Funzione analisi backend
@@ -367,6 +369,86 @@ show_documentation() {
     read -r
 }
 
+# Funzione eliminazione individuale
+cleanup_individual() {
+    print_header "🎯 ELIMINAZIONE INDIVIDUALE"
+    echo ""
+    
+    if [ ! -f "$TOOLS_DIR/cleanup_individual.sh" ]; then
+        print_error "Script eliminazione individuale non trovato"
+        return 1
+    fi
+    
+    print_info "Avviando modalità eliminazione individuale..."
+    echo ""
+    
+    cd "$TOOLS_DIR" || {
+        print_error "Impossibile accedere a $TOOLS_DIR"
+        return 1
+    }
+    
+    if [ -x "cleanup_individual.sh" ]; then
+        "./cleanup_individual.sh"
+    else
+        chmod +x "cleanup_individual.sh"
+        "./cleanup_individual.sh"
+    fi
+}
+
+# Funzione eliminazione di massa
+cleanup_mass() {
+    print_header "🔥 ELIMINAZIONE DI MASSA"
+    echo ""
+    
+    if [ ! -f "$TOOLS_DIR/cleanup_mass.sh" ]; then
+        print_error "Script eliminazione di massa non trovato"
+        return 1
+    fi
+    
+    print_warning "ATTENZIONE: Eliminazione automatica di tutti i file inutilizzati!"
+    echo ""
+    print_info "Avviando modalità eliminazione di massa..."
+    echo ""
+    
+    cd "$TOOLS_DIR" || {
+        print_error "Impossibile accedere a $TOOLS_DIR"
+        return 1
+    }
+    
+    if [ -x "cleanup_mass.sh" ]; then
+        "./cleanup_mass.sh"
+    else
+        chmod +x "cleanup_mass.sh"
+        "./cleanup_mass.sh"
+    fi
+}
+
+# Funzione gestione file temporanei/backup
+cleanup_temp_backup() {
+    print_header "🧹 GESTIONE FILE TEMPORANEI E BACKUP"
+    echo ""
+    
+    if [ ! -f "$TOOLS_DIR/cleanup_temp_backup.sh" ]; then
+        print_error "Script gestione temp/backup non trovato"
+        return 1
+    fi
+    
+    print_info "Avviando gestione file temporanei e backup..."
+    echo ""
+    
+    cd "$TOOLS_DIR" || {
+        print_error "Impossibile accedere a $TOOLS_DIR"
+        return 1
+    }
+    
+    if [ -x "cleanup_temp_backup.sh" ]; then
+        "./cleanup_temp_backup.sh"
+    else
+        chmod +x "cleanup_temp_backup.sh"
+        "./cleanup_temp_backup.sh"
+    fi
+}
+
 # Menu loop principale
 main_loop() {
     while true; do
@@ -392,28 +474,30 @@ main_loop() {
                 echo ""
                 cleanup_frontend
                 ;;
-            8) find_backup_files ;;
-            9) show_report "backend" ;;
-            10) show_report "frontend" ;;
-            11) 
+            8) cleanup_individual ;;
+            9) cleanup_mass ;;
+            10) cleanup_temp_backup ;;
+            11) show_report "backend" ;;
+            12) show_report "frontend" ;;
+            13) 
                 print_info "Funzione confronto report in sviluppo..."
                 ;;
-            12) 
+            14) 
                 print_info "Export report completo in sviluppo..."
                 ;;
-            13) 
+            15) 
                 print_info "Aggiornamento analizzatori in sviluppo..."
                 ;;
-            14) 
+            16) 
                 print_info "Verifica integrità in sviluppo..."
                 ;;
-            15) 
+            17) 
                 print_info "Creando backup Git..."
                 git add -A && git commit -m "🧹 Backup automatico cleaner $(date)"
                 print_success "Backup creato!"
                 ;;
-            16) show_documentation ;;
-            17) 
+            18) show_documentation ;;
+            19) 
                 print_info "Esempi utilizzo disponibili nella documentazione"
                 ;;
             0) 

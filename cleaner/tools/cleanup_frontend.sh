@@ -41,60 +41,110 @@ OPTIONAL_FILES=(
     "src/components/FileUpload_new.tsx"
 )
 
-echo "📋 FASE 1 - File sicuri da rimuovere:"
+# Controlla quali file esistono effettivamente per Fase 1
+EXISTING_SAFE_FILES=()
 TOTAL_LINES_SAFE=0
 for file in "${FILES_TO_REMOVE[@]}"; do
     if [ -f "$file" ]; then
+        EXISTING_SAFE_FILES+=("$file")
         LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
-        echo "  ✓ $file ($LINES righe)"
         TOTAL_LINES_SAFE=$((TOTAL_LINES_SAFE + LINES))
-    else
-        echo "  ⚠️  $file (non trovato)"
     fi
 done
 
-echo ""
-echo "📋 FASE 2 - File opzionali da rimuovere:"
+# Controlla file opzionali
+EXISTING_OPTIONAL_FILES=()
 TOTAL_LINES_OPTIONAL=0
 for file in "${OPTIONAL_FILES[@]}"; do
     if [ -f "$file" ]; then
+        EXISTING_OPTIONAL_FILES+=("$file")
         LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
-        echo "  ⚪ $file ($LINES righe)"
         TOTAL_LINES_OPTIONAL=$((TOTAL_LINES_OPTIONAL + LINES))
-    else
-        echo "  ⚠️  $file (non trovato)"
     fi
 done
 
+# Se non ci sono file da rimuovere, esci subito
+if [ ${#EXISTING_SAFE_FILES[@]} -eq 0 ] && [ ${#EXISTING_OPTIONAL_FILES[@]} -eq 0 ]; then
+    echo "✅ FRONTEND GIÀ PULITO!"
+    echo "======================"
+    echo "Non ci sono file inutilizzati da rimuovere."
+    echo "Tutti i file target sono già stati eliminati in precedenza."
+    echo ""
+    echo "💡 Per una nuova analisi completa, usa:"
+    echo "   node ../cleaner/tools/analyze_react_imports.cjs src/"
+    exit 0
+fi
+
+if [ ${#EXISTING_SAFE_FILES[@]} -gt 0 ]; then
+    echo "📋 FASE 1 - File sicuri trovati da rimuovere:"
+    for file in "${EXISTING_SAFE_FILES[@]}"; do
+        LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
+        echo "  ✓ $file ($LINES righe)"
+    done
+    echo ""
+fi
+
+if [ ${#EXISTING_OPTIONAL_FILES[@]} -gt 0 ]; then
+    echo "📋 FASE 2 - File opzionali trovati:"
+    for file in "${EXISTING_OPTIONAL_FILES[@]}"; do
+        LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
+        echo "  ⚪ $file ($LINES righe)"
+    done
+    echo ""
+fi
+
 echo ""
 echo "📊 Riepilogo:"
-echo "   • Fase 1 (sicura): ${#FILES_TO_REMOVE[@]} file, ~$TOTAL_LINES_SAFE righe"
-echo "   • Fase 2 (opzionale): ${#OPTIONAL_FILES[@]} file, ~$TOTAL_LINES_OPTIONAL righe"
+echo "   • Fase 1 (sicura): ${#EXISTING_SAFE_FILES[@]} file, ~$TOTAL_LINES_SAFE righe"
+echo "   • Fase 2 (opzionale): ${#EXISTING_OPTIONAL_FILES[@]} file, ~$TOTAL_LINES_OPTIONAL righe"
 echo ""
 
-# Selezione fase
-echo "🤔 Quale fase eseguire?"
-echo "   1) Solo Fase 1 (sicura - file vuoti/icone non usate)"
-echo "   2) Entrambe le fasi (include backup FileUpload)"
-echo "   3) Annulla"
-echo ""
-read -p "Scegli (1/2/3): " -n 1 -r
-echo
+# Selezione fase basata sui file disponibili
+if [ ${#EXISTING_SAFE_FILES[@]} -gt 0 ] && [ ${#EXISTING_OPTIONAL_FILES[@]} -gt 0 ]; then
+    # Entrambe le fasi disponibili
+    echo "🤔 Quale fase eseguire?"
+    echo "   1) Solo Fase 1 (sicura - ${#EXISTING_SAFE_FILES[@]} file)"
+    echo "   2) Entrambe le fasi (include ${#EXISTING_OPTIONAL_FILES[@]} file backup)"
+    echo "   3) Annulla"
+    echo ""
+    read -p "Scegli (1/2/3): " -n 1 -r
+    echo
 
-case $REPLY in
-    1)
-        EXECUTE_PHASE2=false
-        echo "✅ Eseguirò solo la Fase 1 (sicura)"
-        ;;
-    2)
-        EXECUTE_PHASE2=true
-        echo "✅ Eseguirò entrambe le fasi"
-        ;;
-    3|*)
+    case $REPLY in
+        1)
+            EXECUTE_PHASE2=false
+            echo "✅ Eseguirò solo la Fase 1 (sicura)"
+            ;;
+        2)
+            EXECUTE_PHASE2=true
+            echo "✅ Eseguirò entrambe le fasi"
+            ;;
+        3|*)
+            echo "❌ Operazione annullata"
+            exit 0
+            ;;
+    esac
+elif [ ${#EXISTING_SAFE_FILES[@]} -gt 0 ]; then
+    # Solo fase 1 disponibile
+    echo "🤔 Procedere con la pulizia dei ${#EXISTING_SAFE_FILES[@]} file sicuri?"
+    read -p "Continuare? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "❌ Operazione annullata"
         exit 0
-        ;;
-esac
+    fi
+    EXECUTE_PHASE2=false
+elif [ ${#EXISTING_OPTIONAL_FILES[@]} -gt 0 ]; then
+    # Solo fase 2 disponibile
+    echo "🤔 Procedere con la pulizia dei ${#EXISTING_OPTIONAL_FILES[@]} file backup?"
+    read -p "Continuare? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "❌ Operazione annullata"
+        exit 0
+    fi
+    EXECUTE_PHASE2=true
+fi
 
 echo ""
 echo "🚀 Avvio pulizia..."
@@ -109,32 +159,28 @@ else
 fi
 
 # FASE 1: Rimuovi file sicuri
-echo ""
-echo "🗑️  FASE 1 - Rimozione file sicuri..."
-REMOVED_SAFE=0
-for file in "${FILES_TO_REMOVE[@]}"; do
-    if [ -f "$file" ]; then
+if [ ${#EXISTING_SAFE_FILES[@]} -gt 0 ]; then
+    echo ""
+    echo "🗑️  FASE 1 - Rimozione file sicuri..."
+    REMOVED_SAFE=0
+    for file in "${EXISTING_SAFE_FILES[@]}"; do
         echo "🗑️  Rimuovo $file..."
         rm "$file"
         REMOVED_SAFE=$((REMOVED_SAFE + 1))
-    else
-        echo "⏩ $file già rimosso"
-    fi
-done
+    done
+else
+    REMOVED_SAFE=0
+fi
 
 # FASE 2: Rimuovi file opzionali (se richiesto)
 REMOVED_OPTIONAL=0
-if [ "$EXECUTE_PHASE2" = true ]; then
+if [ "$EXECUTE_PHASE2" = true ] && [ ${#EXISTING_OPTIONAL_FILES[@]} -gt 0 ]; then
     echo ""
     echo "🗑️  FASE 2 - Rimozione file opzionali..."
-    for file in "${OPTIONAL_FILES[@]}"; do
-        if [ -f "$file" ]; then
-            echo "🗑️  Rimuovo $file..."
-            rm "$file"
-            REMOVED_OPTIONAL=$((REMOVED_OPTIONAL + 1))
-        else
-            echo "⏩ $file già rimosso"
-        fi
+    for file in "${EXISTING_OPTIONAL_FILES[@]}"; do
+        echo "🗑️  Rimuovo $file..."
+        rm "$file"
+        REMOVED_OPTIONAL=$((REMOVED_OPTIONAL + 1))
     done
 fi
 

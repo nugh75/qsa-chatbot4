@@ -38,24 +38,35 @@ FILES_TO_REMOVE=(
     "app/deps.py"
 )
 
-echo "📋 File da rimuovere:"
+# Controlla quali file esistono effettivamente
+EXISTING_FILES=()
 TOTAL_LINES=0
 for file in "${FILES_TO_REMOVE[@]}"; do
     if [ -f "$file" ]; then
+        EXISTING_FILES+=("$file")
         LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
-        echo "  ✓ $file ($LINES righe)"
         TOTAL_LINES=$((TOTAL_LINES + LINES))
-    else
-        echo "  ⏩ $file (già rimosso)"
     fi
 done
-echo ""
 
-if [ $TOTAL_LINES -eq 0 ]; then
-    echo "✅ Tutti i file sono già stati rimossi!"
-    echo "   Nessuna azione necessaria."
+# Se non ci sono file da rimuovere, esci subito
+if [ ${#EXISTING_FILES[@]} -eq 0 ]; then
+    echo "✅ BACKEND GIÀ PULITO!"
+    echo "====================="
+    echo "Non ci sono file inutilizzati da rimuovere."
+    echo "Tutti i file target sono già stati eliminati in precedenza."
+    echo ""
+    echo "💡 Per una nuova analisi completa, usa:"
+    echo "   python ../cleaner/tools/analyze_imports.py app/"
     exit 0
 fi
+
+echo "📋 File trovati da rimuovere:"
+for file in "${EXISTING_FILES[@]}"; do
+    LINES=$(wc -l < "$file" 2>/dev/null || echo "0")
+    echo "  ✓ $file ($LINES righe)"
+done
+echo ""
 
 echo "📊 Totale righe da eliminare: $TOTAL_LINES"
 echo ""
@@ -80,16 +91,12 @@ else
     git add -A && git commit -m "🧹 Backup automatico prima pulizia backend" || echo "  (commit fallito, continuo)"
 fi
 
-# Rimuovi file
+# Rimuovi file esistenti
 REMOVED_COUNT=0
-for file in "${FILES_TO_REMOVE[@]}"; do
-    if [ -f "$file" ]; then
-        echo "🗑️  Rimuovo $file..."
-        rm "$file"
-        REMOVED_COUNT=$((REMOVED_COUNT + 1))
-    else
-        echo "⏩ $file già rimosso"
-    fi
+for file in "${EXISTING_FILES[@]}"; do
+    echo "🗑️  Rimuovo $file..."
+    rm "$file"
+    REMOVED_COUNT=$((REMOVED_COUNT + 1))
 done
 
 echo ""

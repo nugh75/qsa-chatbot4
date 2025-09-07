@@ -1,0 +1,1565 @@
+{
+  "directory": "/mnt/git/qsa-chatbot4/frontend/src",
+  "analysis_date": "2025-09-07T08:32:50.304Z",
+  "summary": {
+    "total_files": 87,
+    "unused_files_count": 2,
+    "unused_files": [
+      "components/icons/ArenaIcon.tsx",
+      "components/icons/GuideIcon.tsx"
+    ]
+  },
+  "files": {
+    "AdminPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/AdminPanel.tsx",
+      "extension": ".tsx",
+      "lines": 866,
+      "size": 39274,
+      "imports": [
+        "components/UserManagement.tsx",
+        "components/TTSProvidersPanel.tsx",
+        "components/WhisperPanel.tsx",
+        "components/MemoryPanel.tsx",
+        "components/UsagePanel.tsx",
+        "components/SystemPromptsPanel.tsx",
+        "components/SummaryPromptsPanel.tsx",
+        "components/PersonalitiesPanel.tsx",
+        "components/APIDocsPanel.tsx",
+        "components/RagDocumentsPanel.tsx",
+        "components/FormsBuilderPanel.tsx",
+        "components/DataTablesPanel.tsx",
+        "components/ModelsManagerPanel.tsx",
+        "components/WhisperHealthPanel.tsx",
+        "components/PipelinePanel.tsx",
+        "components/EndpointsExplorer.tsx",
+        "components/WelcomeGuidesPanel.tsx",
+        "components/MCPPanel.tsx",
+        "utils/authFetch.ts",
+        "components/FooterSettingsPanel.tsx",
+        "apiService.ts",
+        "types/admin.ts",
+        "utils/remarkSlugLocal.ts",
+        "components/BackupPanel.tsx",
+        "components/DatabaseInfoPanel.tsx"
+      ],
+      "imported_by": [
+        "App.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "react-markdown",
+        "remark-gfm"
+      ],
+      "is_unused": false
+    },
+    "App.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/App.tsx",
+      "extension": ".tsx",
+      "lines": 2196,
+      "size": 104068,
+      "imports": [
+        "types/admin.ts",
+        "types/message.ts",
+        "components/ChatAvatar.tsx",
+        "components/DownloadChatButton.tsx",
+        "components/SmallIcons.tsx",
+        "components/ConversationSidebar.tsx",
+        "components/ConversationSearch.tsx",
+        "components/LoginDialog.tsx",
+        "components/FileUpload.tsx",
+        "components/FileManagerCompact.tsx",
+        "components/ChatToolbar.tsx",
+        "components/FormRunnerDialog.tsx",
+        "components/VoiceRecordingAnimation.tsx",
+        "contexts/AuthContext.tsx",
+        "types/api.ts",
+        "AdminPanel.tsx",
+        "theme.tsx",
+        "components/RAGContextSelector.tsx",
+        "SurveyForm.tsx",
+        "SurveyResults.tsx",
+        "utils/authFetch.ts",
+        "utils/markdownPipeline.ts",
+        "utils/ragPreview.ts",
+        "components/MobileChatBar.tsx",
+        "components/HeaderBar.tsx",
+        "components/SiteFooter.tsx",
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "react-markdown",
+        "remark-breaks",
+        "remark-gfm"
+      ],
+      "is_unused": false
+    },
+    "AppRouter.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/AppRouter.tsx",
+      "extension": ".tsx",
+      "lines": 1,
+      "size": 0,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "Arena.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/Arena.tsx",
+      "extension": ".tsx",
+      "lines": 263,
+      "size": 10350,
+      "imports": [
+        "contexts/AuthContext.tsx"
+      ],
+      "imported_by": [
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "AuthPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/AuthPanel.tsx",
+      "extension": ".tsx",
+      "lines": 278,
+      "size": 7992,
+      "imports": [
+        "apiService.ts",
+        "crypto.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "FeedbackStats.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/FeedbackStats.tsx",
+      "extension": ".tsx",
+      "lines": 1,
+      "size": 0,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "SurveyForm.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/SurveyForm.tsx",
+      "extension": ".tsx",
+      "lines": 202,
+      "size": 10193,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "SurveyResults.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/SurveyResults.tsx",
+      "extension": ".tsx",
+      "lines": 897,
+      "size": 52335,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "apiService.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/apiService.ts",
+      "extension": ".ts",
+      "lines": 1079,
+      "size": 50973,
+      "imports": [
+        "crypto.ts",
+        "types/admin.ts",
+        "types/message.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx",
+        "App.tsx",
+        "AuthPanel.tsx",
+        "components/AdminPanel.tsx",
+        "components/BackupPanel.tsx",
+        "components/ConversationSearch.tsx",
+        "components/ConversationSidebar.tsx",
+        "components/DatabaseInfoPanel.tsx",
+        "components/DebugPipelineTest.tsx",
+        "components/DeviceManager.tsx",
+        "components/DownloadChatButton.tsx",
+        "components/EndpointsPanel.tsx",
+        "components/FormRunnerDialog.tsx",
+        "components/FormsBuilderPanel.tsx",
+        "components/LoginDialog.tsx",
+        "components/MigrationWizard.tsx",
+        "components/PipelinePanel.tsx",
+        "components/RAGContextSelector.tsx",
+        "components/RagDocumentsPanel.tsx",
+        "components/SummaryPromptsPanel.tsx",
+        "components/UsagePanel.tsx",
+        "components/UserManagement.tsx",
+        "components/WelcomeGuidesPanel.tsx",
+        "components/WhisperHealthPanel.tsx",
+        "components/WhisperPanel.tsx",
+        "components/WhisperRecorder.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "components/APIDocsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/APIDocsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 138,
+      "size": 5628,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/AdminPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/AdminPanel.tsx",
+      "extension": ".tsx",
+      "lines": 1833,
+      "size": 66857,
+      "imports": [
+        "utils/remarkSlugLocal.ts",
+        "utils/markdownPipeline.ts",
+        "apiService.ts",
+        "components/RagDocumentsPanel.tsx",
+        "components/AdminUserManagement.tsx"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "react-markdown",
+        "remark-gfm",
+        "date-fns"
+      ],
+      "is_unused": false
+    },
+    "components/AdminUserManagement.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/AdminUserManagement.tsx",
+      "extension": ".tsx",
+      "lines": 422,
+      "size": 13650,
+      "imports": [],
+      "imported_by": [
+        "components/AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/BackupPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/BackupPanel.tsx",
+      "extension": ".tsx",
+      "lines": 559,
+      "size": 31428,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/ChatAvatar.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ChatAvatar.tsx",
+      "extension": ".tsx",
+      "lines": 18,
+      "size": 655,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "@mui/material",
+        "react"
+      ],
+      "is_unused": false
+    },
+    "components/ChatToolbar.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ChatToolbar.tsx",
+      "extension": ".tsx",
+      "lines": 120,
+      "size": 3019,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/ConversationSearch.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ConversationSearch.tsx",
+      "extension": ".tsx",
+      "lines": 568,
+      "size": 18305,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "date-fns"
+      ],
+      "is_unused": false
+    },
+    "components/ConversationSidebar.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ConversationSidebar.tsx",
+      "extension": ".tsx",
+      "lines": 477,
+      "size": 15745,
+      "imports": [
+        "apiService.ts",
+        "components/CryptoUnlockDialog.tsx",
+        "contexts/AuthContext.tsx"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/CryptoUnlockDialog.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/CryptoUnlockDialog.tsx",
+      "extension": ".tsx",
+      "lines": 36,
+      "size": 1228,
+      "imports": [
+        "crypto.ts",
+        "contexts/AuthContext.tsx"
+      ],
+      "imported_by": [
+        "components/ConversationSidebar.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/DataTablesPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/DataTablesPanel.tsx",
+      "extension": ".tsx",
+      "lines": 414,
+      "size": 19548,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/DatabaseInfoPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/DatabaseInfoPanel.tsx",
+      "extension": ".tsx",
+      "lines": 704,
+      "size": 37764,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/DebugPipelineTest.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/DebugPipelineTest.tsx",
+      "extension": ".tsx",
+      "lines": 95,
+      "size": 2869,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/DeviceManager.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/DeviceManager.tsx",
+      "extension": ".tsx",
+      "lines": 364,
+      "size": 11488,
+      "imports": [
+        "apiService.ts",
+        "crypto.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/DownloadChatButton.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/DownloadChatButton.tsx",
+      "extension": ".tsx",
+      "lines": 89,
+      "size": 3552,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "@mui/material",
+        "@mui/icons-material",
+        "react"
+      ],
+      "is_unused": false
+    },
+    "components/EmbeddingModelSelector.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/EmbeddingModelSelector.tsx",
+      "extension": ".tsx",
+      "lines": 1,
+      "size": 0,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "components/EndpointsExplorer.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/EndpointsExplorer.tsx",
+      "extension": ".tsx",
+      "lines": 205,
+      "size": 11004,
+      "imports": [],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/EndpointsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/EndpointsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 91,
+      "size": 3910,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/FeedbackResults.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FeedbackResults.tsx",
+      "extension": ".tsx",
+      "lines": 1,
+      "size": 0,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "components/FeedbackSurvey.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FeedbackSurvey.tsx",
+      "extension": ".tsx",
+      "lines": 1,
+      "size": 0,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "components/FileManager.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FileManager.tsx",
+      "extension": ".tsx",
+      "lines": 276,
+      "size": 7597,
+      "imports": [
+        "components/FileUpload.tsx",
+        "utils/authFetch.ts",
+        "components/FilePreview.tsx"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FileManagerCompact.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FileManagerCompact.tsx",
+      "extension": ".tsx",
+      "lines": 282,
+      "size": 7775,
+      "imports": [
+        "components/FileUpload.tsx",
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FilePreview.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FilePreview.tsx",
+      "extension": ".tsx",
+      "lines": 141,
+      "size": 4072,
+      "imports": [
+        "components/FileUpload.tsx"
+      ],
+      "imported_by": [
+        "components/FileManager.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FileUpload.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FileUpload.tsx",
+      "extension": ".tsx",
+      "lines": 246,
+      "size": 7225,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "App.tsx",
+        "components/FileManager.tsx",
+        "components/FileManagerCompact.tsx",
+        "components/FilePreview.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FileUpload_new.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FileUpload_new.tsx",
+      "extension": ".tsx",
+      "lines": 243,
+      "size": 7059,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FileUpload_old.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FileUpload_old.tsx",
+      "extension": ".tsx",
+      "lines": 229,
+      "size": 6598,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/FooterSettingsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FooterSettingsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 121,
+      "size": 6274,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/FormRunnerDialog.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FormRunnerDialog.tsx",
+      "extension": ".tsx",
+      "lines": 162,
+      "size": 6491,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/FormsBuilderPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/FormsBuilderPanel.tsx",
+      "extension": ".tsx",
+      "lines": 151,
+      "size": 8168,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/HeaderBar.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/HeaderBar.tsx",
+      "extension": ".tsx",
+      "lines": 134,
+      "size": 7688,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/LoginDialog.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/LoginDialog.tsx",
+      "extension": ".tsx",
+      "lines": 498,
+      "size": 15739,
+      "imports": [
+        "apiService.ts",
+        "crypto.ts"
+      ],
+      "imported_by": [
+        "App.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/MCPPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/MCPPanel.tsx",
+      "extension": ".tsx",
+      "lines": 358,
+      "size": 11535,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/MemoryPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/MemoryPanel.tsx",
+      "extension": ".tsx",
+      "lines": 124,
+      "size": 5818,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/MigrationWizard.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/MigrationWizard.tsx",
+      "extension": ".tsx",
+      "lines": 552,
+      "size": 19279,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/MobileChatBar.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/MobileChatBar.tsx",
+      "extension": ".tsx",
+      "lines": 92,
+      "size": 3321,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/ModelProviderSection.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ModelProviderSection.tsx",
+      "extension": ".tsx",
+      "lines": 124,
+      "size": 4864,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "components/ModelProvidersPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/ModelProvidersPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ModelProvidersPanel.tsx",
+      "extension": ".tsx",
+      "lines": 39,
+      "size": 1520,
+      "imports": [
+        "components/ModelProviderSection.tsx",
+        "utils/authFetch.ts",
+        "types/admin.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/ModelsManagerPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/ModelsManagerPanel.tsx",
+      "extension": ".tsx",
+      "lines": 106,
+      "size": 4960,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/PersonalitiesPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/PersonalitiesPanel.tsx",
+      "extension": ".tsx",
+      "lines": 917,
+      "size": 45276,
+      "imports": [
+        "utils/authFetch.ts",
+        "types/admin.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/PipelinePanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/PipelinePanel.tsx",
+      "extension": ".tsx",
+      "lines": 590,
+      "size": 33583,
+      "imports": [
+        "utils/remarkSlugLocal.ts",
+        "apiService.ts",
+        "utils/markdownPipeline.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "react-markdown",
+        "remark-gfm"
+      ],
+      "is_unused": false
+    },
+    "components/RAGContextSelector.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/RAGContextSelector.tsx",
+      "extension": ".tsx",
+      "lines": 320,
+      "size": 9672,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material",
+        "date-fns"
+      ],
+      "is_unused": false
+    },
+    "components/RagDocumentsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/RagDocumentsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 727,
+      "size": 45201,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx",
+        "components/AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SimpleAdminPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SimpleAdminPanel.tsx",
+      "extension": ".tsx",
+      "lines": 732,
+      "size": 25418,
+      "imports": [
+        "components/WhisperManager.tsx"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SimpleSearch.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SimpleSearch.tsx",
+      "extension": ".tsx",
+      "lines": 400,
+      "size": 12202,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SiteFooter.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SiteFooter.tsx",
+      "extension": ".tsx",
+      "lines": 155,
+      "size": 6413,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SmallIcons.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SmallIcons.tsx",
+      "extension": ".tsx",
+      "lines": 72,
+      "size": 3981,
+      "imports": [],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [
+        "react"
+      ],
+      "is_unused": false
+    },
+    "components/SummaryPromptsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SummaryPromptsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 258,
+      "size": 12619,
+      "imports": [
+        "utils/authFetch.ts",
+        "types/admin.ts",
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SummarySettingsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SummarySettingsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 65,
+      "size": 2997,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/SurveyLink.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SurveyLink.tsx",
+      "extension": ".tsx",
+      "lines": 14,
+      "size": 397,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/SystemPromptsPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/SystemPromptsPanel.tsx",
+      "extension": ".tsx",
+      "lines": 111,
+      "size": 5548,
+      "imports": [
+        "utils/authFetch.ts",
+        "types/admin.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/TTSProviderSection.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/TTSProviderSection.tsx",
+      "extension": ".tsx",
+      "lines": 93,
+      "size": 3813,
+      "imports": [
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "components/TTSProvidersPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/TTSProvidersPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/TTSProvidersPanel.tsx",
+      "extension": ".tsx",
+      "lines": 39,
+      "size": 1499,
+      "imports": [
+        "components/TTSProviderSection.tsx",
+        "types/admin.ts",
+        "utils/authFetch.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/UsagePanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/UsagePanel.tsx",
+      "extension": ".tsx",
+      "lines": 197,
+      "size": 10140,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/UserManagement.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/UserManagement.tsx",
+      "extension": ".tsx",
+      "lines": 198,
+      "size": 9557,
+      "imports": [
+        "utils/authFetch.ts",
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/VoiceRecordingAnimation.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/VoiceRecordingAnimation.tsx",
+      "extension": ".tsx",
+      "lines": 87,
+      "size": 1669,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "components/WhisperRecorder.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "components/WelcomeGuidesPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/WelcomeGuidesPanel.tsx",
+      "extension": ".tsx",
+      "lines": 128,
+      "size": 7076,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/WhisperHealthPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/WhisperHealthPanel.tsx",
+      "extension": ".tsx",
+      "lines": 84,
+      "size": 4405,
+      "imports": [
+        "apiService.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/WhisperManager.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/WhisperManager.tsx",
+      "extension": ".tsx",
+      "lines": 349,
+      "size": 11363,
+      "imports": [],
+      "imported_by": [
+        "components/SimpleAdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/WhisperPanel.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/WhisperPanel.tsx",
+      "extension": ".tsx",
+      "lines": 248,
+      "size": 11706,
+      "imports": [
+        "apiService.ts",
+        "components/WhisperRecorder.tsx"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/WhisperRecorder.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/WhisperRecorder.tsx",
+      "extension": ".tsx",
+      "lines": 127,
+      "size": 4805,
+      "imports": [
+        "apiService.ts",
+        "components/VoiceRecordingAnimation.tsx"
+      ],
+      "imported_by": [
+        "components/WhisperPanel.tsx"
+      ],
+      "external_imports": [
+        "react",
+        "@mui/material",
+        "@mui/icons-material"
+      ],
+      "is_unused": false
+    },
+    "components/icons/ArenaIcon.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/icons/ArenaIcon.tsx",
+      "extension": ".tsx",
+      "lines": 13,
+      "size": 436,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": true
+    },
+    "components/icons/GuideIcon.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/components/icons/GuideIcon.tsx",
+      "extension": ".tsx",
+      "lines": 11,
+      "size": 538,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "@mui/material"
+      ],
+      "is_unused": true
+    },
+    "contexts/AuthContext.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/contexts/AuthContext.tsx",
+      "extension": ".tsx",
+      "lines": 171,
+      "size": 5235,
+      "imports": [
+        "crypto.ts",
+        "types/api.ts"
+      ],
+      "imported_by": [
+        "App.tsx",
+        "Arena.tsx",
+        "components/ConversationSidebar.tsx",
+        "components/CryptoUnlockDialog.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "react"
+      ],
+      "is_unused": false
+    },
+    "crypto.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/crypto.ts",
+      "extension": ".ts",
+      "lines": 290,
+      "size": 8938,
+      "imports": [],
+      "imported_by": [
+        "AuthPanel.tsx",
+        "apiService.ts",
+        "components/CryptoUnlockDialog.tsx",
+        "components/DeviceManager.tsx",
+        "components/LoginDialog.tsx",
+        "contexts/AuthContext.tsx",
+        "utils/authFetch.ts"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "main.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/main.tsx",
+      "extension": ".tsx",
+      "lines": 55,
+      "size": 2050,
+      "imports": [
+        "App.tsx",
+        "AdminPanel.tsx",
+        "contexts/AuthContext.tsx",
+        "theme.tsx",
+        "components/LoginDialog.tsx",
+        "Arena.tsx",
+        "components/SiteFooter.tsx",
+        "SurveyResults.tsx"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "react",
+        "react-dom",
+        "react-router-dom",
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "theme.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/theme.ts",
+      "extension": ".ts",
+      "lines": 37,
+      "size": 1417,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "theme.tsx": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/theme.tsx",
+      "extension": ".tsx",
+      "lines": 30,
+      "size": 772,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "main.tsx"
+      ],
+      "external_imports": [
+        "@mui/material"
+      ],
+      "is_unused": false
+    },
+    "types/admin.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/types/admin.ts",
+      "extension": ".ts",
+      "lines": 85,
+      "size": 3287,
+      "imports": [],
+      "imported_by": [
+        "AdminPanel.tsx",
+        "App.tsx",
+        "apiService.ts",
+        "components/ModelProvidersPanel.tsx",
+        "components/PersonalitiesPanel.tsx",
+        "components/SummaryPromptsPanel.tsx",
+        "components/SystemPromptsPanel.tsx",
+        "components/TTSProvidersPanel.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "types/api.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/types/api.ts",
+      "extension": ".ts",
+      "lines": 92,
+      "size": 2983,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "contexts/AuthContext.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "types/message.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/types/message.ts",
+      "extension": ".ts",
+      "lines": 25,
+      "size": 913,
+      "imports": [],
+      "imported_by": [
+        "App.tsx",
+        "apiService.ts"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "types/remark-breaks.d.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/types/remark-breaks.d.ts",
+      "extension": ".ts",
+      "lines": 6,
+      "size": 142,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "unified"
+      ],
+      "is_unused": false
+    },
+    "types/remark-slug.d.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/types/remark-slug.d.ts",
+      "extension": ".ts",
+      "lines": 6,
+      "size": 130,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "unified"
+      ],
+      "is_unused": false
+    },
+    "utils/authFetch.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/authFetch.ts",
+      "extension": ".ts",
+      "lines": 38,
+      "size": 1210,
+      "imports": [
+        "crypto.ts"
+      ],
+      "imported_by": [
+        "AdminPanel.tsx",
+        "App.tsx",
+        "components/APIDocsPanel.tsx",
+        "components/DataTablesPanel.tsx",
+        "components/FileManager.tsx",
+        "components/FileManagerCompact.tsx",
+        "components/FileUpload.tsx",
+        "components/FileUpload_new.tsx",
+        "components/FooterSettingsPanel.tsx",
+        "components/MCPPanel.tsx",
+        "components/MemoryPanel.tsx",
+        "components/ModelProviderSection.tsx",
+        "components/ModelProvidersPanel.tsx",
+        "components/ModelsManagerPanel.tsx",
+        "components/PersonalitiesPanel.tsx",
+        "components/SummaryPromptsPanel.tsx",
+        "components/SummarySettingsPanel.tsx",
+        "components/SystemPromptsPanel.tsx",
+        "components/TTSProviderSection.tsx",
+        "components/TTSProvidersPanel.tsx",
+        "components/UserManagement.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "utils/docLinks.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/docLinks.ts",
+      "extension": ".ts",
+      "lines": 34,
+      "size": 1131,
+      "imports": [],
+      "imported_by": [
+        "utils/markdownPipeline.ts",
+        "utils/ragPreview.ts"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "utils/markdownPipeline.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/markdownPipeline.ts",
+      "extension": ".ts",
+      "lines": 153,
+      "size": 5154,
+      "imports": [
+        "utils/markdownSanitizer.ts",
+        "utils/docLinks.ts"
+      ],
+      "imported_by": [
+        "App.tsx",
+        "components/AdminPanel.tsx",
+        "components/PipelinePanel.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "utils/markdownSanitizer.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/markdownSanitizer.ts",
+      "extension": ".ts",
+      "lines": 105,
+      "size": 3614,
+      "imports": [],
+      "imported_by": [
+        "utils/markdownPipeline.ts"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "utils/ragPreview.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/ragPreview.ts",
+      "extension": ".ts",
+      "lines": 40,
+      "size": 1595,
+      "imports": [
+        "utils/docLinks.ts"
+      ],
+      "imported_by": [
+        "App.tsx"
+      ],
+      "external_imports": [],
+      "is_unused": false
+    },
+    "utils/remarkSlugLocal.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/utils/remarkSlugLocal.ts",
+      "extension": ".ts",
+      "lines": 25,
+      "size": 844,
+      "imports": [],
+      "imported_by": [
+        "AdminPanel.tsx",
+        "components/AdminPanel.tsx",
+        "components/PipelinePanel.tsx"
+      ],
+      "external_imports": [
+        "unist-util-visit"
+      ],
+      "is_unused": false
+    },
+    "vite-env.d.ts": {
+      "full_path": "/mnt/git/qsa-chatbot4/frontend/src/vite-env.d.ts",
+      "extension": ".ts",
+      "lines": 9,
+      "size": 159,
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [],
+      "is_unused": false
+    }
+  },
+  "unused_files": [
+    {
+      "path": "components/icons/ArenaIcon.tsx",
+      "fullPath": "/mnt/git/qsa-chatbot4/frontend/src/components/icons/ArenaIcon.tsx",
+      "lines": 13,
+      "size": 436,
+      "confidence": 100
+    },
+    {
+      "path": "components/icons/GuideIcon.tsx",
+      "fullPath": "/mnt/git/qsa-chatbot4/frontend/src/components/icons/GuideIcon.tsx",
+      "lines": 11,
+      "size": 538,
+      "confidence": 100
+    }
+  ],
+  "errors": []
+}

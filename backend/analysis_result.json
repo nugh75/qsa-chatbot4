@@ -1,0 +1,1262 @@
+{
+  "directory": "/mnt/git/qsa-chatbot4/backend/app",
+  "analysis_date": "2025-09-07T09:52:54.010111",
+  "summary": {
+    "total_files": 63,
+    "unused_files_count": 22,
+    "unused_files": [
+      "config_backup.py",
+      "deps.py",
+      "device_sync_migration.py",
+      "embedding_manager.py",
+      "feedback.py",
+      "feedback_routes.py",
+      "file_processing_backup.py",
+      "file_processing_simple.py",
+      "file_processing_with_images.py",
+      "rag_admin.py",
+      "scripts/apply_postgres_core_schema.py",
+      "scripts/download_models.py",
+      "scripts/download_whisper_models.py",
+      "scripts/encrypt_existing_content.py",
+      "scripts/export_core_sqlite_to_pg.py",
+      "scripts/migrate_core_sqlite_to_postgres.py",
+      "scripts/migrate_personalities_json_to_pg.py",
+      "scripts/migrate_rag_sqlite_to_postgres.py",
+      "scripts/pg_create_missing_tables.py",
+      "scripts/test_config_backup_restore.py",
+      "scripts/test_config_status.py",
+      "scripts/test_summary_providers.py"
+    ]
+  },
+  "files": {
+    "embedding_manager.py": {
+      "module_name": "embedding_manager",
+      "imports": [
+        "embedding_providers"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "threading",
+        "typing",
+        "__future__",
+        "pathlib",
+        "time",
+        "json"
+      ]
+    },
+    "admin.py": {
+      "module_name": "admin",
+      "imports": [
+        "database",
+        "transcribe",
+        "data_tables",
+        "mcp_manager",
+        "file_processing",
+        "auth",
+        "data_tables_agent",
+        "tts",
+        "memory",
+        "prompts",
+        "logging_utils",
+        "llm",
+        "welcome_guides",
+        "mcp_servers",
+        "personalities",
+        "usage",
+        "rag",
+        "rag_engine"
+      ],
+      "imported_by": [
+        "data_tables_agent.py",
+        "conversation_routes.py",
+        "llm.py",
+        "main.py",
+        "chat.py",
+        "topic_router.py",
+        "tts.py"
+      ],
+      "external_imports": [
+        "csv",
+        "fastapi.staticfiles",
+        "fastapi.responses",
+        "datetime",
+        "glob",
+        "shutil",
+        "json",
+        "bcrypt",
+        "secrets",
+        "threading",
+        "httpx",
+        "pathlib",
+        "logging",
+        "string",
+        "io",
+        "re",
+        "hashlib",
+        "typing",
+        "zipfile",
+        "pydantic",
+        "fastapi",
+        "time",
+        "tempfile",
+        "traceback",
+        "TTS.api",
+        "sqlite3",
+        "os",
+        "asyncio",
+        "uuid"
+      ]
+    },
+    "memory.py": {
+      "module_name": "memory",
+      "imports": [],
+      "imported_by": [
+        "admin.py",
+        "chat.py"
+      ],
+      "external_imports": [
+        "pathlib",
+        "typing",
+        "time",
+        "json"
+      ]
+    },
+    "database.py": {
+      "module_name": "database",
+      "imports": [
+        "crypto_at_rest"
+      ],
+      "imported_by": [
+        "data_tables_agent.py",
+        "auth_routes.py",
+        "conversation_routes.py",
+        "chat.py",
+        "deps.py",
+        "queries_routes.py",
+        "data_tables.py",
+        "admin_panel.py",
+        "device_sync_migration.py",
+        "predefined_queries.py",
+        "search_routes.py",
+        "personalities.py",
+        "health_routes.py",
+        "auth.py",
+        "survey_routes.py",
+        "config_backup.py",
+        "admin.py",
+        "rag_engine.py",
+        "seed_admin.py",
+        "main.py",
+        "forms.py",
+        "escrow.py"
+      ],
+      "external_imports": [
+        "math",
+        "re",
+        "hashlib",
+        "typing",
+        "sqlite3",
+        "contextlib",
+        "psycopg2",
+        "datetime",
+        "os",
+        "pathlib",
+        "psycopg2.extras"
+      ]
+    },
+    "deps.py": {
+      "module_name": "deps",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "typing",
+        "__future__",
+        "fastapi"
+      ]
+    },
+    "scripts/migrate_core_sqlite_to_postgres.py": {
+      "module_name": "scripts.migrate_core_sqlite_to_postgres",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "typing",
+        "sqlite3",
+        "psycopg2",
+        "os",
+        "psycopg2.extras"
+      ]
+    },
+    "escrow.py": {
+      "module_name": "escrow",
+      "imports": [
+        "auth",
+        "database"
+      ],
+      "imported_by": [
+        "auth_routes.py"
+      ],
+      "external_imports": [
+        "cryptography.hazmat.primitives",
+        "cryptography.hazmat.primitives.kdf.pbkdf2",
+        "secrets",
+        "typing",
+        "os",
+        "cryptography.hazmat.primitives.ciphers",
+        "base64",
+        "cryptography.hazmat.primitives.asymmetric",
+        "json"
+      ]
+    },
+    "feedback.py": {
+      "module_name": "feedback",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "feedback_routes.py": {
+      "module_name": "feedback_routes",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "prompts.py": {
+      "module_name": "prompts",
+      "imports": [],
+      "imported_by": [
+        "conversation_routes.py",
+        "admin.py",
+        "main.py",
+        "chat.py",
+        "backup.py"
+      ],
+      "external_imports": [
+        "re",
+        "typing",
+        "pathlib",
+        "logging",
+        "shutil",
+        "json"
+      ]
+    },
+    "chat.py": {
+      "module_name": "chat",
+      "imports": [
+        "usage",
+        "database",
+        "data_tables",
+        "rag_routes",
+        "auth",
+        "data_tables_agent",
+        "admin",
+        "prompts",
+        "llm",
+        "memory",
+        "topic_router",
+        "personalities",
+        "logging_utils",
+        "rag",
+        "rag_engine"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "re",
+        "hashlib",
+        "importlib",
+        "typing",
+        "fastapi.responses",
+        "datetime",
+        "pydantic",
+        "fastapi",
+        "asyncio",
+        "os",
+        "time",
+        "uuid",
+        "json"
+      ]
+    },
+    "scripts/test_config_backup_restore.py": {
+      "module_name": "scripts.test_config_backup_restore",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "tempfile",
+        "httpx",
+        "os",
+        "asyncio",
+        "pathlib",
+        "sys",
+        "json"
+      ]
+    },
+    "seed_admin.py": {
+      "module_name": "seed_admin",
+      "imports": [
+        "password_utils",
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "argparse",
+        "__future__",
+        "os",
+        "hashlib"
+      ]
+    },
+    "mcp_servers.py": {
+      "module_name": "mcp_servers",
+      "imports": [],
+      "imported_by": [
+        "admin.py"
+      ],
+      "external_imports": [
+        "typing",
+        "subprocess",
+        "enum",
+        "__future__",
+        "pydantic",
+        "asyncio",
+        "pathlib",
+        "logging",
+        "json"
+      ]
+    },
+    "scripts/test_config_status.py": {
+      "module_name": "scripts.test_config_status",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "httpx",
+        "os",
+        "asyncio",
+        "pathlib",
+        "sys",
+        "json"
+      ]
+    },
+    "forms.py": {
+      "module_name": "forms",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "forms_routes.py"
+      ],
+      "external_imports": [
+        "re",
+        "typing",
+        "datetime",
+        "__future__",
+        "fastapi",
+        "uuid",
+        "json"
+      ]
+    },
+    "search_routes.py": {
+      "module_name": "search_routes",
+      "imports": [
+        "auth",
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "re",
+        "hashlib",
+        "typing",
+        "datetime",
+        "pydantic",
+        "fastapi"
+      ]
+    },
+    "scripts/download_models.py": {
+      "module_name": "scripts.download_models",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "argparse",
+        "whisper",
+        "torch",
+        "sentence_transformers",
+        "__future__",
+        "os",
+        "urllib.request",
+        "pathlib",
+        "sys"
+      ]
+    },
+    "__init__.py": {
+      "module_name": "__init__",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "auth.py": {
+      "module_name": "auth",
+      "imports": [
+        "password_utils",
+        "database"
+      ],
+      "imported_by": [
+        "queries_routes.py",
+        "file_processing_with_images.py",
+        "data_tables_routes.py",
+        "auth_routes.py",
+        "conversation_routes.py",
+        "admin.py",
+        "admin_panel.py",
+        "file_processing_backup.py",
+        "chat.py",
+        "backup.py",
+        "welcome_guides.py",
+        "search_routes.py",
+        "rag_routes.py",
+        "forms_routes.py",
+        "escrow.py"
+      ],
+      "external_imports": [
+        "hashlib",
+        "bcrypt",
+        "secrets",
+        "typing",
+        "cryptography.hazmat.primitives.ciphers",
+        "jwt",
+        "datetime",
+        "fastapi.security",
+        "fastapi",
+        "pydantic",
+        "os",
+        "base64"
+      ]
+    },
+    "tts.py": {
+      "module_name": "tts",
+      "imports": [
+        "admin",
+        "logging_utils"
+      ],
+      "imported_by": [
+        "admin.py",
+        "main.py"
+      ],
+      "external_imports": [
+        "soundfile",
+        "fastapi.responses",
+        "edge_tts",
+        "piper.voice",
+        "concurrent.futures",
+        "functools",
+        "httpx",
+        "base64",
+        "io",
+        "re",
+        "piper",
+        "fastapi",
+        "pydantic",
+        "wave",
+        "time",
+        "tempfile",
+        "TTS.api",
+        "os",
+        "asyncio",
+        "uuid"
+      ]
+    },
+    "data_tables.py": {
+      "module_name": "data_tables",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "data_tables_agent.py",
+        "admin.py",
+        "chat.py",
+        "data_tables_routes.py"
+      ],
+      "external_imports": [
+        "openpyxl",
+        "io",
+        "dataclasses",
+        "re",
+        "typing",
+        "csv",
+        "datetime",
+        "__future__",
+        "os",
+        "fastapi",
+        "pathlib",
+        "uuid",
+        "json"
+      ]
+    },
+    "rag_routes.py": {
+      "module_name": "rag_routes",
+      "imports": [
+        "file_processing",
+        "auth",
+        "logging_utils",
+        "personalities",
+        "rag_engine"
+      ],
+      "imported_by": [
+        "rag.py",
+        "chat.py",
+        "main.py"
+      ],
+      "external_imports": [
+        "io",
+        "mimetypes",
+        "typing",
+        "sqlite3",
+        "fastapi.responses",
+        "datetime",
+        "pydantic",
+        "os",
+        "fastapi",
+        "pathlib",
+        "uuid",
+        "asyncio",
+        "tempfile"
+      ]
+    },
+    "scripts/apply_postgres_core_schema.py": {
+      "module_name": "scripts.apply_postgres_core_schema",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "psycopg2",
+        "sys",
+        "os"
+      ]
+    },
+    "survey_routes.py": {
+      "module_name": "survey_routes",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "pydantic",
+        "secrets",
+        "typing",
+        "fastapi"
+      ]
+    },
+    "queries_routes.py": {
+      "module_name": "queries_routes",
+      "imports": [
+        "database",
+        "logging_utils",
+        "auth",
+        "predefined_queries"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "io",
+        "re",
+        "typing",
+        "csv",
+        "fastapi.responses",
+        "pydantic",
+        "fastapi"
+      ]
+    },
+    "rag_admin.py": {
+      "module_name": "rag_admin",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "data_tables_routes.py": {
+      "module_name": "data_tables_routes",
+      "imports": [
+        "data_tables",
+        "auth"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "typing",
+        "fastapi.responses",
+        "__future__",
+        "fastapi",
+        "json"
+      ]
+    },
+    "crypto_at_rest.py": {
+      "module_name": "crypto_at_rest",
+      "imports": [],
+      "imported_by": [
+        "database.py",
+        "conversation_routes.py"
+      ],
+      "external_imports": [
+        "typing",
+        "base64",
+        "os",
+        "cryptography.hazmat.primitives.ciphers"
+      ]
+    },
+    "file_processing_with_images.py": {
+      "module_name": "file_processing_with_images",
+      "imports": [
+        "llm",
+        "auth"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "io",
+        "docx",
+        "fitz",
+        "mimetypes",
+        "pypdf",
+        "typing",
+        "pytesseract",
+        "fastapi.responses",
+        "datetime",
+        "httpx",
+        "pydantic",
+        "os",
+        "fastapi",
+        "PIL",
+        "uuid",
+        "base64",
+        "PyPDF2",
+        "tempfile"
+      ]
+    },
+    "mcp_manager.py": {
+      "module_name": "mcp_manager",
+      "imports": [],
+      "imported_by": [
+        "admin.py"
+      ],
+      "external_imports": [
+        "typing",
+        "subprocess",
+        "pydantic",
+        "asyncio",
+        "pathlib",
+        "logging",
+        "json"
+      ]
+    },
+    "file_processing_backup.py": {
+      "module_name": "file_processing_backup",
+      "imports": [
+        "llm",
+        "auth"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "io",
+        "docx",
+        "fitz",
+        "mimetypes",
+        "pypdf",
+        "typing",
+        "pytesseract",
+        "fastapi.responses",
+        "datetime",
+        "httpx",
+        "pydantic",
+        "os",
+        "fastapi",
+        "PIL",
+        "uuid",
+        "base64",
+        "PyPDF2",
+        "tempfile"
+      ]
+    },
+    "predefined_queries.py": {
+      "module_name": "predefined_queries",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "queries_routes.py"
+      ],
+      "external_imports": [
+        "typing",
+        "datetime",
+        "__future__",
+        "re"
+      ]
+    },
+    "backup.py": {
+      "module_name": "backup",
+      "imports": [
+        "personalities",
+        "prompts",
+        "auth",
+        "welcome_guides"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "io",
+        "typing",
+        "zipfile",
+        "fastapi.responses",
+        "datetime",
+        "os",
+        "fastapi",
+        "uuid",
+        "json"
+      ]
+    },
+    "admin_panel.py": {
+      "module_name": "admin_panel",
+      "imports": [
+        "auth",
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "typing",
+        "datetime",
+        "pydantic",
+        "fastapi",
+        "os",
+        "time",
+        "json"
+      ]
+    },
+    "password_utils.py": {
+      "module_name": "password_utils",
+      "imports": [],
+      "imported_by": [
+        "seed_admin.py",
+        "auth.py"
+      ],
+      "external_imports": [
+        "re",
+        "hashlib",
+        "bcrypt",
+        "typing",
+        "__future__"
+      ]
+    },
+    "scripts/download_whisper_models.py": {
+      "module_name": "scripts.download_whisper_models",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "conversation_routes.py": {
+      "module_name": "conversation_routes",
+      "imports": [
+        "crypto_at_rest",
+        "auth",
+        "admin",
+        "prompts",
+        "llm",
+        "logging_utils",
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "io",
+        "traceback",
+        "fitz",
+        "re",
+        "hashlib",
+        "typing",
+        "zipfile",
+        "fastapi.responses",
+        "datetime",
+        "pydantic",
+        "fastapi",
+        "uuid",
+        "json"
+      ]
+    },
+    "scripts/migrate_rag_sqlite_to_postgres.py": {
+      "module_name": "scripts.migrate_rag_sqlite_to_postgres",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "sqlite3",
+        "psycopg2",
+        "os",
+        "psycopg2.extras",
+        "json"
+      ]
+    },
+    "forms_routes.py": {
+      "module_name": "forms_routes",
+      "imports": [
+        "auth",
+        "forms"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "typing",
+        "__future__",
+        "fastapi"
+      ]
+    },
+    "scripts/encrypt_existing_content.py": {
+      "module_name": "scripts.encrypt_existing_content",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "app.database",
+        "app.crypto_at_rest"
+      ]
+    },
+    "welcome_guides.py": {
+      "module_name": "welcome_guides",
+      "imports": [
+        "auth"
+      ],
+      "imported_by": [
+        "admin.py",
+        "backup.py",
+        "main.py"
+      ],
+      "external_imports": [
+        "threading",
+        "typing",
+        "os",
+        "fastapi",
+        "pydantic",
+        "uuid",
+        "json"
+      ]
+    },
+    "embedding_providers.py": {
+      "module_name": "embedding_providers",
+      "imports": [],
+      "imported_by": [
+        "embedding_manager.py"
+      ],
+      "external_imports": [
+        "threading",
+        "typing",
+        "sentence_transformers",
+        "__future__",
+        "os",
+        "time"
+      ]
+    },
+    "llm.py": {
+      "module_name": "llm",
+      "imports": [
+        "admin"
+      ],
+      "imported_by": [
+        "file_processing_with_images.py",
+        "data_tables_agent.py",
+        "conversation_routes.py",
+        "admin.py",
+        "chat.py",
+        "file_processing_backup.py"
+      ],
+      "external_imports": [
+        "traceback",
+        "re",
+        "typing",
+        "httpx",
+        "tiktoken",
+        "os",
+        "json"
+      ]
+    },
+    "health_routes.py": {
+      "module_name": "health_routes",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "datetime",
+        "fastapi"
+      ]
+    },
+    "scripts/export_core_sqlite_to_pg.py": {
+      "module_name": "scripts.export_core_sqlite_to_pg",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "typing",
+        "sqlite3",
+        "os"
+      ]
+    },
+    "personalities.py": {
+      "module_name": "personalities",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "admin.py",
+        "main.py",
+        "chat.py",
+        "backup.py",
+        "rag_routes.py"
+      ],
+      "external_imports": [
+        "re",
+        "typing",
+        "__future__",
+        "pathlib",
+        "logging",
+        "shutil",
+        "json"
+      ]
+    },
+    "topic_router.py": {
+      "module_name": "topic_router",
+      "imports": [
+        "admin"
+      ],
+      "imported_by": [
+        "chat.py"
+      ],
+      "external_imports": [
+        "unicodedata",
+        "re",
+        "typing",
+        "functools",
+        "os",
+        "pathlib",
+        "json"
+      ]
+    },
+    "scripts/pg_create_missing_tables.py": {
+      "module_name": "scripts.pg_create_missing_tables",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "psycopg2",
+        "sys",
+        "os"
+      ]
+    },
+    "main.py": {
+      "module_name": "main",
+      "imports": [
+        "queries_routes",
+        "admin_panel",
+        "welcome_guides",
+        "conversation_routes",
+        "chat",
+        "file_processing",
+        "search_routes",
+        "auth_routes",
+        "admin",
+        "seed_admin",
+        "backup",
+        "personalities",
+        "survey_routes",
+        "transcribe",
+        "health_routes",
+        "rag_routes",
+        "prompts",
+        "data_tables_routes",
+        "forms_routes",
+        "tts",
+        "logging_utils",
+        "database"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "stat",
+        "threading",
+        "typing",
+        "contextlib",
+        "fastapi.staticfiles",
+        "dotenv",
+        "datetime",
+        "pydantic",
+        "fastapi",
+        "os",
+        "pathlib",
+        "fastapi.middleware.cors",
+        "json"
+      ]
+    },
+    "config_backup.py": {
+      "module_name": "config_backup",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [],
+      "external_imports": [
+        "io",
+        "dataclasses",
+        "re",
+        "hashlib",
+        "typing",
+        "zipfile",
+        "datetime",
+        "__future__",
+        "pathlib",
+        "base64",
+        "json"
+      ]
+    },
+    "data_tables_agent.py": {
+      "module_name": "data_tables_agent",
+      "imports": [
+        "admin",
+        "data_tables",
+        "llm",
+        "database"
+      ],
+      "imported_by": [
+        "admin.py",
+        "chat.py"
+      ],
+      "external_imports": [
+        "re",
+        "typing",
+        "datetime",
+        "__future__",
+        "os",
+        "json"
+      ]
+    },
+    "auth_routes.py": {
+      "module_name": "auth_routes",
+      "imports": [
+        "auth",
+        "database",
+        "escrow"
+      ],
+      "imported_by": [
+        "main.py"
+      ],
+      "external_imports": [
+        "typing",
+        "jwt",
+        "fastapi.security",
+        "datetime",
+        "pydantic",
+        "fastapi",
+        "os",
+        "uuid"
+      ]
+    },
+    "device_sync_migration.py": {
+      "module_name": "device_sync_migration",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [],
+      "external_imports": []
+    },
+    "rag.py": {
+      "module_name": "rag",
+      "imports": [
+        "rag_routes",
+        "rag_engine"
+      ],
+      "imported_by": [
+        "admin.py",
+        "chat.py"
+      ],
+      "external_imports": [
+        "re",
+        "typing",
+        "functools",
+        "pathlib",
+        "json"
+      ]
+    },
+    "scripts/test_summary_providers.py": {
+      "module_name": "scripts.test_summary_providers",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "app.llm",
+        "app.admin",
+        "typing",
+        "datetime",
+        "os",
+        "asyncio",
+        "sys",
+        "json"
+      ]
+    },
+    "logging_utils.py": {
+      "module_name": "logging_utils",
+      "imports": [],
+      "imported_by": [
+        "queries_routes.py",
+        "conversation_routes.py",
+        "admin.py",
+        "main.py",
+        "transcribe.py",
+        "chat.py",
+        "rag_routes.py",
+        "tts.py"
+      ],
+      "external_imports": [
+        "logging.handlers",
+        "datetime",
+        "os",
+        "pathlib",
+        "logging",
+        "json"
+      ]
+    },
+    "rag_engine.py": {
+      "module_name": "rag_engine",
+      "imports": [
+        "database"
+      ],
+      "imported_by": [
+        "rag_routes.py",
+        "admin.py",
+        "chat.py",
+        "rag.py"
+      ],
+      "external_imports": [
+        "numpy",
+        "langchain_text_splitters",
+        "hashlib",
+        "typing",
+        "sqlite3",
+        "faiss",
+        "datetime",
+        "sentence_transformers",
+        "os",
+        "pickle",
+        "pathlib",
+        "logging",
+        "psycopg2.extras",
+        "json"
+      ]
+    },
+    "transcribe.py": {
+      "module_name": "transcribe",
+      "imports": [
+        "logging_utils"
+      ],
+      "imported_by": [
+        "admin.py",
+        "main.py"
+      ],
+      "external_imports": [
+        "fastapi.responses",
+        "warnings",
+        "requests",
+        "shutil",
+        "json",
+        "threading",
+        "subprocess",
+        "pathlib",
+        "re",
+        "typing",
+        "torch",
+        "pydantic",
+        "fastapi",
+        "time",
+        "tempfile",
+        "traceback",
+        "whisper",
+        "os",
+        "asyncio",
+        "uuid"
+      ]
+    },
+    "file_processing.py": {
+      "module_name": "file_processing",
+      "imports": [],
+      "imported_by": [
+        "rag_routes.py",
+        "admin.py",
+        "main.py"
+      ],
+      "external_imports": [
+        "docx",
+        "fitz",
+        "mimetypes",
+        "pypdf",
+        "typing",
+        "fastapi.responses",
+        "datetime",
+        "pydantic",
+        "os",
+        "fastapi",
+        "uuid",
+        "PyPDF2",
+        "tempfile"
+      ]
+    },
+    "file_processing_simple.py": {
+      "module_name": "file_processing_simple",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "io",
+        "docx",
+        "mimetypes",
+        "pypdf",
+        "typing",
+        "fastapi.responses",
+        "datetime",
+        "httpx",
+        "pydantic",
+        "os",
+        "fastapi",
+        "PIL",
+        "uuid",
+        "base64",
+        "PyPDF2",
+        "tempfile"
+      ]
+    },
+    "usage.py": {
+      "module_name": "usage",
+      "imports": [],
+      "imported_by": [
+        "admin.py",
+        "chat.py"
+      ],
+      "external_imports": [
+        "typing",
+        "datetime",
+        "__future__",
+        "pathlib",
+        "json"
+      ]
+    },
+    "scripts/migrate_personalities_json_to_pg.py": {
+      "module_name": "scripts.migrate_personalities_json_to_pg",
+      "imports": [],
+      "imported_by": [],
+      "external_imports": [
+        "psycopg2",
+        "os",
+        "pathlib",
+        "psycopg2.extras",
+        "json"
+      ]
+    }
+  }
+}

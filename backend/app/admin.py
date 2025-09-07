@@ -4798,27 +4798,25 @@ class UserResetPasswordRequest(BaseModel):
 async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, email, created_at, last_login, is_admin 
-            FROM users 
-            ORDER BY created_at DESC
-        """)
-        
-        users = []
-        for row in cursor.fetchall():
-            users.append({
-                "id": row[0],
-                "email": row[1],
-                "created_at": row[2],
-                "last_login": row[3],
-                "is_admin": bool(row[4]) if row[4] is not None else False
-            })
-        
-        conn.close()
-        return {"success": True, "users": users}
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            # Unified query compatible with SQLite and Postgres
+            db_manager.exec(cursor, """
+                SELECT id, email, created_at, last_login, is_admin
+                FROM users
+                ORDER BY created_at DESC
+            """)
+
+            users = []
+            for row in cursor.fetchall():
+                users.append({
+                    "id": row[0],
+                    "email": row[1],
+                    "created_at": row[2],
+                    "last_login": row[3],
+                    "is_admin": bool(row[4]) if row[4] is not None else False
+                })
+            return {"success": True, "users": users}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4826,26 +4824,29 @@ async def admin_get_users():
 async def admin_delete_user(user_id: int):
     """Delete user account for admin panel"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        # First check if user exists
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        user = cursor.fetchone()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        
-        # Delete user conversations first (foreign key constraint)
-        cursor.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
-        
-        # Delete user
-        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return {"success": True, "message": f"Utente {user[0]} eliminato con successo"}
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # First check if user exists
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+
+            # Delete user conversations first (compatibility with SQLite when FKs off)
+            db_manager.exec(cursor, "DELETE FROM conversations WHERE user_id = ?", (user_id,))
+            # Optionally delete devices as well for robustness
+            try:
+                db_manager.exec(cursor, "DELETE FROM user_devices WHERE user_id = ?", (user_id,))
+            except Exception:
+                pass
+
+            # Delete user (Postgres will cascade to children; above deletes help SQLite)
+            db_manager.exec(cursor, "DELETE FROM users WHERE id = ?", (user_id,))
+
+            conn.commit()
+            return {"success": True, "message": f"Utente {user[0]} eliminato con successo"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4855,40 +4856,40 @@ async def admin_reset_user_password(user_id: int):
     Also clears failed attempts and lock, and updates user_key_hash.
     """
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        email = row[0]
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+            email = row[0]
 
-        # Generate new temporary password
-        characters = string.ascii_letters + string.digits + "!@#$%&*"
-        temp_password = ''.join(secrets.choice(characters) for _ in range(12))
+            # Generate new temporary password
+            characters = string.ascii_letters + string.digits + "!@#$%&*"
+            temp_password = ''.join(secrets.choice(characters) for _ in range(12))
 
-        # Hashes
-        new_hash = AuthManager.hash_password(temp_password)
-        new_user_key_hash = AuthManager.generate_user_key_hash(temp_password, email)
+            # Hashes
+            new_hash = AuthManager.hash_password(temp_password)
+            new_user_key_hash = AuthManager.generate_user_key_hash(temp_password, email)
 
-        # Update user
-        cursor.execute(
-            """
-            UPDATE users 
-            SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL, must_change_password = 1
-            WHERE id = ?
-            """,
-            (new_hash, new_user_key_hash, user_id)
-        )
-        conn.commit()
-        conn.close()
+            # Update user (parameterize boolean for cross-DB compatibility)
+            db_manager.exec(
+                cursor,
+                """
+                UPDATE users 
+                SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL, must_change_password = ?
+                WHERE id = ?
+                """,
+                (new_hash, new_user_key_hash, True, user_id)
+            )
+            conn.commit()
 
-        return {
-            "success": True,
-            "message": f"Password reset per {email}",
-            "temporary_password": temp_password,
-            "email": email
-        }
+            return {
+                "success": True,
+                "message": f"Password reset per {email}",
+                "temporary_password": temp_password,
+                "email": email
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -4901,28 +4902,28 @@ class UserRoleRequest(BaseModel):
 async def admin_change_user_role(user_id: int, request: UserRoleRequest):
     """Change user role (admin/user)"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        # Check if user exists
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        
-        # Update user role
-        cursor.execute(
-            "UPDATE users SET is_admin = ? WHERE id = ?",
-            (1 if request.is_admin else 0, user_id)
-        )
-        conn.commit()
-        conn.close()
-        
-        role_name = "amministratore" if request.is_admin else "utente"
-        return {
-            "success": True,
-            "message": f"Ruolo cambiato a {role_name} per {user[0]}"
-        }
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Check if user exists
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+
+            # Update user role (parameterized boolean)
+            db_manager.exec(
+                cursor,
+                "UPDATE users SET is_admin = ? WHERE id = ?",
+                (bool(request.is_admin), user_id)
+            )
+            conn.commit()
+
+            role_name = "amministratore" if request.is_admin else "utente"
+            return {
+                "success": True,
+                "message": f"Ruolo cambiato a {role_name} per {user[0]}"
+            }
     except HTTPException:
         raise
     except Exception as e:

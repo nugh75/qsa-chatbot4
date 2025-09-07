@@ -319,7 +319,7 @@ services:
         VITE_SITE_NAME: dragoni
     restart: unless-stopped
     ports:
-      - "5176:5175"
+      - "5177:5175"
     depends_on:
       - backend-dragoni
 

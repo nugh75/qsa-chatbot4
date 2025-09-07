@@ -34,7 +34,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qsa_pass}
       POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      DATABASE_URL: "${DATABASE_URL:-postgresql://${POSTGRES_USER:-qsa_user}:${POSTGRES_PASSWORD:-qsa_pass}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-qsa_chatbot}}"
+  DATABASE_URL: "${DATABASE_URL:-postgresql://${POSTGRES_USER:-qsa_user}:${POSTGRES_PASSWORD:-qsa_pass}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-qsa_chatbot}"
       # Encryption keys (Base64 or hex 32 bytes). For dev, can also be set in backend/.env
       DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
       ESCROW_MASTER_KEY: ${ESCROW_MASTER_KEY:-}

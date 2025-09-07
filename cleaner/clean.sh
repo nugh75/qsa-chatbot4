@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 🧹 QSA Chatbot Cleaner - Interfaccia Principale
-# Sistema completo di analisi e pulizia per backend e frontend
+# 🔧 QSA Chatbot Manutenzione - Sistema Completo
+# Strumenti di manutenzione, analisi e pulizia per backend e frontend
 
 set -e
 
@@ -61,39 +61,41 @@ check_environment() {
 show_main_menu() {
     clear
     echo -e "${PURPLE}"
-    echo "🧹 QSA CHATBOT CLEANER v1.0"
-    echo "============================"
+    echo "🔧 QSA CHATBOT MANUTENZIONE v1.0"
+    echo "================================="
     echo -e "${NC}"
     echo ""
     print_info "Directory progetto: $PROJECT_ROOT"
     echo ""
     echo "📋 MENU PRINCIPALE:"
     echo ""
-    echo "📊 ANALISI:"
-    echo "  1) Analizza dipendenze Backend (Python)"
-    echo "  2) Analizza dipendenze Frontend (React/TS)"
-    echo "  3) Analisi completa (Backend + Frontend)"
-    echo "  4) Mostra statistiche progetti"
+    echo "� MANUTENZIONE CODICE:"
+    echo "  1) 🔄 Riorganizza Import Python"
+    echo ""
+    echo "�📊 ANALISI:"
+    echo "  2) Analizza dipendenze Backend (Python)"
+    echo "  3) Analizza dipendenze Frontend (React/TS)"
+    echo "  4) Analisi completa (Backend + Frontend)"
+    echo "  5) Mostra statistiche progetti"
     echo ""
     echo "🗑️  PULIZIA:"
-    echo "  5) Pulisci Backend (automatico)"
-    echo "  6) Pulisci Frontend (automatico)"
-    echo "  7) Pulizia completa (Backend + Frontend)"
-    echo "  8) Elimina file uno per uno (manuale)"
-    echo "  9) Elimina tutto insieme (massa)"
-    echo "  10) Gestisci file temporanei/backup"
+    echo "  6) Pulisci Backend (automatico)"
+    echo "  7) Pulisci Frontend (automatico)"
+    echo "  8) Pulizia completa (Backend + Frontend)"
+    echo "  9) Elimina file uno per uno (manuale)"
+    echo "  10) Elimina tutto insieme (massa)"
+    echo "  11) Gestisci file temporanei/backup"
     echo ""
     echo "📄 REPORT:"
-    echo "  11) Visualizza ultimo report Backend"
-    echo "  12) Visualizza ultimo report Frontend"
-    echo "  13) Confronta report (prima/dopo pulizia)"
-    echo "  14) Esporta report completo"
+    echo "  12) Visualizza ultimo report Backend"
+    echo "  13) Visualizza ultimo report Frontend"
+    echo "  14) Confronta report (prima/dopo pulizia)"
+    echo "  15) Esporta report completo"
     echo ""
-    echo "🛠️  MANUTENZIONE:"
-    echo "  15) Aggiorna analizzatori"
-    echo "  16) Verifica integrità progetto"
-    echo "  17) Backup completo prima pulizia"
-    echo "  18) 🔄 Riorganizza Import Python"
+    echo "🛠️  SISTEMA:"
+    echo "  16) Aggiorna analizzatori"
+    echo "  17) Verifica integrità progetto"
+    echo "  18) Backup completo prima pulizia"
     echo ""
     echo "❓ AIUTO:"
     echo "  19) Documentazione"
@@ -475,46 +477,46 @@ main_loop() {
         
         echo ""
         case $choice in
-            1) analyze_backend ;;
-            2) analyze_frontend ;;
-            3) analyze_complete ;;
-            4) 
+            1) reorganize_imports ;;
+            2) analyze_backend ;;
+            3) analyze_frontend ;;
+            4) analyze_complete ;;
+            5) 
                 if [ -f "$ANALYSIS_DIR/back_data_analysis.json" ] && [ -f "$ANALYSIS_DIR/front_data_analysis.json" ]; then
                     analyze_complete
                 else
                     print_warning "Report non disponibili. Esegui prima l'analisi completa."
                 fi
                 ;;
-            5) cleanup_backend ;;
-            6) cleanup_frontend ;;
-            7) 
+            6) cleanup_backend ;;
+            7) cleanup_frontend ;;
+            8) 
                 cleanup_backend
                 echo ""
                 cleanup_frontend
                 ;;
-            8) cleanup_individual ;;
-            9) cleanup_mass ;;
-            10) cleanup_temp_backup ;;
-            11) show_report "backend" ;;
-            12) show_report "frontend" ;;
-            13) 
+            9) cleanup_individual ;;
+            10) cleanup_mass ;;
+            11) cleanup_temp_backup ;;
+            12) show_report "backend" ;;
+            13) show_report "frontend" ;;
+            14) 
                 print_info "Funzione confronto report in sviluppo..."
                 ;;
-            14) 
+            15) 
                 print_info "Export report completo in sviluppo..."
                 ;;
-            15) 
+            16) 
                 print_info "Aggiornamento analizzatori in sviluppo..."
                 ;;
-            16) 
+            17) 
                 print_info "Verifica integrità in sviluppo..."
                 ;;
-            17) 
+            18) 
                 print_info "Creando backup Git..."
                 git add -A && git commit -m "🧹 Backup automatico cleaner $(date)"
                 print_success "Backup creato!"
                 ;;
-            18) reorganize_imports ;;
             19) show_documentation ;;
             20) 
                 print_info "Esempi utilizzo disponibili nella documentazione"

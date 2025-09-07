@@ -1115,6 +1115,170 @@ async def save_admin_config(config: AdminConfig):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio: {str(e)}")
 
+# ==== API KEYS MANAGEMENT ====
+
+class APIKeyUpdate(BaseModel):
+    provider: str
+    api_key: str
+
+@router.get("/admin/api-keys")
+async def get_api_keys():
+    """Restituisce lo status delle API keys (mascherate)"""
+    try:
+        api_keys_status = {
+            "google": {
+                "status": "configured" if os.getenv("GOOGLE_API_KEY", "") else "missing",
+                "masked": "••••••••••••••••" if os.getenv("GOOGLE_API_KEY", "") else "",
+                "env_var": "GOOGLE_API_KEY"
+            },
+            "anthropic": {
+                "status": "configured" if os.getenv("ANTHROPIC_API_KEY", "") else "missing",
+                "masked": "••••••••••••••••" if os.getenv("ANTHROPIC_API_KEY", "") else "",
+                "env_var": "ANTHROPIC_API_KEY"
+            },
+            "openai": {
+                "status": "configured" if os.getenv("OPENAI_API_KEY", "") else "missing", 
+                "masked": "••••••••••••••••" if os.getenv("OPENAI_API_KEY", "") else "",
+                "env_var": "OPENAI_API_KEY"
+            },
+            "openrouter": {
+                "status": "configured" if os.getenv("OPENROUTER_API_KEY", "") else "missing",
+                "masked": "••••••••••••••••" if os.getenv("OPENROUTER_API_KEY", "") else "",
+                "env_var": "OPENROUTER_API_KEY"
+            },
+            "elevenlabs": {
+                "status": "configured" if os.getenv("ELEVENLABS_API_KEY", "") else "missing",
+                "masked": "••••••••••••••••" if os.getenv("ELEVENLABS_API_KEY", "") else "",
+                "env_var": "ELEVENLABS_API_KEY"
+            }
+        }
+        return {"success": True, "api_keys": api_keys_status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento API keys: {str(e)}")
+
+@router.post("/admin/api-keys")
+async def update_api_key(payload: APIKeyUpdate):
+    """Aggiorna una API key specifica"""
+    try:
+        provider_mapping = {
+            "google": "GOOGLE_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY", 
+            "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "elevenlabs": "ELEVENLABS_API_KEY"
+        }
+        
+        if payload.provider not in provider_mapping:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {payload.provider}")
+            
+        env_var = provider_mapping[payload.provider]
+        
+        # Aggiorna la variabile d'ambiente per la sessione corrente
+        os.environ[env_var] = payload.api_key
+        
+        # Cerca di aggiornare il file .env se esiste
+        env_file_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+        if os.path.exists(env_file_path):
+            # Leggi il file .env esistente
+            with open(env_file_path, 'r') as f:
+                lines = f.readlines()
+            
+            # Cerca se la variabile esiste già
+            updated = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{env_var}="):
+                    lines[i] = f"{env_var}={payload.api_key}\n"
+                    updated = True
+                    break
+            
+            # Se non esiste, aggiungila
+            if not updated:
+                lines.append(f"{env_var}={payload.api_key}\n")
+            
+            # Salva il file
+            with open(env_file_path, 'w') as f:
+                f.writelines(lines)
+        
+        return {"success": True, "message": f"API key per {payload.provider} aggiornata con successo"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nell'aggiornamento API key: {str(e)}")
+
+@router.post("/admin/api-keys/test/{provider}")
+async def test_api_key(provider: str):
+    """Testa una API key specifica"""
+    try:
+        provider_mapping = {
+            "google": "GOOGLE_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY", 
+            "openrouter": "OPENROUTER_API_KEY",
+            "elevenlabs": "ELEVENLABS_API_KEY"
+        }
+        
+        if provider not in provider_mapping:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {provider}")
+            
+        api_key = os.getenv(provider_mapping[provider], "")
+        if not api_key:
+            return {"success": False, "message": f"API key per {provider} non configurata"}
+            
+        # Testa la chiave API con una chiamata semplice
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if provider == "google":
+                # Test Google Gemini
+                url = "https://generativelanguage.googleapis.com/v1/models"
+                params = {"key": api_key}
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key Google valida"}
+                else:
+                    return {"success": False, "message": f"API key Google non valida: {response.status_code}"}
+                    
+            elif provider == "anthropic":
+                # Test Anthropic Claude
+                url = "https://api.anthropic.com/v1/models"
+                headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key Anthropic valida"}
+                else:
+                    return {"success": False, "message": f"API key Anthropic non valida: {response.status_code}"}
+                    
+            elif provider == "openai":
+                # Test OpenAI
+                url = "https://api.openai.com/v1/models"
+                headers = {"Authorization": f"Bearer {api_key}"}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key OpenAI valida"}
+                else:
+                    return {"success": False, "message": f"API key OpenAI non valida: {response.status_code}"}
+                    
+            elif provider == "openrouter":
+                # Test OpenRouter
+                url = "https://openrouter.ai/api/v1/models"
+                headers = {"Authorization": f"Bearer {api_key}"}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key OpenRouter valida"}
+                else:
+                    return {"success": False, "message": f"API key OpenRouter non valida: {response.status_code}"}
+                    
+            elif provider == "elevenlabs":
+                # Test ElevenLabs
+                url = "https://api.elevenlabs.io/v1/user"
+                headers = {"xi-api-key": api_key}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key ElevenLabs valida"}
+                else:
+                    return {"success": False, "message": f"API key ElevenLabs non valida: {response.status_code}"}
+            
+    except Exception as e:
+        return {"success": False, "message": f"Errore nel test API key: {str(e)}"}
+
 @router.get("/admin/system-prompt")
 async def get_system_prompt():
     """Restituisce il prompt di sistema corrente."""
@@ -4630,7 +4794,7 @@ import string
 class UserResetPasswordRequest(BaseModel):
     user_id: int
 
-@router.get("/admin/users")
+@router.get("/admin/legacy-users")
 async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""
     try:
@@ -4658,7 +4822,7 @@ async def admin_get_users():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/admin/users/{user_id}")
+@router.delete("/admin/legacy-users/{user_id}")
 async def admin_delete_user(user_id: int):
     """Delete user account for admin panel"""
     try:
@@ -4685,7 +4849,7 @@ async def admin_delete_user(user_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/admin/users/{user_id}/reset-password")
+@router.post("/admin/legacy-users/{user_id}/reset-password")
 async def admin_reset_user_password(user_id: int):
     """Reset user password and return new temporary password.
     Also clears failed attempts and lock, and updates user_key_hash.
@@ -4733,7 +4897,7 @@ async def admin_reset_user_password(user_id: int):
 class UserRoleRequest(BaseModel):
     is_admin: bool
 
-@router.put("/admin/users/{user_id}/role")
+@router.put("/admin/legacy-users/{user_id}/role")
 async def admin_change_user_role(user_id: int, request: UserRoleRequest):
     """Change user role (admin/user)"""
     try:

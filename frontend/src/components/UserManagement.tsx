@@ -18,8 +18,8 @@ const UserManagement: React.FC = () => {
     setLoading(true)
     setError(null)
     try {
-  // Backend canonical endpoint: GET /api/admin/users
-  const res = await authFetch(`${BACKEND}/api/admin/users`)
+  // Backend canonical endpoint: GET /api/admin/legacy-users
+  const res = await authFetch(`${BACKEND}/api/admin/legacy-users`)
       const json = await res.json()
       if ((json as any).success && (json as any).data) {
         setUsers(((json as any).data as any).users || [])
@@ -36,7 +36,7 @@ const UserManagement: React.FC = () => {
   const handleDeleteUser = async () => {
     if (!selectedUser) return
     try {
-  const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}`, { method: 'DELETE' })
+  const res = await authFetch(`${BACKEND}/api/admin/legacy-users/${selectedUser.id}`, { method: 'DELETE' })
       const json = await res.json()
       if ((json as any).success !== false) {
         setUsers(prev => prev.filter(u => u.id !== selectedUser.id))
@@ -48,7 +48,7 @@ const UserManagement: React.FC = () => {
   const handleResetPassword = async () => {
     if (!selectedUser) return
     try {
-  const res = await authFetch(`${BACKEND}/api/admin/users/${selectedUser.id}/reset-password`, { method: 'POST' })
+  const res = await authFetch(`${BACKEND}/api/admin/legacy-users/${selectedUser.id}/reset-password`, { method: 'POST' })
       const json = await res.json()
       if ((json as any).success !== false) {
         setPasswordResetResult((json as any).data || json)

@@ -72,7 +72,7 @@ export default function AdminUserManagement() {
   const loadUsers = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`${BACKEND}/api/admin/users`);
+      const res = await fetch(`${BACKEND}/api/admin/legacy-users`);
       const data = await res.json();
       
       if (data.success) {
@@ -92,7 +92,7 @@ export default function AdminUserManagement() {
     if (!selectedUser) return;
     
     try {
-      const res = await fetch(`${BACKEND}/api/admin/users/${selectedUser.id}`, {
+      const res = await fetch(`${BACKEND}/api/admin/legacy-users/${selectedUser.id}`, {
         method: 'DELETE'
       });
       
@@ -113,7 +113,7 @@ export default function AdminUserManagement() {
     if (!selectedUser) return;
     
     try {
-      const res = await fetch(`${BACKEND}/api/admin/users/${selectedUser.id}/reset-password`, {
+      const res = await fetch(`${BACKEND}/api/admin/legacy-users/${selectedUser.id}/reset-password`, {
         method: 'POST'
       });
       
@@ -136,7 +136,7 @@ export default function AdminUserManagement() {
   const handleChangeRole = async (user: User) => {
     try {
       const newIsAdmin = !user.is_admin;
-      const res = await fetch(`${BACKEND}/api/admin/users/${user.id}/role`, {
+      const res = await fetch(`${BACKEND}/api/admin/legacy-users/${user.id}/role`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_admin: newIsAdmin })

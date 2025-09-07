@@ -1,6 +1,9 @@
-import React, { useCallback } from 'react'
-import { Stack } from '@mui/material'
+import React, { useCallback, useState } from 'react'
+import { Stack, Button, Accordion, AccordionSummary, AccordionDetails, Typography } from '@mui/material'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import SettingsIcon from '@mui/icons-material/Settings'
 import ModelProviderSection, { ProviderConfig } from './ModelProviderSection'
+import APIKeysManagementPanel from './APIKeysManagementPanel'
 import { authFetch, BACKEND } from '../utils/authFetch'
 import { AdminConfig } from '../types/admin'
 
@@ -10,6 +13,8 @@ interface Props {
 }
 
 const ModelProvidersPanel: React.FC<Props> = ({ config, onConfigUpdate }) => {
+  const [showAPIKeysPanel, setShowAPIKeysPanel] = useState(false)
+  
   const providersObj: Record<string, any> = config.ai_providers as unknown as Record<string, any>
   const providersArray: ProviderConfig[] = Object.entries(providersObj).map(([key, value]) => ({ key, ...value }))
 
@@ -26,10 +31,33 @@ const ModelProvidersPanel: React.FC<Props> = ({ config, onConfigUpdate }) => {
     } catch {/* noop */}
   }, [providersObj, config, onConfigUpdate])
 
+  const handleOpenAPIKeysPanel = () => {
+    setShowAPIKeysPanel(true)
+  }
+
   return (
     <Stack spacing={1.2} sx={{ mt: 1 }}>
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <SettingsIcon sx={{ mr: 1 }} />
+          <Typography variant="subtitle1">Gestione API Keys</Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          <APIKeysManagementPanel />
+        </AccordionDetails>
+      </Accordion>
+      
+      <Typography variant="subtitle1" sx={{ mt: 2, mb: 1 }}>
+        Provider AI Configurati
+      </Typography>
+      
       {providersArray.map(p => (
-        <ModelProviderSection key={p.key} provider={p} onModelChange={updateSelectedModel} />
+        <ModelProviderSection 
+          key={p.key} 
+          provider={p} 
+          onModelChange={updateSelectedModel}
+          onOpenAPIKeysPanel={handleOpenAPIKeysPanel}
+        />
       ))}
     </Stack>
   )

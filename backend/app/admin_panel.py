@@ -360,7 +360,12 @@ async def get_users(
             
             query = f"""
                 SELECT 
-                    u.id, u.username, u.email, u.is_active, u.created_at, u.last_login,
+                    u.id,
+                    COALESCE(u.username, u.email, '') AS username,
+                    u.email,
+                    u.is_active,
+                    u.created_at,
+                    u.last_login,
                     COUNT(DISTINCT d.id) as device_count,
                     COUNT(DISTINCT c.id) as conversation_count,
                     COUNT(DISTINCT m.id) as message_count

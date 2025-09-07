@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# 🔧 QSA Chatbot Manutenzione - Sistema Completo
-# Strumenti di manutenzione, analisi e pulizia per backend e frontend
+# 🔧 QSA Chatbot Manutenzione - Sistema Completo v2.0
+# Strumenti avanzati di manutenzione, analisi e pulizia per backend e frontend  
+# Aggiornato: 7 Settembre 2025
 
 set -e
 
@@ -61,7 +62,7 @@ check_environment() {
 show_main_menu() {
     clear
     echo -e "${PURPLE}"
-    echo "🔧 QSA CHATBOT MANUTENZIONE v1.0"
+    echo "🔧 QSA CHATBOT MANUTENZIONE v2.0"
     echo "================================="
     echo -e "${NC}"
     echo ""
@@ -69,33 +70,31 @@ show_main_menu() {
     echo ""
     echo "📋 MENU PRINCIPALE:"
     echo ""
-    echo "� MANUTENZIONE CODICE:"
-    echo "  1) 🔄 Riorganizza Import Python"
-    echo ""
-    echo "�📊 ANALISI:"
-    echo "  2) Analizza dipendenze Backend (Python)"
-    echo "  3) Analizza dipendenze Frontend (React/TS)"
-    echo "  4) Analisi completa (Backend + Frontend)"
-    echo "  5) Mostra statistiche progetti"
+    echo " ANALISI:"
+    echo "  1) Analizza dipendenze Backend (Python)"
+    echo "  2) Analizza dipendenze Frontend (React/TS)"
+    echo "  3) Analisi completa (Backend + Frontend)"
+    echo "  4) Mostra statistiche progetti"
     echo ""
     echo "🗑️  PULIZIA:"
-    echo "  6) Pulisci Backend (automatico)"
-    echo "  7) Pulisci Frontend (automatico)"
-    echo "  8) Pulizia completa (Backend + Frontend)"
-    echo "  9) Elimina file uno per uno (manuale)"
-    echo "  10) Elimina tutto insieme (massa)"
-    echo "  11) Gestisci file temporanei/backup"
+    echo "  5) Pulisci Backend (automatico)"
+    echo "  6) Pulisci Frontend (automatico)"
+    echo "  7) Pulizia completa (Backend + Frontend)"
+    echo "  8) Elimina file uno per uno (manuale)"
+    echo "  9) Elimina tutto insieme (massa)"
+    echo "  10) Gestisci file temporanei/backup"
     echo ""
     echo "📄 REPORT:"
-    echo "  12) Visualizza ultimo report Backend"
-    echo "  13) Visualizza ultimo report Frontend"
-    echo "  14) Confronta report (prima/dopo pulizia)"
-    echo "  15) Esporta report completo"
+    echo "  11) Visualizza ultimo report Backend"
+    echo "  12) Visualizza ultimo report Frontend"
+    echo "  13) Confronta report (prima/dopo pulizia)"
+    echo "  14) Esporta report completo"
     echo ""
     echo "🛠️  SISTEMA:"
-    echo "  16) Aggiorna analizzatori"
-    echo "  17) Verifica integrità progetto"
-    echo "  18) Backup completo prima pulizia"
+    echo "  15) Aggiorna analizzatori"
+    echo "  16) Verifica integrità progetto"
+    echo "  17) Backup completo prima pulizia"
+    echo "  18) Restore da file backup"
     echo ""
     echo "❓ AIUTO:"
     echo "  19) Documentazione"
@@ -452,21 +451,80 @@ cleanup_temp_backup() {
     fi
 }
 
-# Riorganizzazione import
-reorganize_imports() {
-    print_header "🔄 RIORGANIZZAZIONE IMPORT PYTHON"
+# Restore backup files 
+restore_backup() {
+    print_header "🔄 RESTORE BACKUP FILES"
+    echo ""
+    print_warning "Questa funzione ripristina i file .py.bak al posto degli originali corrotti"
     echo ""
     
-    if [ ! -f "$TOOLS_DIR/reorganize_imports_cli.sh" ]; then
-        print_error "Script riorganizzazione import non trovato in $TOOLS_DIR"
+    # Directory backend dove cercare backup
+    BACKEND_DIR="$PROJECT_ROOT/backend/app"
+    
+    if [ ! -d "$BACKEND_DIR" ]; then
+        print_error "Directory backend non trovata: $BACKEND_DIR"
         return 1
     fi
     
-    # Rendi eseguibile lo script se necessario
-    chmod +x "$TOOLS_DIR/reorganize_imports_cli.sh"
+    # Trova tutti i file .py.bak
+    backup_files=$(find "$BACKEND_DIR" -name "*.py.bak" 2>/dev/null)
     
-    # Esegui l'interfaccia dedicata
-    "$TOOLS_DIR/reorganize_imports_cli.sh"
+    if [ -z "$backup_files" ]; then
+        print_info "Nessun file di backup (.py.bak) trovato"
+        return 0
+    fi
+    
+    echo "File di backup trovati:"
+    echo "$backup_files" | while read -r backup_file; do
+        original_file="${backup_file%.bak}"
+        rel_path=$(realpath --relative-to="$PROJECT_ROOT" "$original_file")
+        echo "  📄 $rel_path"
+    done
+    
+    echo ""
+    print_warning "ATTENZIONE: Questo sovrascriverà i file Python originali con le versioni backup"
+    echo -n "Continuare? (y/N): "
+    read -r confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "Operazione annullata"
+        return 0
+    fi
+    
+    echo ""
+    restored_count=0
+    
+    while IFS= read -r backup_file; do
+        if [ -f "$backup_file" ]; then
+            original_file="${backup_file%.bak}"
+            rel_path=$(realpath --relative-to="$PROJECT_ROOT" "$original_file")
+            
+            # Verifica che il backup sia valido
+            if python3 -m py_compile "$backup_file" 2>/dev/null; then
+                cp "$backup_file" "$original_file"
+                print_success "Ripristinato: $rel_path"
+                restored_count=$((restored_count + 1))
+            else
+                print_warning "Skip $rel_path: backup non valido"
+            fi
+        fi
+    done <<< "$backup_files"
+    
+    echo ""
+    print_success "Ripristinati $restored_count file da backup"
+    
+    echo ""
+    echo -n "Rimuovere i file .py.bak dopo il ripristino? (y/N): "
+    read -r remove_backup
+    
+    if [[ "$remove_backup" =~ ^[Yy]$ ]]; then
+        while IFS= read -r backup_file; do
+            rm -f "$backup_file"
+            rel_path=$(realpath --relative-to="$PROJECT_ROOT" "${backup_file}")
+            print_info "Rimosso: $rel_path"
+        done <<< "$backup_files"
+        print_success "File di backup rimossi"
+    fi
 }
 
 # Menu loop principale
@@ -477,46 +535,46 @@ main_loop() {
         
         echo ""
         case $choice in
-            1) reorganize_imports ;;
-            2) analyze_backend ;;
-            3) analyze_frontend ;;
-            4) analyze_complete ;;
-            5) 
+            1) analyze_backend ;;
+            2) analyze_frontend ;;
+            3) analyze_complete ;;
+            4) 
                 if [ -f "$ANALYSIS_DIR/back_data_analysis.json" ] && [ -f "$ANALYSIS_DIR/front_data_analysis.json" ]; then
                     analyze_complete
                 else
                     print_warning "Report non disponibili. Esegui prima l'analisi completa."
                 fi
                 ;;
-            6) cleanup_backend ;;
-            7) cleanup_frontend ;;
-            8) 
+            5) cleanup_backend ;;
+            6) cleanup_frontend ;;
+            7) 
                 cleanup_backend
                 echo ""
                 cleanup_frontend
                 ;;
-            9) cleanup_individual ;;
-            10) cleanup_mass ;;
-            11) cleanup_temp_backup ;;
-            12) show_report "backend" ;;
-            13) show_report "frontend" ;;
-            14) 
+            8) cleanup_individual ;;
+            9) cleanup_mass ;;
+            10) cleanup_temp_backup ;;
+            11) show_report "backend" ;;
+            12) show_report "frontend" ;;
+            13) 
                 print_info "Funzione confronto report in sviluppo..."
                 ;;
-            15) 
+            14) 
                 print_info "Export report completo in sviluppo..."
                 ;;
-            16) 
+            15) 
                 print_info "Aggiornamento analizzatori in sviluppo..."
                 ;;
-            17) 
+            16) 
                 print_info "Verifica integrità in sviluppo..."
                 ;;
-            18) 
+            17) 
                 print_info "Creando backup Git..."
                 git add -A && git commit -m "🧹 Backup automatico cleaner $(date)"
                 print_success "Backup creato!"
                 ;;
+            18) restore_backup ;;
             19) show_documentation ;;
             20) 
                 print_info "Esempi utilizzo disponibili nella documentazione"

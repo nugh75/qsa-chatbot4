@@ -1,28 +1,34 @@
 """
 Conversation management endpoints with encryption support
 """
+from datetime import datetime, timedelta
+from typing import List as _List
+from typing import List, Optional, Dict, Any
+import hashlib
+import io, json, zipfile, re
+import uuid
+
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-import uuid
-from datetime import datetime, timedelta
-import hashlib
+import fitz  # type: ignore
+import traceback
 
+from . import welcome_guides as _wg
+from .admin import get_summary_provider, get_summary_model
 from .auth import get_current_active_user
 from .crypto_at_rest import encrypt_text as _enc_text, decrypt_text as _dec_text, is_encrypted as _is_enc
-
+from .database import ConversationModel, MessageModel, DeviceModel
+from .database import db_manager
+from .llm import chat_with_provider
+from .logging_utils import log_interaction as _li
+from .prompts import load_summary_prompt
 
 def _dec_safe(val: str) -> str:
     try:
         return _dec_text(val) if _is_enc(val) else val
     except Exception:
         return val
-from .database import ConversationModel, MessageModel, DeviceModel
-from .prompts import load_summary_prompt
-from .llm import chat_with_provider
-from .admin import get_summary_provider, get_summary_model
-import io, json, zipfile, re
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -144,7 +150,7 @@ async def update_conversation(
             title_plain = incoming
         title_hash = hashlib.sha256((title_plain or '').encode()).hexdigest()
         new_title_enc = _enc_text(title_plain)
-        from .database import db_manager
+
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             db_manager.exec(cursor, """
@@ -166,7 +172,7 @@ async def delete_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     try:
-        from .database import db_manager
+
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             db_manager.exec(cursor, "UPDATE conversations SET is_deleted = ? WHERE id = ? AND user_id = ?", (True, conversation_id, current_user["id"]))
@@ -291,7 +297,7 @@ async def get_conversation_stats(
     """Statistiche conversazioni utente"""
     
     try:
-        from .database import db_manager
+
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -361,7 +367,7 @@ async def summarize_conversation(
     
     # Detailed logging for summary generation debugging
     try:
-        from .logging_utils import log_interaction as _li
+
         _li({
             "event": "summary_generation_debug_get",
             "conversation_id": conversation_id,
@@ -383,7 +389,7 @@ async def summarize_conversation(
     
     # Log the messages being sent to LLM
     try:
-        from .logging_utils import log_interaction as _li
+
         _li({
             "event": "llm_messages_debug_get",
             "conversation_id": conversation_id,
@@ -410,7 +416,7 @@ async def summarize_conversation(
         
         # Log successful summary generation
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "summary_generation_success_get",
                 "conversation_id": conversation_id,
@@ -425,12 +431,12 @@ async def summarize_conversation(
     except Exception as e:
         print(f"[ERROR] Summary generation failed for conversation {conversation_id} (GET): {e}")
         print(f"[ERROR] Exception type: {type(e).__name__}")
-        import traceback
+
         print(f"[ERROR] Traceback: {traceback.format_exc()}")
         
         # Log the failure
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "summary_generation_failed_get",
                 "conversation_id": conversation_id,
@@ -477,7 +483,7 @@ async def export_conversation_with_report(
 
         # Attempt to include active welcome message as the first exported message
         try:
-            from . import welcome_guides as _wg
+
             _wg_data = _wg.public_welcome_and_guide()
             _welcome = _wg_data.get('welcome') if isinstance(_wg_data, dict) else None
         except Exception:
@@ -518,7 +524,7 @@ async def export_conversation_with_report(
         
         # Detailed logging for summary generation debugging
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "summary_generation_debug_export",
                 "conversation_id": conversation_id,
@@ -540,7 +546,7 @@ async def export_conversation_with_report(
         
         # Log the messages being sent to LLM
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "llm_messages_debug_export",
                 "conversation_id": conversation_id,
@@ -572,7 +578,7 @@ async def export_conversation_with_report(
 
             # Log successful summary generation
             try:
-                from .logging_utils import log_interaction as _li
+
                 _li({
                     "event": "summary_generation_success_export",
                     "conversation_id": conversation_id,
@@ -587,12 +593,12 @@ async def export_conversation_with_report(
         except Exception as e:
             print(f"[ERROR] Summary generation failed for conversation {conversation_id} (EXPORT): {e}")
             print(f"[ERROR] Exception type: {type(e).__name__}")
-            import traceback
+
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
             
             # Log the failure
             try:
-                from .logging_utils import log_interaction as _li
+
                 _li({
                     "event": "summary_generation_failed_export",
                     "conversation_id": conversation_id,
@@ -676,7 +682,7 @@ async def export_conversation_with_report(
         title_for_header = conversation.get('title_encrypted') or conversation['id']
 
         if fmt == 'txt':
-            from typing import List as _List
+
             lines: _List[str] = []
             lines.append(
                 f"Chat: {conversation['id']}" + (
@@ -707,7 +713,7 @@ async def export_conversation_with_report(
 
         if fmt == 'pdf':
             try:
-                import fitz  # type: ignore
+
                 pdf_buffer = io.BytesIO()
                 doc = fitz.open()
 
@@ -800,12 +806,10 @@ async def export_conversation_with_report(
         print(f"Unexpected error in export_conversation_with_report: {e}")
         raise HTTPException(status_code=500, detail=f"Internal error during export: {str(e)}")
 
-
 class ExportWithReportIn(BaseModel):
     format: Optional[str] = None
     # conversation_history expects a list of items like {"role": "user"|"assistant", "content": "...", "timestamp": "...", "id": "..."}
     conversation_history: Optional[List[Dict[str, Any]]] = None
-
 
 @router.post("/{conversation_id}/export-with-report")
 async def export_conversation_with_report_post(
@@ -822,7 +826,7 @@ async def export_conversation_with_report_post(
     try:
         # Basic logging start
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "export_with_report_post_start",
                 "conversation_id": conversation_id,
@@ -857,7 +861,7 @@ async def export_conversation_with_report_post(
 
         # Try to retrieve active welcome and prepend to export messages (POST)
         try:
-            from . import welcome_guides as _wg
+
             _wg_data = _wg.public_welcome_and_guide()
             _welcome = _wg_data.get('welcome') if isinstance(_wg_data, dict) else None
         except Exception:
@@ -897,7 +901,7 @@ async def export_conversation_with_report_post(
         
         # Detailed logging for summary generation debugging
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "summary_generation_debug",
                 "conversation_id": conversation_id,
@@ -919,7 +923,7 @@ async def export_conversation_with_report_post(
         
         # Log the messages being sent to LLM
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "llm_messages_debug",
                 "conversation_id": conversation_id,
@@ -952,7 +956,7 @@ async def export_conversation_with_report_post(
             
             # Log successful summary generation
             try:
-                from .logging_utils import log_interaction as _li
+
                 _li({
                     "event": "summary_generation_success",
                     "conversation_id": conversation_id,
@@ -967,12 +971,12 @@ async def export_conversation_with_report_post(
         except Exception as e:
             print(f"[ERROR] Summary generation failed for conversation (POST) {conversation_id}: {e}")
             print(f"[ERROR] Exception type: {type(e).__name__}")
-            import traceback
+
             print(f"[ERROR] Traceback: {traceback.format_exc()}")
             
             # Log the failure
             try:
-                from .logging_utils import log_interaction as _li
+
                 _li({
                     "event": "summary_generation_failed",
                     "conversation_id": conversation_id,
@@ -1055,7 +1059,7 @@ async def export_conversation_with_report_post(
         title_part_post = f"_{safe_title_post}" if safe_title_post else ''
         title_for_header_post = conversation.get('title_encrypted') or conversation['id']
         if fmt == 'txt':
-            from typing import List as _List
+
             lines: _List[str] = []
             lines.append(
                 f"Chat: {conversation['id']}" + (
@@ -1086,7 +1090,7 @@ async def export_conversation_with_report_post(
 
         if fmt == 'pdf':
             try:
-                import fitz  # type: ignore
+
                 pdf_buffer = io.BytesIO()
                 doc = fitz.open()
 
@@ -1171,7 +1175,7 @@ async def export_conversation_with_report_post(
             headers={'Content-Disposition': f'attachment; filename={filename_zip}'}
         )
         try:
-            from .logging_utils import log_interaction as _li
+
             _li({
                 "event": "export_with_report_post_done",
                 "conversation_id": conversation_id,

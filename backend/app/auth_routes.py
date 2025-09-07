@@ -328,7 +328,7 @@ async def admin_reset_password(
         "note": "User should change password after first login"
     }
 
-@router.get("/admin/users")
+@router.get("/auth/admin/users")
 async def list_users(
     limit: int = 50,
     current_admin: dict = Depends(get_current_admin_user)
@@ -364,7 +364,7 @@ async def list_users(
 class RoleUpdate(BaseModel):
     is_admin: bool
 
-@router.post("/admin/users/{user_id}/role")
+@router.post("/auth/admin/users/{user_id}/role")
 async def update_user_role(user_id: int, payload: RoleUpdate, current_admin: dict = Depends(get_current_admin_user)):
     """Aggiorna ruolo amministratore per un utente (solo admin)."""
     try:

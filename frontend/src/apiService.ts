@@ -881,7 +881,7 @@ class ApiService {
 
   // === Admin User Management ===
   async changeUserRole(userId: number, isAdmin: boolean): Promise<ApiResponse<any>> {
-    return this.makeRequest(`/admin/users/${userId}/role`, {
+    return this.makeRequest(`/admin/legacy-users/${userId}/role`, {
       method: 'PUT',
       body: JSON.stringify({ is_admin: isAdmin })
     });

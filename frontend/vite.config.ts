@@ -11,12 +11,12 @@ export default defineConfig(({ command, mode }) => {
   
   // Configurazione degli host consentiti per ogni sito
   const allowedHostsConfig: Record<string, string[]> = {
-    agrusti: ['agrusti.ai4educ.org'],
-    counselorbot: ['counselorbot.ai4educ.org'], 
-    edurag: ['edurag.ai4educ.org'],
-    margottini: ['margottini.ai4educ.org'],
-    pef: ['pef.ai4educ.org', 'cbp.ai4educ.org'],
-    default: ['cbp.ai4educ.org']
+    agrusti: ['agrusti.ai4educ.org', 'agrusti-d.ai4educ.org'],
+    counselorbot: ['counselorbot.ai4educ.org', 'counselorbot-d.ai4educ.org'], 
+    edurag: ['edurag.ai4educ.org', 'edurag-d.ai4educ.org'],
+    margottini: ['margottini.ai4educ.org', 'margottini-d.ai4educ.org'],
+    pef: ['pef.ai4educ.org', 'pef-d.ai4educ.org', 'cbp.ai4educ.org', 'cbp-d.ai4educ.org'],
+    default: ['cbp.ai4educ.org', 'cbp.ai4educ.org']
   }
 
   return {

@@ -33,6 +33,7 @@ import FileUpload, { ProcessedFile } from './components/FileUpload'
 import FileManagerCompact from './components/FileManagerCompact'
 import ChatToolbar from './components/ChatToolbar'
 import FormRunnerDialog from './components/FormRunnerDialog'
+import FormResultRenderer from './components/FormResultRenderer'
 import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { createApiService } from './types/api'
@@ -354,6 +355,8 @@ const AppContent: React.FC = () => {
     'local': 'Whisper Locale'
   }
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
+
+  // (Removed) previously used DOM event flow for structured form results. FormRunnerDialog now calls back via onPostStructured.
 
   // (Rimossa) Bolla iniziale "Ho caricato X file" – manteniamo solo il riepilogo dettagliato
 
@@ -1204,7 +1207,8 @@ const AppContent: React.FC = () => {
                 
                 {/* Bolla del messaggio - aumentata la dimensione */}
                 <Box sx={{ 
-                  maxWidth: '85%',
+                  // Make bubble wider for structured form results; full width on very small screens
+                  maxWidth: isVerySmall ? '100%' : (m.__formResult ? '92%' : '85%'),
                   bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
                   color: m.role === 'assistant' ? '#000' : '#fff',
                   p: 2,
@@ -1215,12 +1219,15 @@ const AppContent: React.FC = () => {
                   position: 'relative',
                 }}>
                   <Box sx={{
-                    '& table': { width: '100%', borderCollapse: 'collapse', my: 1 },
+                    // Relax table wrapper sizing for form result content
+                    '& table': { width: '100%', maxWidth: '100%', borderCollapse: 'collapse', my: 1 },
                     '& th, & td': { border: '1px solid rgba(0,0,0,0.15)', padding: '6px 8px', textAlign: 'left' },
                     '& thead th': { bgcolor: 'rgba(0,0,0,0.04)' },
                     '& code': { bgcolor: 'rgba(0,0,0,0.06)', px: 0.5, py: 0.1, borderRadius: 0.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' },
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
                     '& p': { m: 0 },
+                   // If message is a form result, allow the inner content to expand more horizontally
+                   ...(m.__formResult ? { maxWidth: '100%', '& .markdown-table-wrapper': { overflowX: 'auto' } } : {}),
                   }}>
                     {m.uploadSummary && m.uploadSummary.length > 0 ? (
                       <Box>
@@ -1274,7 +1281,11 @@ const AppContent: React.FC = () => {
                         </Stack>
                       </Box>
                     ) : (
-                      <ReactMarkdown
+                      // If message contains structured form result, render it using FormResultRenderer
+                      m.__formResult ? (
+                        <FormResultRenderer payload={m.__formResult} />
+                      ) : (
+                        <ReactMarkdown
                         remarkPlugins={[remarkGfm, remarkBreaks]}
                         components={{
                           a: ({node, href, children, ...props}) => {
@@ -1304,7 +1315,7 @@ const AppContent: React.FC = () => {
                       >
                         {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
                       </ReactMarkdown>
-                    )}
+                    ))}
                   </Box>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
@@ -1805,6 +1816,9 @@ const AppContent: React.FC = () => {
         personalityId={selectedPersonality?.id || undefined}
         onPostSummary={(summary: string) => {
           setMessages(prev => [...prev, { role: 'assistant' as const, content: summary, ts: Date.now() }])
+        }}
+        onPostStructured={(payload:any) => {
+          setMessages(prev => [...prev, { role: 'assistant' as const, content: 'Risultati form', ts: Date.now(), __formResult: payload }])
         }}
         onConversationReady={(cid: string) => {
           setCurrentConversationId(cid)

@@ -1,5 +1,5 @@
 import React from 'react'
-import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Stack, TextField, MenuItem, Typography, Paper, Table, TableBody, TableCell, TableHead, TableRow } from '@mui/material'
+import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Stack, TextField, MenuItem, Typography, Paper, Table, TableBody, TableCell, TableHead, TableRow, Box, RadioGroup, FormControl, FormControlLabel, Radio, Checkbox, FormGroup } from '@mui/material'
 import { apiService } from '../apiService'
 
 type Props = {
@@ -9,10 +9,11 @@ type Props = {
   conversationId?: string | null
   personalityId?: string | null
   onPostSummary?: (summary: string) => void
+  onPostStructured?: (payload: any) => void
   onConversationReady?: (conversationId: string) => void
 }
 
-const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onConversationReady }) => {
+const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onPostStructured, onConversationReady }) => {
   const [forms, setForms] = React.useState<{ id: string; name: string; description?: string }[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
   const [items, setItems] = React.useState<any[]>([])
@@ -68,7 +69,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     setSaving(true)
     // Client-side validation
     const errors: string[] = []
-    const rows = items.map((it:any) => {
+  const rows = items.map((it:any) => {
       const id = it.id || it.factor
       let value = values[id]
       if (it.type === 'scale') {
@@ -80,8 +81,14 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
         errors.push(`${id}: testo troppo lungo`)
       }
       if ((it.type === 'choice_single' || it.type === 'choice_multi') && it.options && it.options.length) {
-        if (it.type === 'choice_single' && value && !it.options.includes(value) && value !== '__other__') errors.push(`${id}: scelta non valida`)
-        if (it.type === 'choice_multi' && Array.isArray(value) && value.some((v:any)=> !it.options.includes(v))) errors.push(`${id}: scelta multipla contiene valori non validi`)
+        if (it.type === 'choice_single') {
+          // allow free-text single choice when allow_other is enabled
+          if (value && !it.options.includes(value) && !(it.allow_other && typeof value === 'string' && value.length>0)) errors.push(`${id}: scelta non valida`)
+        }
+        if (it.type === 'choice_multi') {
+          // if allow_other is enabled, accept values not in options (they come from the 'Altro' input)
+          if (!it.allow_other && Array.isArray(value) && value.some((v:any)=> !it.options.includes(v))) errors.push(`${id}: scelta multipla contiene valori non validi`)
+        }
       }
       if (it.type === 'file' && it.accept_url && value) {
         try { new URL(value) } catch { errors.push(`${id}: URL non valida`) }
@@ -93,7 +100,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
       setSaving(false)
       return
     }
-    const payload = { rows }
+  const payload = { rows }
     const res = await apiService.submitForm(selectedId, payload, { conversationId: conversationId || undefined, personalityId: personalityId || undefined })
     try { localStorage.setItem('last_form_id', selectedId) } catch {}
     if (!res.success && res.error && res.error.includes('validation')) {
@@ -102,24 +109,29 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     }
     // Build summary message once (used both for UI and DB persistence)
     try {
+      // Build structured summary rows with labels and group/series metadata
+  const structured = { rows: items.map((it:any) => ({ id: it.id || it.factor, question: it.description || it.label || '', value: values[it.id || it.factor], group: it.group || '', series: it.series || '' })) }
+      // Provide a backwards compatible textual summary for simple clients
+      // Use 'Domanda | Risposta' headers (question/answer) and render booleans as 'Sì'/'No'
       const lines: string[] = []
-      // Solo i campi richiesti: id, label, esito
-      lines.push('Id | Label | Esito')
-      lines.push('--- | --- | ---')
-      items.forEach(it => {
-        const id = it.id || it.factor
-        const v = values[id]
-        lines.push(`${id} | ${it.label || it.description || ''} | ${Array.isArray(v) ? v.join(',') : String(v ?? '')}`)
+      lines.push('Domanda | Risposta')
+      lines.push('--- | ---')
+      structured.rows.forEach((r:any) => {
+        let display = ''
+        if (typeof r.value === 'boolean') display = r.value ? 'Sì' : 'No'
+        else if (Array.isArray(r.value)) display = r.value.join(', ')
+        else display = String(r.value ?? '')
+        lines.push(`${r.question || r.label || r.id} | ${display}`)
       })
-      // Sezione conferma richiesta dall'utente
       lines.push('')
       lines.push('I dati sono corretti?')
       lines.push('• Scrivi "sì" per confermare')
       lines.push('• Scrivi "no" per reinviare il form')
       const summary = lines.join('\n')
-      // Update UI immediately
+      // Update UI immediately: send both structured payload and textual summary via callbacks
       onPostSummary?.(summary)
-      // Persist to DB best-effort: ensure conversation exists
+      // If the caller expects structured form payload in the message object, provide it via onPostSummary as well by returning the structured payload through a side-channel: here we use a custom event via window (simple) or prefer to let App.tsx handle messages added locally.
+      // Persist to DB best-effort: ensure conversation exists, then send textual summary to conversation (keep existing behavior)
       if (res.success) {
         let convId = conversationId || null
         if (!convId) {
@@ -134,11 +146,13 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
           } catch {/* ignore */}
         }
         if (convId) {
+          // Send textual summary to DB for compatibility
           await apiService.sendMessage(convId, summary, 'assistant')
+          // Notify caller with structured payload so UI can render rich result
+          try { if (typeof onPostStructured === 'function') { onPostStructured(structured) } } catch (e) { /* ignore */ }
         }
       }
     } catch (e) {
-      // best-effort: non bloccare il flusso del dialog
       console.warn('Failed to post summary message', e)
     }
     setSaving(false)
@@ -153,60 +167,136 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
           {forms.map(f=> <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
         </TextField>
         {items.length>0 ? (
-          <Paper variant="outlined">
-            <Table size="small">
-              <TableHead>
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            {/* Group items by `group` field (fallback to empty string) */}
+            {(() => {
+              const groups: Record<string, any[]> = {}
+              items.forEach((it:any) => {
+                const g = it.group || ''
+                groups[g] = groups[g] || []
+                groups[g].push(it)
+              })
+              return Object.keys(groups).map((g, gi) => {
+                const groupItems = groups[g]
+                const onlyScales = groupItems.every((x:any) => x.type === 'scale')
+                return (
+                  <Box key={gi} sx={{ mb: 2 }}>
+                    {g ? <Typography variant="subtitle1" sx={{ mb:1 }}>{g}</Typography> : null}
+                    {onlyScales && groupItems.length > 1 ? (
+                      // Render scales in a horizontal row (series)
+                      <Stack direction="row" spacing={2} alignItems="center">
+                        {groupItems.map((it:any) => {
+                          const id = it.id || it.factor
+                          const val = values[id]
+                          return (
+                            <Stack key={id} sx={{ minWidth: 140 }}>
+                              {it.series ? <Typography variant="caption">{it.series}</Typography> : <Typography variant="caption">{it.label||it.id}</Typography>}
+                              <TextField size="small" type="number" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} sx={{ mt:0.5 }} />
+                            </Stack>
+                          )
+                        })}
+                      </Stack>
+                    ) : (
+                      // Render individual items stacked
+                      <Table size="small">
+                        <TableHead>
                 <TableRow>
-                  <TableCell>Fattore</TableCell>
-                  <TableCell>Descrizione</TableCell>
-                  <TableCell width={120}>Esito</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {items.map((it:any) => {
-                  const id = it.id || it.factor
-                  const val = values[id]
-                  return (
-                  <TableRow key={id}>
-                    <TableCell>{id}</TableCell>
-                    <TableCell>{it.label || it.description || ''}</TableCell>
-                    <TableCell>
-                      {/* Render input depending on type */}
-                      {it.type === 'scale' && (
-                        <TextField size="small" type="number" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} />
-                      )}
-                      {it.type === 'text' && (
-                        <TextField size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} />
-                      )}
-                      {it.type === 'textarea' && (
-                        <TextField size="small" multiline rows={3} value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} />
-                      )}
-                      {(it.type === 'choice_single') && (
-                        <TextField size="small" select value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))}>
-                          {(it.options||[]).map((o:string)=> <MenuItem key={o} value={o}>{o}</MenuItem>)}
-                          {it.allow_other && <MenuItem value={'__other__'}>Altro...</MenuItem>}
-                        </TextField>
-                      )}
-                      {(it.type === 'choice_multi') && (
-                        <TextField size="small" value={(val||[]).join(',')} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value.split(',').map((s:string)=> s.trim()).filter(Boolean) }))} placeholder={(it.options||[]).join(',')} />
-                      )}
-                      {it.type === 'boolean' && (
-                        <TextField size="small" select value={val ? 'true' : 'false'} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value === 'true' }))}>
-                          <MenuItem value={'true'}>{it.true_label||'Sì'}</MenuItem>
-                          <MenuItem value={'false'}>{it.false_label||'No'}</MenuItem>
-                        </TextField>
-                      )}
-                      {it.type === 'date' && (
-                        <TextField size="small" type="date" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ min: it.min_date || undefined, max: it.max_date || undefined }} />
-                      )}
-                      {it.type === 'file' && (
-                        <TextField size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} placeholder={it.accept_url ? 'https://...' : 'URL o path'} />
-                      )}
-                    </TableCell>
+                  <TableCell sx={{ width: '60%', whiteSpace: 'normal', wordBreak: 'break-word' }}>Domanda</TableCell>
                   </TableRow>
-                )})}
-              </TableBody>
-            </Table>
+                        </TableHead>
+                        <TableBody>
+                          {groupItems.map((it:any) => {
+                            const id = it.id || it.factor
+                            const val = values[id]
+                            return (
+                              <React.Fragment key={id}>
+                                <TableRow>
+                                  <TableCell sx={{ verticalAlign: 'top', width: 260, fontWeight: 600, whiteSpace: 'normal', wordBreak: 'break-word' }}>{it.description || it.label || id}</TableCell>
+                                </TableRow>
+                                <TableRow>
+                                  <TableCell colSpan={2}>
+                                    {/* Input area placed below description and spanning full width */}
+                                    {it.type === 'scale' && (
+                                      <TextField fullWidth size="small" type="number" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} sx={{ mt:1 }} />
+                                    )}
+                                    {it.type === 'text' && (
+                                      <TextField fullWidth size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} sx={{ mt:1 }} />
+                                    )}
+                                    {it.type === 'textarea' && (
+                                      <TextField fullWidth size="small" multiline rows={4} value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} sx={{ mt:1 }} />
+                                    )}
+                                    {(it.type === 'choice_single') && (
+                                      <FormControl component="fieldset" sx={{ mt:1 }}>
+                                        <RadioGroup value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))}>
+                                          {(it.options||[]).map((o:string)=> (
+                                            <FormControlLabel key={o} value={o} control={<Radio />} label={o} />
+                                          ))}
+                                          {it.allow_other && (
+                                            <FormControlLabel value={values[`${id}__other`] ?? '__other__'} control={<Radio />} label={
+                                              <TextField size="small" placeholder="Altro..." value={values[`${id}__other`] ?? ''} onChange={e=> setValues(v=> ({ ...v, [`${id}__other`]: e.target.value, [id]: e.target.value }))} onFocus={()=> setValues(v=> ({ ...v, [id]: values[`${id}__other`] ?? '' }))} />
+                                            } />
+                                          )}
+                                        </RadioGroup>
+                                      </FormControl>
+                                    )}
+                                    {(it.type === 'choice_multi') && (
+                                      <FormControl component="fieldset" sx={{ mt:1 }}>
+                                        <FormGroup>
+                                          {(it.options||[]).map((o:string)=> (
+                                            <FormControlLabel key={o} control={<Checkbox checked={Array.isArray(val) ? val.includes(o) : false} onChange={e=> {
+                                              const checked = e.target.checked
+                                              setValues(v=> {
+                                                const cur = Array.isArray(v[id]) ? [...v[id]] : []
+                                                if (checked) {
+                                                  if (!cur.includes(o)) cur.push(o)
+                                                } else {
+                                                  const idx = cur.indexOf(o)
+                                                  if (idx>=0) cur.splice(idx,1)
+                                                }
+                                                return { ...v, [id]: cur }
+                                              })
+                                            }} />} label={o} />
+                                          ))}
+                                          {it.allow_other && (
+                                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1 }}>
+                                              <TextField size="small" placeholder="Altro..." value={values[`${id}__other`] ?? ''} onChange={e=> setValues(v=> ({ ...v, [`${id}__other`]: e.target.value }))} onBlur={e=> {
+                                                const txt = e.target.value.trim()
+                                                if (!txt) return
+                                                setValues(v=> {
+                                                  const cur = Array.isArray(v[id]) ? [...v[id]] : []
+                                                  if (!cur.includes(txt)) cur.push(txt)
+                                                  return { ...v, [id]: cur }
+                                                })
+                                              }} />
+                                            </Box>
+                                          )}
+                                        </FormGroup>
+                                      </FormControl>
+                                    )}
+                                    {it.type === 'boolean' && (
+                                      <TextField fullWidth size="small" select value={val ? 'true' : 'false'} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value === 'true' }))} sx={{ mt:1 }}>
+                                        <MenuItem value={'true'}>{it.true_label||'Sì'}</MenuItem>
+                                        <MenuItem value={'false'}>{it.false_label||'No'}</MenuItem>
+                                      </TextField>
+                                    )}
+                                    {it.type === 'date' && (
+                                      <TextField fullWidth size="small" type="date" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ min: it.min_date || undefined, max: it.max_date || undefined }} sx={{ mt:1 }} />
+                                    )}
+                                    {it.type === 'file' && (
+                                      <TextField fullWidth size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} placeholder={it.accept_url ? 'https://...' : 'URL o path'} sx={{ mt:1 }} />
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              </React.Fragment>
+                            )
+                          })}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </Box>
+                )
+              })
+            })()}
           </Paper>
         ) : (
           <>

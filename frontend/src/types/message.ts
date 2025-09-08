@@ -19,6 +19,8 @@ export type Msg = {
   uploadSummary?: UploadSummary
   __uploadExpanded?: Record<string, boolean>
   isWelcome?: boolean
+  // Optional structured payloads for special message types (e.g. form results)
+  __formResult?: any
 }
 
 export default Msg

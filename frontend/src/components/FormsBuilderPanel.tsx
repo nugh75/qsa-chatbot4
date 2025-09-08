@@ -13,6 +13,8 @@ type FormItem = {
   // human label
   label?: string;
   description?: string;
+  // raw options string used while editing (not persisted as-is)
+  optionsRaw?: string;
   type?: string; // 'scale'|'text'|'textarea'|'choice_single'|'choice_multi'|'boolean'|'date'|'file'
   // numeric for scale
   min?: number;
@@ -33,6 +35,10 @@ type FormItem = {
   max_date?: string;
   // file
   accept_url?: boolean;
+  // grouping for UI: optional group title for grouping multiple items together
+  group?: string;
+  // series header (for scale series): optional label used when rendering a series of scales
+  series?: string;
 }
 type FormDef = { id: string; name: string; description?: string; items: FormItem[] }
 
@@ -53,16 +59,18 @@ const FormsBuilderPanel: React.FC = () => {
     if (r.success && r.data) {
       const list = (r.data.forms || []) as any[]
       // Normalize legacy items (factor -> id/type:scale)
-      const mapped = list.map((f:any)=> ({
+  const mapped = list.map((f:any)=> ({
         id: f.id,
         name: f.name,
         description: f.description,
         items: (f.items || []).map((it:any) => {
           if (it.factor) {
-            return { id: it.factor, label: it.description || it.factor, type: 'scale', min: it.min, max: it.max, invertita: it.invertita }
+    return { id: it.factor, description: it.description || it.factor, type: 'scale', min: it.min, max: it.max, invertita: it.invertita }
           }
-          // assume already in new schema
-          return it
+          // assume already in new schema; keep a raw options string for editing
+          const copy = { ...it }
+          if (Array.isArray(it.options)) copy.optionsRaw = (it.options || []).join(', ')
+          return copy
         })
       }))
       setForms(mapped)
@@ -83,17 +91,35 @@ const FormsBuilderPanel: React.FC = () => {
   const save = async () => {
     if (!name.trim()) return
     setSaving(true)
-    // Ensure items use canonical `id` field
-    const cleaned = items.map(it => ({
-      id: it.id || (it as any).factor || '',
-      label: it.label || it.description || '',
-      description: it.description,
-      type: it.type || 'scale',
-      min: it.min,
-      max: it.max,
-      step: it.step,
-      options: it.options
-    }))
+    // Ensure items use canonical `id` field. If id is missing, derive from label (slugify).
+    const slugify = (s: string) => s ? s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') : ''
+    const cleaned = items.map((it, idx) => {
+      // Use description as the canonical question text; fall back to label for compatibility
+      const label = it.description || it.label || ''
+      const base = slugify(label) || `item-${idx+1}`
+      // Avoid forcing uniqueness here; server or consumer can handle collisions if needed
+      const id = (it as any).id || (it as any).factor || base
+      // Parse optionsRaw (editable) into options array; accept comma or semicolon separators
+      let optionsArr: string[] | undefined = undefined
+      const raw = (it as any).optionsRaw
+      if (typeof raw === 'string' && raw.trim().length) {
+        optionsArr = raw.split(/[;,]/).map((s:string)=> s.trim()).filter(Boolean)
+      } else if (Array.isArray(it.options)) {
+        optionsArr = it.options
+      }
+      return {
+        id,
+        label,
+        description: it.description || it.label,
+        type: it.type || 'scale',
+        min: it.min,
+        max: it.max,
+        step: it.step,
+        options: optionsArr,
+        group: (it as any).group,
+        series: (it as any).series
+      }
+    })
     const payload = { id: editing?.id, name: name.trim(), description: description.trim() || undefined, items: cleaned }
     const r = await apiService.adminSaveForm(payload)
     if (r.success && r.data) { setDlgOpen(false); load() } else setErr(r.error || 'Errore salvataggio form')
@@ -119,18 +145,18 @@ const FormsBuilderPanel: React.FC = () => {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Nome</TableCell>
-                <TableCell>Descrizione</TableCell>
-                <TableCell>Voci</TableCell>
+                <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>Nome</TableCell>
+                <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>Descrizione</TableCell>
+                <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>Voci</TableCell>
                 <TableCell align="right">Azioni</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {forms.map(f => (
                 <TableRow key={f.id}>
-                  <TableCell>{f.name}</TableCell>
-                  <TableCell>{f.description}</TableCell>
-                  <TableCell>{f.items?.length || 0}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{f.name}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{f.description}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{f.items?.length || 0}</TableCell>
                   <TableCell align="right">
                     <IconButton size="small" onClick={()=> openEdit(f)}><EditIcon fontSize="small" /></IconButton>
                     <IconButton size="small" color="error" onClick={()=> onDelete(f.id)}><DeleteIcon fontSize="small" /></IconButton>
@@ -159,18 +185,16 @@ const FormsBuilderPanel: React.FC = () => {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={140}>Id</TableCell>
-                    <TableCell>Label / Descrizione</TableCell>
-                    <TableCell width={160}>Tipo</TableCell>
-                    <TableCell align="right">Azioni</TableCell>
+                    <TableCell sx={{ width: '60%', whiteSpace: 'normal', wordBreak: 'break-word' }}>Domanda</TableCell>
+                    <TableCell width={160} sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>Tipo</TableCell>
+                    <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>Config / Azioni</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {items.map((it,idx) => (
                     <TableRow key={idx}>
-                      <TableCell><TextField size="small" value={it.id || ''} onChange={e=> updateItem(idx,{ id: e.target.value })} /></TableCell>
-                      <TableCell><TextField size="small" fullWidth value={it.label || it.description || ''} onChange={e=> updateItem(idx,{ label: e.target.value, description: e.target.value })} /></TableCell>
-                      <TableCell>
+                      <TableCell sx={{ verticalAlign: 'top', whiteSpace: 'normal', wordBreak: 'break-word' }}><TextField size="small" fullWidth value={it.description || it.label || ''} onChange={e=> updateItem(idx,{ description: e.target.value })} /></TableCell>
+                      <TableCell sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>
                         <TextField size="small" select value={it.type || 'scale'} onChange={e=> updateItem(idx,{ type: e.target.value })}>
                           <MenuItem value={'scale'}>Scala</MenuItem>
                           <MenuItem value={'text'}>Testo (breve)</MenuItem>
@@ -182,10 +206,12 @@ const FormsBuilderPanel: React.FC = () => {
                           <MenuItem value={'file'}>File (URL)</MenuItem>
                         </TextField>
                       </TableCell>
-                      <TableCell><TextField size="small" type="number" value={it.min ?? 1} onChange={e=> updateItem(idx,{ min: parseInt(e.target.value||'1') })} /></TableCell>
-                      <TableCell><TextField size="small" type="number" value={it.max ?? 9} onChange={e=> updateItem(idx,{ max: parseInt(e.target.value||'9') })} /></TableCell>
                       <TableCell>
                         <Stack spacing={1}>
+                          <Stack direction="row" spacing={1} alignItems="center">
+                            <TextField size="small" label="Group title" value={it.group||''} onChange={e=> updateItem(idx,{ group: e.target.value })} sx={{ width:200 }} />
+                            <TextField size="small" label="Series header" value={it.series||''} onChange={e=> updateItem(idx,{ series: e.target.value })} sx={{ width:180 }} />
+                          </Stack>
                           {/* Type-specific small editors */}
                           {it.type === 'scale' && (
                             <Stack direction="row" spacing={1}>
@@ -194,14 +220,15 @@ const FormsBuilderPanel: React.FC = () => {
                             </Stack>
                           )}
                           {it.type === 'text' && (
-                            <Stack direction="row" spacing={1}>
+                            <Stack direction="row" spacing={1} alignItems="center">
                               <TextField size="small" label="placeholder" value={it.placeholder||''} onChange={e=> updateItem(idx,{ placeholder: e.target.value })} sx={{ width:200 }} />
                               <TextField size="small" label="max len" type="number" value={it.max_length||''} onChange={e=> updateItem(idx,{ max_length: e.target.value ? parseInt(e.target.value) : undefined })} sx={{ width:120 }} />
                             </Stack>
                           )}
                           {(it.type === 'choice_single' || it.type === 'choice_multi') && (
                             <Stack direction="row" spacing={1} alignItems="center">
-                              <TextField size="small" label="Opzioni (comma)" value={(it.options||[]).join(',')} onChange={e=> updateItem(idx,{ options: e.target.value.split(',').map(s=>s.trim()).filter(Boolean) })} sx={{ width:260 }} />
+                              {/* Use a raw string while editing so commas are not interpreted by the input component */}
+                              <TextField size="small" label="Opzioni (comma)" value={(it as any).optionsRaw || (it.options||[]).join(', ')} onChange={e=> updateItem(idx,{ optionsRaw: e.target.value })} sx={{ width:260 }} />
                               <TextField size="small" select label="Altro" value={it.allow_other ? 'yes' : 'no'} onChange={e=> updateItem(idx,{ allow_other: e.target.value === 'yes' })} sx={{ width:100 }}>
                                 <MenuItem value={'no'}>No</MenuItem>
                                 <MenuItem value={'yes'}>Sì (campo altro)</MenuItem>
@@ -230,13 +257,15 @@ const FormsBuilderPanel: React.FC = () => {
                           )}
                         </Stack>
                         <Stack direction="row" justifyContent="flex-end">
-                          <IconButton size="small" color="error" onClick={()=> removeItem(idx)}><DeleteIcon fontSize="small" /></IconButton>
+                          {it.type !== 'text' && (
+                            <IconButton size="small" color="error" onClick={()=> removeItem(idx)}><DeleteIcon fontSize="small" /></IconButton>
+                          )}
                         </Stack>
                       </TableCell>
                     </TableRow>
                   ))}
                   {items.length===0 && (
-                    <TableRow><TableCell colSpan={4}><Typography variant="body2" color="text.secondary">Aggiungi voci al form</Typography></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={3}><Typography variant="body2" color="text.secondary">Aggiungi voci al form</Typography></TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>

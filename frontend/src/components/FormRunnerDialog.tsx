@@ -15,8 +15,8 @@ type Props = {
 const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onConversationReady }) => {
   const [forms, setForms] = React.useState<{ id: string; name: string; description?: string }[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
-  const [items, setItems] = React.useState<{ factor: string; description: string; min?: number; max?: number }[]>([])
-  const [values, setValues] = React.useState<Record<string, number>>({})
+  const [items, setItems] = React.useState<any[]>([])
+  const [values, setValues] = React.useState<Record<string, any>>({})
   const [saving, setSaving] = React.useState(false)
 
   React.useEffect(()=>{
@@ -26,6 +26,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
       if (r.success && r.data) {
         const source = (r.data.forms || []) as any[]
         const list = (enabledFormIds && enabledFormIds.length) ? source.filter((f:any)=> enabledFormIds.includes(f.id)) : source
+        // server already normalizes legacy items; still accept old shape
         setForms(list as any)
         // Prefer last used form from localStorage; fallback to first available
         if (list.length) {
@@ -52,9 +53,11 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
       const r = await apiService.getForm(selectedId)
       if (r.success && r.data) {
         const its = r.data.form.items || []
-        setItems(its)
-        const initVals: Record<string, number> = {}
-        its.forEach((it:any)=> { initVals[it.factor] = 0 })
+        // normalize legacy factor -> id
+        const norm = its.map((it:any)=> it.factor ? { id: it.factor, label: it.description||it.factor, type: 'scale', min: it.min, max: it.max } : it)
+        setItems(norm)
+        const initVals: Record<string, any> = {}
+        norm.forEach((it:any)=> { initVals[it.id || it.factor] = it.type==='choice_multi' ? [] : (it.type==='boolean' ? false : '') })
         setValues(initVals)
       }
     })()
@@ -63,18 +66,29 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
   const submit = async () => {
     if (!selectedId) return
     setSaving(true)
-    const payload = { rows: items.map(it=> ({ factor: it.factor, description: it.description, value: Number(values[it.factor]||0) })) }
+    // Build rows using canonical id and type-aware values
+    const rows = items.map((it:any) => {
+      const id = it.id || it.factor
+      let value = values[id]
+      // coerce numeric scales
+      if (it.type === 'scale') {
+        value = Number(value || 0)
+      }
+      return { id, value }
+    })
+    const payload = { rows }
     const res = await apiService.submitForm(selectedId, payload, { conversationId: conversationId || undefined, personalityId: personalityId || undefined })
     try { localStorage.setItem('last_form_id', selectedId) } catch {}
     // Build summary message once (used both for UI and DB persistence)
     try {
       const lines: string[] = []
-      // Solo i campi richiesti: nome, descrizione, esito
-      lines.push('Nome | Descrizione | Esito')
+      // Solo i campi richiesti: id, label, esito
+      lines.push('Id | Label | Esito')
       lines.push('--- | --- | ---')
       items.forEach(it => {
-        const v = values[it.factor]
-        lines.push(`${it.factor} | ${it.description ?? ''} | ${v ?? ''}`)
+        const id = it.id || it.factor
+        const v = values[id]
+        lines.push(`${id} | ${it.label || it.description || ''} | ${Array.isArray(v) ? v.join(',') : String(v ?? '')}`)
       })
       // Sezione conferma richiesta dall'utente
       lines.push('')

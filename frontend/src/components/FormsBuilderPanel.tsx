@@ -1,12 +1,28 @@
 import React from 'react'
-import { Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, LinearProgress, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from '@mui/material'
+import { Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, LinearProgress, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography, MenuItem } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import { apiService } from '../apiService'
 
-type FormItem = { factor: string; description: string; min?: number; max?: number; invertita?: boolean }
+// New minimal form item schema used by backend. Keep backward-compatible mapping from legacy `factor`.
+type FormItem = {
+  // canonical id (was `factor` in legacy forms)
+  id?: string;
+  // human label
+  label?: string;
+  description?: string;
+  type?: string; // 'scale'|'text'|'textarea'|'choice_single'|'choice_multi'|'boolean'|'date'|'file'
+  // numeric for scale
+  min?: number;
+  max?: number;
+  step?: number;
+  // for choices
+  options?: string[];
+  // legacy flag kept for convenience
+  invertita?: boolean;
+}
 type FormDef = { id: string; name: string; description?: string; items: FormItem[] }
 
 const FormsBuilderPanel: React.FC = () => {
@@ -25,7 +41,20 @@ const FormsBuilderPanel: React.FC = () => {
     const r = await apiService.adminListForms()
     if (r.success && r.data) {
       const list = (r.data.forms || []) as any[]
-      setForms(list.map((f:any)=> ({ id: f.id, name: f.name, description: f.description, items: f.items || [] })))
+      // Normalize legacy items (factor -> id/type:scale)
+      const mapped = list.map((f:any)=> ({
+        id: f.id,
+        name: f.name,
+        description: f.description,
+        items: (f.items || []).map((it:any) => {
+          if (it.factor) {
+            return { id: it.factor, label: it.description || it.factor, type: 'scale', min: it.min, max: it.max, invertita: it.invertita }
+          }
+          // assume already in new schema
+          return it
+        })
+      }))
+      setForms(mapped)
     } else setErr(r.error || 'Errore caricamento forms')
     setLoading(false)
   }
@@ -33,7 +62,7 @@ const FormsBuilderPanel: React.FC = () => {
 
   const openNew = () => { setEditing(null); setName(''); setDescription(''); setItems([]); setDlgOpen(true) }
   const openEdit = (f: FormDef) => { setEditing(f); setName(f.name); setDescription(f.description||''); setItems(f.items||[]); setDlgOpen(true) }
-  const addRow = () => setItems(prev => [...prev, { factor:'', description:'', min:1, max:9, invertita:false }])
+  const addRow = () => setItems(prev => [...prev, { id:'', label:'', type:'scale', min:1, max:9, step:1, options: [] }])
   const updateItem = (idx:number, patch: Partial<FormItem>) => {
     setItems(prev => prev.map((it,i)=> i===idx ? { ...it, ...patch } : it))
   }
@@ -41,7 +70,18 @@ const FormsBuilderPanel: React.FC = () => {
   const save = async () => {
     if (!name.trim()) return
     setSaving(true)
-    const payload = { id: editing?.id, name: name.trim(), description: description.trim() || undefined, items }
+    // Ensure items use canonical `id` field
+    const cleaned = items.map(it => ({
+      id: it.id || (it as any).factor || '',
+      label: it.label || it.description || '',
+      description: it.description,
+      type: it.type || 'scale',
+      min: it.min,
+      max: it.max,
+      step: it.step,
+      options: it.options
+    }))
+    const payload = { id: editing?.id, name: name.trim(), description: description.trim() || undefined, items: cleaned }
     const r = await apiService.adminSaveForm(payload)
     if (r.success && r.data) { setDlgOpen(false); load() } else setErr(r.error || 'Errore salvataggio form')
     setSaving(false)
@@ -99,34 +139,40 @@ const FormsBuilderPanel: React.FC = () => {
               <TextField label="Descrizione" value={description} onChange={e=> setDescription(e.target.value)} fullWidth size="small" />
             </Stack>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mb:1 }}>
-              <Typography variant="subtitle2">Voci (fattore, descrizione, range)</Typography>
+              <Typography variant="subtitle2">Voci (id, label, tipo)</Typography>
               <Button size="small" startIcon={<AddIcon />} onClick={addRow}>Aggiungi voce</Button>
             </Stack>
             <Paper variant="outlined">
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={120}>Fattore</TableCell>
-                    <TableCell>Descrizione</TableCell>
+                    <TableCell width={140}>Id</TableCell>
+                    <TableCell>Label / Descrizione</TableCell>
+                    <TableCell width={160}>Tipo</TableCell>
                     <TableCell width={100}>Min</TableCell>
                     <TableCell width={100}>Max</TableCell>
-                    <TableCell width={110}>Invertita</TableCell>
                     <TableCell align="right">Azioni</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {items.map((it,idx) => (
                     <TableRow key={idx}>
-                      <TableCell><TextField size="small" value={it.factor} onChange={e=> updateItem(idx,{ factor: e.target.value })} /></TableCell>
-                      <TableCell><TextField size="small" fullWidth value={it.description} onChange={e=> updateItem(idx,{ description: e.target.value })} /></TableCell>
+                      <TableCell><TextField size="small" value={it.id || ''} onChange={e=> updateItem(idx,{ id: e.target.value })} /></TableCell>
+                      <TableCell><TextField size="small" fullWidth value={it.label || it.description || ''} onChange={e=> updateItem(idx,{ label: e.target.value, description: e.target.value })} /></TableCell>
+                      <TableCell>
+                        <TextField size="small" select value={it.type || 'scale'} onChange={e=> updateItem(idx,{ type: e.target.value })}>
+                          <MenuItem value={'scale'}>Scala</MenuItem>
+                          <MenuItem value={'text'}>Testo (breve)</MenuItem>
+                          <MenuItem value={'textarea'}>Testo (lunga)</MenuItem>
+                          <MenuItem value={'choice_single'}>Scelta singola</MenuItem>
+                          <MenuItem value={'choice_multi'}>Scelta multipla</MenuItem>
+                          <MenuItem value={'boolean'}>Sì/No</MenuItem>
+                          <MenuItem value={'date'}>Data</MenuItem>
+                          <MenuItem value={'file'}>File (URL)</MenuItem>
+                        </TextField>
+                      </TableCell>
                       <TableCell><TextField size="small" type="number" value={it.min ?? 1} onChange={e=> updateItem(idx,{ min: parseInt(e.target.value||'1') })} /></TableCell>
                       <TableCell><TextField size="small" type="number" value={it.max ?? 9} onChange={e=> updateItem(idx,{ max: parseInt(e.target.value||'9') })} /></TableCell>
-                      <TableCell>
-                        <Stack direction="row" alignItems="center" spacing={1}>
-                          <Chip size="small" label={it.invertita ? 'Sì' : 'No'} />
-                          <Button size="small" variant="outlined" onClick={()=> updateItem(idx, { invertita: !it.invertita })}>{it.invertita ? 'Normalizza' : 'Inverti'}</Button>
-                        </Stack>
-                      </TableCell>
                       <TableCell align="right"><IconButton size="small" color="error" onClick={()=> removeItem(idx)}><DeleteIcon fontSize="small" /></IconButton></TableCell>
                     </TableRow>
                   ))}

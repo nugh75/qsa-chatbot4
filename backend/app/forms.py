@@ -15,6 +15,8 @@ import json
 import uuid
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+import re
+from statistics import mean
 
 from fastapi import HTTPException
 
@@ -160,6 +162,12 @@ def submit_form_values(*, form_id: str, values: Dict[str, Any], user_id: Optiona
     init_forms_schema()
     if not get_form(form_id):
         raise HTTPException(status_code=404, detail="Form non trovato")
+    # Validate against form definition (normalizes legacy shapes)
+    form = get_form(form_id)
+    try:
+        validate_submission(form, values or {})
+    except HTTPException:
+        raise
     submission_id = f"sub_{uuid.uuid4().hex}"
     payload = json.dumps(values or {}, ensure_ascii=False)
     with db_manager.get_connection() as conn:
@@ -170,6 +178,161 @@ def submit_form_values(*, form_id: str, values: Dict[str, Any], user_id: Optiona
             db_manager.exec(cur, "INSERT INTO form_submissions (id, form_id, user_id, conversation_id, personality_id, values) VALUES (?, ?, ?, ?, ?, ?)", (submission_id, form_id, user_id, conversation_id, personality_id, payload))
         conn.commit()
     return {"id": submission_id}
+
+
+def _normalize_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy item shapes to the new schema.
+
+    Backward compatibility: legacy shape used 'factor' and optional min/max.
+    """
+    if not isinstance(item, dict):
+        return item
+    # Legacy: { factor, description, min, max }
+    if 'factor' in item:
+        nid = item.get('factor')
+        return {
+            'id': nid,
+            'type': 'scale',
+            'label': item.get('description') or nid,
+            'description': item.get('description') or '',
+            'min': item.get('min'),
+            'max': item.get('max')
+        }
+    # If already has id and type, return as-is
+    if 'id' in item and 'type' in item:
+        return item
+    # Fallback: try to map description -> label
+    return item
+
+
+def validate_submission(form: Dict[str, Any], values: Dict[str, Any]):
+    """Validate a submission payload against a form definition.
+
+    Raises HTTPException(400) with detail {'errors': [...] } on validation errors.
+    """
+    items = form.get('items') or []
+    norm_items: Dict[str, Dict[str, Any]] = {}
+    for it in items:
+        nit = _normalize_item(it)
+        if not nit.get('id'):
+            continue
+        norm_items[nit['id']] = nit
+
+    errors: List[Dict[str, Any]] = []
+
+    rows = (values or {}).get('rows') or []
+    # build map of provided values by id (accept legacy 'factor')
+    provided: Dict[str, Any] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get('id') or r.get('factor')
+        if rid:
+            provided[rid] = r
+
+    # Check required fields
+    for iid, it in norm_items.items():
+        if it.get('required'):
+            if iid not in provided:
+                errors.append({'field': iid, 'error': 'required'})
+
+    import datetime as _dt
+    # Validate each provided row
+    for pid, prow in provided.items():
+        it = norm_items.get(pid)
+        if not it:
+            errors.append({'field': pid, 'error': 'unknown_field'})
+            continue
+        typ = it.get('type') or 'scale'
+        val = prow.get('value')
+        # Accept legacy 'value' typed as number or string depending on type
+        if typ == 'scale':
+            try:
+                vnum = float(val)
+            except Exception:
+                errors.append({'field': pid, 'error': 'not_numeric'})
+                continue
+            mn = it.get('min')
+            mx = it.get('max')
+            if mn is not None and vnum < float(mn):
+                errors.append({'field': pid, 'error': 'below_min'})
+            if mx is not None and vnum > float(mx):
+                errors.append({'field': pid, 'error': 'above_max'})
+        elif typ in ('text', 'textarea'):
+            if val is None:
+                if it.get('required'):
+                    errors.append({'field': pid, 'error': 'required'})
+                continue
+            if not isinstance(val, str):
+                errors.append({'field': pid, 'error': 'not_string'})
+                continue
+            vlen = len(val)
+            vcfg = it.get('validation') or {}
+            mxl = vcfg.get('max_length') or it.get('max_length')
+            if mxl and vlen > int(mxl):
+                errors.append({'field': pid, 'error': 'max_length_exceeded', 'max_length': mxl})
+            rx = vcfg.get('regex')
+            if rx:
+                try:
+                    if not re.match(rx, val):
+                        errors.append({'field': pid, 'error': 'regex_mismatch'})
+                except re.error:
+                    # ignore malformed regex in form definition
+                    pass
+        elif typ == 'choice_single':
+            opts = it.get('options') or []
+            opt_vals = {o.get('value') for o in opts}
+            allow_other = it.get('allow_other')
+            if val is None:
+                if it.get('required'):
+                    errors.append({'field': pid, 'error': 'required'})
+                continue
+            if val not in opt_vals:
+                if allow_other:
+                    # expect value_other in payload
+                    if not prow.get('value_other'):
+                        errors.append({'field': pid, 'error': 'other_missing'})
+                else:
+                    errors.append({'field': pid, 'error': 'invalid_choice'})
+        elif typ == 'choice_multi':
+            opts = it.get('options') or []
+            opt_vals = {o.get('value') for o in opts}
+            if val is None:
+                if it.get('required'):
+                    errors.append({'field': pid, 'error': 'required'})
+                continue
+            if not isinstance(val, list):
+                errors.append({'field': pid, 'error': 'not_list'})
+                continue
+            for vv in val:
+                if vv not in opt_vals:
+                    errors.append({'field': pid, 'error': 'invalid_choice', 'value': vv})
+        elif typ == 'boolean':
+            if not isinstance(val, bool):
+                errors.append({'field': pid, 'error': 'not_boolean'})
+        elif typ == 'date':
+            if val is None:
+                if it.get('required'):
+                    errors.append({'field': pid, 'error': 'required'})
+                continue
+            try:
+                # accept ISO date or datetime
+                _dt.datetime.fromisoformat(str(val))
+            except Exception:
+                errors.append({'field': pid, 'error': 'invalid_date'})
+        elif typ == 'file':
+            # Expect URL or descriptor; minimal validation
+            if val is None and it.get('required'):
+                errors.append({'field': pid, 'error': 'required'})
+            else:
+                if val is not None and not isinstance(val, str):
+                    errors.append({'field': pid, 'error': 'invalid_file'})
+        else:
+            # unknown type: skip validation but note it
+            pass
+
+    if errors:
+        raise HTTPException(status_code=400, detail={'errors': errors})
 
 
 def list_submissions(form_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:

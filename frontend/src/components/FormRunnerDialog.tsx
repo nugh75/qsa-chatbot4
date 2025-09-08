@@ -66,19 +66,40 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
   const submit = async () => {
     if (!selectedId) return
     setSaving(true)
-    // Build rows using canonical id and type-aware values
+    // Client-side validation
+    const errors: string[] = []
     const rows = items.map((it:any) => {
       const id = it.id || it.factor
       let value = values[id]
-      // coerce numeric scales
       if (it.type === 'scale') {
         value = Number(value || 0)
+        if (typeof it.min === 'number' && value < it.min) errors.push(`${id}: valore < min`)
+        if (typeof it.max === 'number' && value > it.max) errors.push(`${id}: valore > max`)
+      }
+      if ((it.type === 'text' || it.type === 'textarea') && it.max_length && typeof value === 'string' && value.length > it.max_length) {
+        errors.push(`${id}: testo troppo lungo`)
+      }
+      if ((it.type === 'choice_single' || it.type === 'choice_multi') && it.options && it.options.length) {
+        if (it.type === 'choice_single' && value && !it.options.includes(value) && value !== '__other__') errors.push(`${id}: scelta non valida`)
+        if (it.type === 'choice_multi' && Array.isArray(value) && value.some((v:any)=> !it.options.includes(v))) errors.push(`${id}: scelta multipla contiene valori non validi`)
+      }
+      if (it.type === 'file' && it.accept_url && value) {
+        try { new URL(value) } catch { errors.push(`${id}: URL non valida`) }
       }
       return { id, value }
     })
+    if (errors.length) {
+      alert('Errore di validazione:\n' + errors.join('\n'))
+      setSaving(false)
+      return
+    }
     const payload = { rows }
     const res = await apiService.submitForm(selectedId, payload, { conversationId: conversationId || undefined, personalityId: personalityId || undefined })
     try { localStorage.setItem('last_form_id', selectedId) } catch {}
+    if (!res.success && res.error && res.error.includes('validation')) {
+      // server returned structured validation; show it
+      alert('Server validation failed: ' + (res.error || ''))
+    }
     // Build summary message once (used both for UI and DB persistence)
     try {
       const lines: string[] = []
@@ -142,15 +163,48 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
                 </TableRow>
               </TableHead>
               <TableBody>
-                {items.map(it => (
-                  <TableRow key={it.factor}>
-                    <TableCell>{it.factor}</TableCell>
-                    <TableCell>{it.description}</TableCell>
+                {items.map((it:any) => {
+                  const id = it.id || it.factor
+                  const val = values[id]
+                  return (
+                  <TableRow key={id}>
+                    <TableCell>{id}</TableCell>
+                    <TableCell>{it.label || it.description || ''}</TableCell>
                     <TableCell>
-                      <TextField size="small" type="number" value={values[it.factor] ?? ''} onChange={e=> setValues(v=> ({ ...v, [it.factor]: Number(e.target.value||0) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100 }} />
+                      {/* Render input depending on type */}
+                      {it.type === 'scale' && (
+                        <TextField size="small" type="number" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} />
+                      )}
+                      {it.type === 'text' && (
+                        <TextField size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} />
+                      )}
+                      {it.type === 'textarea' && (
+                        <TextField size="small" multiline rows={3} value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ maxLength: it.max_length || undefined }} placeholder={it.placeholder||''} />
+                      )}
+                      {(it.type === 'choice_single') && (
+                        <TextField size="small" select value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))}>
+                          {(it.options||[]).map((o:string)=> <MenuItem key={o} value={o}>{o}</MenuItem>)}
+                          {it.allow_other && <MenuItem value={'__other__'}>Altro...</MenuItem>}
+                        </TextField>
+                      )}
+                      {(it.type === 'choice_multi') && (
+                        <TextField size="small" value={(val||[]).join(',')} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value.split(',').map((s:string)=> s.trim()).filter(Boolean) }))} placeholder={(it.options||[]).join(',')} />
+                      )}
+                      {it.type === 'boolean' && (
+                        <TextField size="small" select value={val ? 'true' : 'false'} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value === 'true' }))}>
+                          <MenuItem value={'true'}>{it.true_label||'Sì'}</MenuItem>
+                          <MenuItem value={'false'}>{it.false_label||'No'}</MenuItem>
+                        </TextField>
+                      )}
+                      {it.type === 'date' && (
+                        <TextField size="small" type="date" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} inputProps={{ min: it.min_date || undefined, max: it.max_date || undefined }} />
+                      )}
+                      {it.type === 'file' && (
+                        <TextField size="small" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: e.target.value }))} placeholder={it.accept_url ? 'https://...' : 'URL o path'} />
+                      )}
                     </TableCell>
                   </TableRow>
-                ))}
+                )})}
               </TableBody>
             </Table>
           </Paper>

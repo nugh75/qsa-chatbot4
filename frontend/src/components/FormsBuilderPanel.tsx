@@ -20,8 +20,19 @@ type FormItem = {
   step?: number;
   // for choices
   options?: string[];
-  // legacy flag kept for convenience
-  invertita?: boolean;
+  allow_other?: boolean;
+  // text
+  placeholder?: string;
+  max_length?: number;
+  pattern?: string;
+  // boolean labels
+  true_label?: string;
+  false_label?: string;
+  // date
+  min_date?: string;
+  max_date?: string;
+  // file
+  accept_url?: boolean;
 }
 type FormDef = { id: string; name: string; description?: string; items: FormItem[] }
 
@@ -55,7 +66,9 @@ const FormsBuilderPanel: React.FC = () => {
         })
       }))
       setForms(mapped)
-    } else setErr(r.error || 'Errore caricamento forms')
+    } else {
+      setErr(r.error || 'Errore caricamento forms')
+    }
     setLoading(false)
   }
   React.useEffect(()=>{ load() },[])
@@ -149,8 +162,6 @@ const FormsBuilderPanel: React.FC = () => {
                     <TableCell width={140}>Id</TableCell>
                     <TableCell>Label / Descrizione</TableCell>
                     <TableCell width={160}>Tipo</TableCell>
-                    <TableCell width={100}>Min</TableCell>
-                    <TableCell width={100}>Max</TableCell>
                     <TableCell align="right">Azioni</TableCell>
                   </TableRow>
                 </TableHead>
@@ -173,11 +184,59 @@ const FormsBuilderPanel: React.FC = () => {
                       </TableCell>
                       <TableCell><TextField size="small" type="number" value={it.min ?? 1} onChange={e=> updateItem(idx,{ min: parseInt(e.target.value||'1') })} /></TableCell>
                       <TableCell><TextField size="small" type="number" value={it.max ?? 9} onChange={e=> updateItem(idx,{ max: parseInt(e.target.value||'9') })} /></TableCell>
-                      <TableCell align="right"><IconButton size="small" color="error" onClick={()=> removeItem(idx)}><DeleteIcon fontSize="small" /></IconButton></TableCell>
+                      <TableCell>
+                        <Stack spacing={1}>
+                          {/* Type-specific small editors */}
+                          {it.type === 'scale' && (
+                            <Stack direction="row" spacing={1}>
+                              <TextField size="small" label="min" type="number" value={it.min ?? 1} onChange={e=> updateItem(idx,{ min: parseInt(e.target.value||'1') })} sx={{ width:80 }} />
+                              <TextField size="small" label="max" type="number" value={it.max ?? 9} onChange={e=> updateItem(idx,{ max: parseInt(e.target.value||'9') })} sx={{ width:80 }} />
+                            </Stack>
+                          )}
+                          {it.type === 'text' && (
+                            <Stack direction="row" spacing={1}>
+                              <TextField size="small" label="placeholder" value={it.placeholder||''} onChange={e=> updateItem(idx,{ placeholder: e.target.value })} sx={{ width:200 }} />
+                              <TextField size="small" label="max len" type="number" value={it.max_length||''} onChange={e=> updateItem(idx,{ max_length: e.target.value ? parseInt(e.target.value) : undefined })} sx={{ width:120 }} />
+                            </Stack>
+                          )}
+                          {(it.type === 'choice_single' || it.type === 'choice_multi') && (
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <TextField size="small" label="Opzioni (comma)" value={(it.options||[]).join(',')} onChange={e=> updateItem(idx,{ options: e.target.value.split(',').map(s=>s.trim()).filter(Boolean) })} sx={{ width:260 }} />
+                              <TextField size="small" select label="Altro" value={it.allow_other ? 'yes' : 'no'} onChange={e=> updateItem(idx,{ allow_other: e.target.value === 'yes' })} sx={{ width:100 }}>
+                                <MenuItem value={'no'}>No</MenuItem>
+                                <MenuItem value={'yes'}>Sì (campo altro)</MenuItem>
+                              </TextField>
+                            </Stack>
+                          )}
+                          {it.type === 'boolean' && (
+                            <Stack direction="row" spacing={1}>
+                              <TextField size="small" label="True label" value={it.true_label||'Sì'} onChange={e=> updateItem(idx,{ true_label: e.target.value })} sx={{ width:120 }} />
+                              <TextField size="small" label="False label" value={it.false_label||'No'} onChange={e=> updateItem(idx,{ false_label: e.target.value })} sx={{ width:120 }} />
+                            </Stack>
+                          )}
+                          {it.type === 'date' && (
+                            <Stack direction="row" spacing={1}>
+                              <TextField size="small" label="min date" placeholder="YYYY-MM-DD" value={it.min_date||''} onChange={e=> updateItem(idx,{ min_date: e.target.value })} sx={{ width:140 }} />
+                              <TextField size="small" label="max date" placeholder="YYYY-MM-DD" value={it.max_date||''} onChange={e=> updateItem(idx,{ max_date: e.target.value })} sx={{ width:140 }} />
+                            </Stack>
+                          )}
+                          {it.type === 'file' && (
+                            <Stack direction="row" spacing={1}>
+                              <TextField size="small" select label="Accept" value={it.accept_url ? 'url' : 'file'} onChange={e=> updateItem(idx,{ accept_url: e.target.value === 'url' })} sx={{ width:140 }}>
+                                <MenuItem value={'file'}>Upload file</MenuItem>
+                                <MenuItem value={'url'}>Solo URL</MenuItem>
+                              </TextField>
+                            </Stack>
+                          )}
+                        </Stack>
+                        <Stack direction="row" justifyContent="flex-end">
+                          <IconButton size="small" color="error" onClick={()=> removeItem(idx)}><DeleteIcon fontSize="small" /></IconButton>
+                        </Stack>
+                      </TableCell>
                     </TableRow>
                   ))}
                   {items.length===0 && (
-                    <TableRow><TableCell colSpan={6}><Typography variant="body2" color="text.secondary">Aggiungi voci al form</Typography></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={4}><Typography variant="body2" color="text.secondary">Aggiungi voci al form</Typography></TableCell></TableRow>
                   )}
                 </TableBody>
               </Table>

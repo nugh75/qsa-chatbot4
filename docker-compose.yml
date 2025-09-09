@@ -1,0 +1,216 @@
+# ----------------- Configurazione progetto -----------------
+name: cb
+
+name: cb
+
+# ----------------- Template comuni -----------------
+x-pg: &pg
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qsa_user} -d $${POSTGRES_DB:-qsa_chatbot}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 5s
+
+x-be: &be
+  build: ./backend
+  restart: unless-stopped
+  volumes:
+    - ./backend/storage:/app/storage            # mount unico per TUTTA /storage
+    - ./backend/models:/app/models
+    - ./backend/config:/app/config
+  depends_on: {}  # override per istanza
+
+x-fe: &fe
+  restart: unless-stopped
+  depends_on: []  # override per istanza
+
+# ----------------- Servizi -----------------
+services:
+  # ---- Postgres (tutti separati) ----
+  postgres-agrusti:
+    <<: *pg
+    env_file: [.env.agrusti]
+    ports: ["5531:5432"]
+    volumes: ["pgdata-agrusti:/var/lib/postgresql/data"]
+
+  postgres-counselorbot:
+    <<: *pg
+    env_file: [.env.counselorbot]
+    ports: ["5532:5432"]
+    volumes: ["pgdata-counselorbot:/var/lib/postgresql/data"]
+
+  postgres-edurag:
+    <<: *pg
+    env_file: [.env.edurag]
+    ports: ["5533:5432"]
+    volumes: ["pgdata-edurag:/var/lib/postgresql/data"]
+
+  postgres-margottini:
+    <<: *pg
+    env_file: [.env.margottini]
+    ports: ["5534:5432"]
+    volumes: ["pgdata-margottini:/var/lib/postgresql/data"]
+
+  postgres-pef:
+    <<: *pg
+    env_file: [.env.pef]
+    ports: ["5535:5432"]
+    volumes: ["pgdata-pef:/var/lib/postgresql/data"]
+
+  postgres-dragoni:
+    <<: *pg
+    env_file: [.env.dragoni]
+    ports: ["5536:5432"]
+    volumes: ["pgdata-dragoni:/var/lib/postgresql/data"]
+
+  # ---- Backend (volumi compatti + logs separati) ----
+  backend-agrusti:
+    <<: *be
+    env_file: [.env.agrusti]
+    ports: ["8111:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-agrusti:/app/storage/logs   # override sottocartella logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.agrusti:/app/.env:ro
+    depends_on: { postgres-agrusti: { condition: service_healthy } }
+
+  backend-counselorbot:
+    <<: *be
+    env_file: [.env.counselorbot]
+    ports: ["8112:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-counselorbot:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.counselorbot:/app/.env:ro
+    depends_on: { postgres-counselorbot: { condition: service_healthy } }
+
+  backend-edurag:
+    <<: *be
+    env_file: [.env.edurag]
+    ports: ["8113:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-edurag:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.edurag:/app/.env:ro
+    depends_on: { postgres-edurag: { condition: service_healthy } }
+
+  backend-margottini:
+    <<: *be
+    env_file: [.env.margottini]
+    ports: ["8114:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-margottini:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.margottini:/app/.env:ro
+    depends_on: { postgres-margottini: { condition: service_healthy } }
+
+  backend-pef:
+    <<: *be
+    env_file: [.env.pef]
+    ports: ["8115:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-pef:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.pef:/app/.env:ro
+    depends_on: { postgres-pef: { condition: service_healthy } }
+
+  backend-dragoni:
+    <<: *be
+    env_file: [.env.dragoni]
+    ports: ["8116:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-dragoni:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.dragoni:/app/.env:ro
+    depends_on: { postgres-dragoni: { condition: service_healthy } }
+
+  # ---- Frontend (solo args e porta cambiano) ----
+  frontend-agrusti:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-agrusti:8005
+        VITE_SITE_NAME: agrusti
+    ports: ["5171:5175"]
+    depends_on: [backend-agrusti]
+
+  frontend-counselorbot:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-counselorbot:8005
+        VITE_SITE_NAME: counselorbot
+    ports: ["5172:5175"]
+    depends_on: [backend-counselorbot]
+
+  frontend-edurag:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-edurag:8005
+        VITE_SITE_NAME: edurag
+    ports: ["5173:5175"]
+    depends_on: [backend-edurag]
+
+  frontend-margottini:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-margottini:8005
+        VITE_SITE_NAME: margottini
+    ports: ["5174:5175"]
+    depends_on: [backend-margottini]
+
+  frontend-pef:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-pef:8005
+        VITE_SITE_NAME: pef
+    ports: ["5175:5175"]
+    depends_on: [backend-pef]
+
+  frontend-dragoni:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-dragoni:8005
+        VITE_SITE_NAME: dragoni
+    ports: ["5177:5175"]
+    depends_on: [backend-dragoni]
+
+# ----------------- Volumi -----------------
+volumes:
+  pgdata-agrusti:
+  pgdata-counselorbot:
+  pgdata-edurag:
+  pgdata-margottini:
+  pgdata-pef:
+  pgdata-dragoni:

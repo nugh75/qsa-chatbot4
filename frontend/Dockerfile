@@ -31,9 +31,14 @@ WORKDIR /usr/share/nginx/html
 ARG VITE_SITE_NAME=default
 COPY --from=build /app/dist-${VITE_SITE_NAME} ./
 
-# Custom nginx config (site-specific)
-ARG VITE_SITE_NAME=default
-COPY nginx-multi.conf /etc/nginx/conf.d/default.conf
+# Custom nginx config (site-specific with dynamic backend)
+ARG VITE_BACKEND_TARGET
+ENV BACKEND_TARGET=${VITE_BACKEND_TARGET}
+
+# Copy nginx template and process it with envsubst
+COPY nginx-multi.conf.template /tmp/nginx-multi.conf.template
+RUN envsubst '${BACKEND_TARGET}' < /tmp/nginx-multi.conf.template > /etc/nginx/conf.d/default.conf && \
+    rm /tmp/nginx-multi.conf.template
 
 EXPOSE 5175
 

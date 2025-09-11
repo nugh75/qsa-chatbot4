@@ -177,7 +177,7 @@ def load_personalities() -> Dict:
         items: List[Dict] = []
         for r in rows:
             d = dict(r)
-            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables']:
+            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms']:
                 v = d.get(k)
                 if isinstance(v, (bytes, str)):
                     try:
@@ -205,6 +205,7 @@ def load_personalities() -> Dict:
                 'enabled_rag_groups': d.get('enabled_rag_groups') or [],
                 'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
                 'enabled_data_tables': d.get('enabled_data_tables') or [],
+                'enabled_forms': d.get('enabled_forms') or [],
                 'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
                 'show_source_docs': bool(d.get('show_source_docs', True)),
             })
@@ -336,7 +337,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
         if not row:
             return None
         d = dict(row)
-        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables']:
+        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms']:
             if k in d and isinstance(d[k], (bytes, str)):
                 try:
                     d[k] = json.loads(d[k]) if d[k] else []
@@ -361,6 +362,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'enabled_rag_groups': d.get('enabled_rag_groups') or [],
             'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
             'enabled_data_tables': d.get('enabled_data_tables') or [],
+            'enabled_forms': d.get('enabled_forms') or [],
             'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
             'show_source_docs': bool(d.get('show_source_docs', True)),
         }

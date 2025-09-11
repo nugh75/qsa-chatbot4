@@ -107,6 +107,19 @@ class RAGEngine:
         except Exception as e:
             logger.warning(f"Auto-clean orfani fallito: {e}")
         
+    def _faiss_available(self) -> bool:
+        """Controlla e prova a importare faiss dinamicamente se assente."""
+        global faiss  # use module-level var
+        try:
+            if 'faiss' in globals() and faiss is not None:
+                return True
+            # try import now
+            import importlib  # type: ignore
+            faiss = importlib.import_module('faiss')  # type: ignore
+            return faiss is not None
+        except Exception:
+            return False
+
     def _init_database(self):
         """Inizializza il database per metadati RAG (Postgres se disponibile, altrimenti SQLite)."""
         if self.use_postgres and db_manager is not None:
@@ -900,95 +913,146 @@ class RAGEngine:
         return len(chunks)
     
     def _rebuild_group_index(self, group_id: int):
-        """Ricostruisce l'indice FAISS per un gruppo"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        """Ricostruisce l'indice FAISS per un gruppo (supporta Postgres e SQLite)."""
         # Se FAISS non disponibile, evita crash
-        if 'faiss' not in globals() or faiss is None:  # type: ignore
+        if not self._faiss_available():  # type: ignore
             logger.warning("FAISS non disponibile: skip rebuild indice per gruppo %s", group_id)
             return
-        # Recupera embeddings solo dei documenti non archiviati (se colonna presente)
-        has_archived = False
-        try:
-            cursor.execute("PRAGMA table_info(rag_documents)")
-            cols = [r[1] for r in cursor.fetchall()]
-            has_archived = 'archived' in cols
-        except Exception:
-            has_archived = False
-        if has_archived:
-            cursor.execute(
-                """SELECT c.id, c.embedding_vector FROM rag_chunks c
-                    JOIN rag_documents d ON c.document_id = d.id
-                    WHERE c.group_id = ? AND (d.archived IS NULL OR d.archived = 0)
-                    ORDER BY c.id""",
-                (group_id,)
-            )
+
+        rows: list[tuple[int, bytes]] = []
+        if self.use_postgres and db_manager is not None:
+            # Postgres: leggi embeddings da rag_chunks (BYTEA) filtrando documenti archiviati
+            try:
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    # archived is boolean in Postgres
+                    db_manager.exec(
+                        cur,
+                        """
+                        SELECT c.id, c.embedding_vector
+                        FROM rag_chunks c
+                        JOIN rag_documents d ON c.document_id = d.id
+                        WHERE c.group_id = ? AND (d.archived IS FALSE OR d.archived IS NULL)
+                        ORDER BY c.id
+                        """,
+                        (group_id,),
+                    )
+                    rows = [(int(r[0]), r[1]) for r in cur.fetchall()]
+            except Exception as e:
+                logger.error("Errore lettura embeddings da Postgres per gruppo %s: %s", group_id, e)
+                rows = []
         else:
-            cursor.execute(
-                "SELECT id, embedding_vector FROM rag_chunks WHERE group_id = ? ORDER BY id",
-                (group_id,)
-            )
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
+            # SQLite
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                # Recupera embeddings solo dei documenti non archiviati (se colonna presente)
+                has_archived = False
+                try:
+                    cursor.execute("PRAGMA table_info(rag_documents)")
+                    cols = [r[1] for r in cursor.fetchall()]
+                    has_archived = 'archived' in cols
+                except Exception:
+                    has_archived = False
+                if has_archived:
+                    cursor.execute(
+                        """SELECT c.id, c.embedding_vector FROM rag_chunks c
+                            JOIN rag_documents d ON c.document_id = d.id
+                            WHERE c.group_id = ? AND (d.archived IS NULL OR d.archived = 0)
+                            ORDER BY c.id""",
+                        (group_id,)
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT id, embedding_vector FROM rag_chunks WHERE group_id = ? ORDER BY id",
+                        (group_id,)
+                    )
+                rows = cursor.fetchall()
+            finally:
+                conn.close()
+
         if not rows:
+            logger.info("Nessun embedding da indicizzare per gruppo %s", group_id)
             return
-        
+
         # Crea nuovo indice FAISS
         index = faiss.IndexFlatIP(self.dimension)  # Inner Product per similarity
-        
+
         # Aggiungi tutti gli embeddings
         embeddings = []
         chunk_ids = []
-        
+
         for chunk_id, embedding_blob in rows:
             embedding = pickle.loads(embedding_blob)
             embeddings.append(embedding)
-            chunk_ids.append(chunk_id)
-        
+            chunk_ids.append(int(chunk_id))
+
         # Normalizza embeddings per cosine similarity
         embeddings = np.array(embeddings).astype('float32')
         faiss.normalize_L2(embeddings)
-        
+
         index.add(embeddings)
-        
-        # Salva indice e mapping
+
+        # Salva indice e mapping in memoria
         self.group_indexes[str(group_id)] = {
             "index": index,
-            "chunk_ids": chunk_ids
+            "chunk_ids": chunk_ids,
         }
-        
+
         # Salva su disco
         index_file = self.embeddings_dir / f"group_{group_id}.faiss"
         faiss.write_index(index, str(index_file))
-        
+
         # Salva mapping chunk_ids
         mapping_file = self.embeddings_dir / f"group_{group_id}_mapping.json"
         with open(mapping_file, 'w') as f:
             json.dump(chunk_ids, f)
-        
+
         logger.info(f"Indice FAISS ricostruito per gruppo {group_id}: {len(chunk_ids)} chunks")
     
     def _load_group_index(self, group_id: int) -> bool:
         """Carica l'indice FAISS per un gruppo"""
         if str(group_id) in self.group_indexes:
             return True
-        
+
         index_file = self.embeddings_dir / f"group_{group_id}.faiss"
         mapping_file = self.embeddings_dir / f"group_{group_id}_mapping.json"
-        
+
+        # Se i file non esistono, prova a ricostruire da DB (lazy rebuild)
         if not (index_file.exists() and mapping_file.exists()):
-            return False
-        
+            try:
+                self._rebuild_group_index(group_id)
+            except Exception as e:
+                logger.error("Rebuild indice fallito per gruppo %s: %s", group_id, e)
+            # Ricontrolla
+            if not (index_file.exists() and mapping_file.exists()):
+                return False
         try:
             index = faiss.read_index(str(index_file))
             with open(mapping_file, 'r') as f:
                 chunk_ids = json.load(f)
-            
+            # Verifica rapida: se siamo su Postgres ma i chunk_ids non esistono (mapping stantio da SQLite), forza rebuild
+            if self.use_postgres and db_manager is not None and chunk_ids:
+                try:
+                    with db_manager.get_connection() as conn:
+                        cur = conn.cursor()
+                        # controlla esistenza di almeno 1 id
+                        db_manager.exec(cur, "SELECT 1 FROM rag_chunks WHERE id = ?", (int(chunk_ids[0]),))
+                        row = cur.fetchone()
+                        if not row:
+                            raise RuntimeError("mapping ids non presenti in Postgres")
+                except Exception:
+                    # mapping non valido, ricostruisci e ricarica
+                    logger.warning("Mapping FAISS obsoleto per gruppo %s: ricostruisco indice", group_id)
+                    self._rebuild_group_index(group_id)
+                    # dopo rebuild, ricarica da file
+                    index = faiss.read_index(str(index_file))
+                    with open(mapping_file, 'r') as f2:
+                        chunk_ids = json.load(f2)
+
             self.group_indexes[str(group_id)] = {
                 "index": index,
-                "chunk_ids": chunk_ids
+                "chunk_ids": [int(x) for x in chunk_ids],
             }
             return True
         except Exception as e:
@@ -1008,63 +1072,192 @@ class RAGEngine:
         else:
             query_embedding = self.embedding_model.encode([query])[0]
         query_embedding = query_embedding.astype('float32').reshape(1, -1)
-        faiss.normalize_L2(query_embedding)
+        # Normalizza per cosine similarity
+        if self._faiss_available():
+            faiss.normalize_L2(query_embedding)
 
         all_results: List[Dict[str, Any]] = []
         for group_id in group_ids:
-            if not self._load_group_index(group_id):
-                continue
-            group_data = self.group_indexes[str(group_id)]
-            index = group_data["index"]
-            chunk_ids = group_data["chunk_ids"]
-            if index.ntotal == 0:
-                continue
-            scores, indices = index.search(query_embedding, min(top_k, index.ntotal))
-            chunk_details = self._get_chunk_details([chunk_ids[i] for i in indices[0]])
-            for score, chunk_detail in zip(scores[0], chunk_details):
-                chunk_detail["similarity_score"] = float(score)
-                chunk_detail["group_id"] = group_id
-                all_results.append(chunk_detail)
+            if self._faiss_available() and self._load_group_index(group_id):
+                group_data = self.group_indexes[str(group_id)]
+                index = group_data["index"]
+                chunk_ids = group_data["chunk_ids"]
+                if index.ntotal == 0:
+                    continue
+                scores, indices = index.search(query_embedding, min(top_k, index.ntotal))
+                chunk_details = self._get_chunk_details([chunk_ids[i] for i in indices[0]])
+                for score, chunk_detail in zip(scores[0], chunk_details):
+                    chunk_detail["similarity_score"] = float(score)
+                    chunk_detail["group_id"] = group_id
+                    all_results.append(chunk_detail)
+            else:
+                # Fallback: scansione DB senza FAISS
+                all_results.extend(self._db_fallback_search(group_id, query_embedding, top_k))
 
         all_results.sort(key=lambda x: x["similarity_score"], reverse=True)
         return all_results[: top_k * len(group_ids)]
+
+    def _db_fallback_search(self, group_id: int, query_embedding: np.ndarray, top_k: int) -> List[Dict[str, Any]]:
+        """Ricerca lineare su DB quando FAISS non e' disponibile o indice mancante."""
+        results: List[Dict[str, Any]] = []
+        rows: List[tuple[int, bytes]] = []
+        if self.use_postgres and db_manager is not None:
+            try:
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    db_manager.exec(
+                        cur,
+                        """
+                        SELECT c.id, c.embedding_vector
+                        FROM rag_chunks c
+                        JOIN rag_documents d ON c.document_id = d.id
+                        WHERE c.group_id = ? AND (d.archived IS FALSE OR d.archived IS NULL)
+                        ORDER BY c.id
+                        """,
+                        (group_id,),
+                    )
+                    rows = [(int(r[0]), r[1]) for r in cur.fetchall()]
+            except Exception as e:
+                logger.error("DB fallback search error (postgres) group %s: %s", group_id, e)
+                rows = []
+        else:
+            conn = self._sqlite_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    """
+                    SELECT c.id, c.embedding_vector
+                    FROM rag_chunks c
+                    JOIN rag_documents d ON c.document_id = d.id
+                    WHERE c.group_id = ? AND (d.archived IS NULL OR d.archived = 0)
+                    ORDER BY c.id
+                    """,
+                    (group_id,),
+                )
+                rows = cur.fetchall()
+            finally:
+                conn.close()
+
+        if not rows:
+            return results
+
+        # Costruisci matrice embeddings
+        try:
+            embs = []
+            ids = []
+            for cid, blob in rows:
+                try:
+                    v = pickle.loads(blob)
+                except Exception:
+                    continue
+                ids.append(int(cid))
+                embs.append(v)
+            if not embs:
+                return results
+            X = np.asarray(embs, dtype='float32')
+            # normalizza righe
+            norms = np.linalg.norm(X, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            Xn = X / norms
+            q = query_embedding.copy()
+            q = q / (np.linalg.norm(q) + 1e-9)
+            sims = (Xn @ q.T).reshape(-1)
+            # top-k
+            top_idx = sims.argsort()[::-1][: min(top_k, len(sims))]
+            top_chunk_ids = [ids[i] for i in top_idx]
+            details = self._get_chunk_details(top_chunk_ids)
+            # mappa id->det
+            det_map = {d['chunk_id']: d for d in details}
+            for i in top_idx:
+                cid = ids[i]
+                det = det_map.get(cid)
+                if not det:
+                    continue
+                det['similarity_score'] = float(sims[i])
+                det['group_id'] = group_id
+                results.append(det)
+        except Exception as e:
+            logger.error("DB fallback search compute error group %s: %s", group_id, e)
+        return results
     
     def _get_chunk_details(self, chunk_ids: List[int]) -> List[Dict[str, Any]]:
-        """Recupera i dettagli dei chunks dal database"""
+        """Recupera i dettagli dei chunks dal database (Postgres o SQLite)."""
         if not chunk_ids:
             return []
-        
+
+        results: List[Dict[str, Any]] = []
+        if self.use_postgres and db_manager is not None:
+            placeholders = ",".join(["?"] * len(chunk_ids))
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(
+                    cur,
+                    f"""
+                    SELECT c.id, c.content, c.chunk_index, c.metadata,
+                           d.id as document_id, d.filename, d.original_filename, d.stored_filename
+                    FROM rag_chunks c
+                    JOIN rag_documents d ON c.document_id = d.id
+                    WHERE c.id IN ({placeholders})
+                    """,
+                    chunk_ids,
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    md_raw = row[3]
+                    if isinstance(md_raw, (dict, list)):
+                        metadata = md_raw
+                    else:
+                        try:
+                            metadata = json.loads(md_raw) if md_raw else {}
+                        except Exception:
+                            metadata = {}
+                    chunk_label = f"{row[6] or row[5]}#chunk_{row[2]}" if (row[5] or row[6]) else f"chunk_{row[2]}"
+                    results.append({
+                        "chunk_id": row[0],
+                        "content": row[1],
+                        "chunk_index": row[2],
+                        "metadata": metadata,
+                        "document_id": row[4],
+                        "filename": row[5],
+                        "original_filename": row[6],
+                        "stored_filename": row[7],
+                        "chunk_label": chunk_label,
+                        "download_url": f"/api/rag/download/{row[4]}",
+                    })
+            return results
+
+        # SQLite path
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        placeholders = ",".join("?" for _ in chunk_ids)
-        cursor.execute(f"""
-            SELECT c.id, c.content, c.chunk_index, c.metadata,
-                   d.id as document_id, d.filename, d.original_filename, d.stored_filename
-            FROM rag_chunks c
-            JOIN rag_documents d ON c.document_id = d.id
-            WHERE c.id IN ({placeholders})
-        """, chunk_ids)
-        
-        results = []
-        for row in cursor.fetchall():
-            metadata = json.loads(row[3]) if row[3] else {}
-            # Etichetta chunk per UI / tracking
-            chunk_label = f"{row[6] or row[5]}#chunk_{row[2]}" if (row[5] or row[6]) else f"chunk_{row[2]}"
-            results.append({
-                "chunk_id": row[0],
-                "content": row[1],
-                "chunk_index": row[2],
-                "metadata": metadata,
-                "document_id": row[4],
-                "filename": row[5],
-                "original_filename": row[6],
-                "stored_filename": row[7],
-                "chunk_label": chunk_label,
-                "download_url": f"/api/rag/download/{row[4]}"
-            })
-        
-        conn.close()
+        try:
+            placeholders = ",".join("?" for _ in chunk_ids)
+            cursor.execute(
+                f"""
+                SELECT c.id, c.content, c.chunk_index, c.metadata,
+                       d.id as document_id, d.filename, d.original_filename, d.stored_filename
+                FROM rag_chunks c
+                JOIN rag_documents d ON c.document_id = d.id
+                WHERE c.id IN ({placeholders})
+                """,
+                chunk_ids,
+            )
+            for row in cursor.fetchall():
+                metadata = json.loads(row[3]) if row[3] else {}
+                chunk_label = f"{row[6] or row[5]}#chunk_{row[2]}" if (row[5] or row[6]) else f"chunk_{row[2]}"
+                results.append({
+                    "chunk_id": row[0],
+                    "content": row[1],
+                    "chunk_index": row[2],
+                    "metadata": metadata,
+                    "document_id": row[4],
+                    "filename": row[5],
+                    "original_filename": row[6],
+                    "stored_filename": row[7],
+                    "chunk_label": chunk_label,
+                    "download_url": f"/api/rag/download/{row[4]}",
+                })
+        finally:
+            conn.close()
         return results
     
     def get_group_documents(self, group_id: int) -> List[Dict[str, Any]]:

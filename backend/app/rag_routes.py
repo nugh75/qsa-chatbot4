@@ -333,31 +333,58 @@ async def download_document(document_id: int):
 async def debug_group_chunks(group_id: int, current_user = Depends(get_current_admin_user)):
     """Debug: visualizza chunks di un gruppo"""
     try:
-        # Query diretta al database per debug
-        import sqlite3
-        conn = sqlite3.connect(rag_engine.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT c.id, c.chunk_index, c.content, d.filename, d.original_filename
-            FROM rag_chunks c
-            JOIN rag_documents d ON c.document_id = d.id
-            WHERE c.group_id = ?
-            ORDER BY d.id, c.chunk_index
-            LIMIT 100
-        """, (group_id,))
-        
+        # Usa Postgres se disponibile; fallback a SQLite solo per ambienti legacy
+        from .database import USING_POSTGRES, db_manager
         chunks = []
-        for row in cursor.fetchall():
-            chunks.append({
-                "chunk_id": row[0],
-                "chunk_index": row[1],
-                "content": row[2][:200] + "..." if len(row[2]) > 200 else row[2],
-                "filename": row[3],
-                "original_filename": row[4]
-            })
-        
-        conn.close()
-        return {"success": True, "chunks": chunks}
+        if USING_POSTGRES:
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, """
+                    SELECT c.id, c.chunk_index, c.content, d.filename, d.original_filename
+                    FROM rag_chunks c
+                    JOIN rag_documents d ON c.document_id = d.id
+                    WHERE c.group_id = ? AND (d.archived IS FALSE OR d.archived IS NULL)
+                    ORDER BY d.id, c.chunk_index
+                    LIMIT 100
+                """, (group_id,))
+                rows = cur.fetchall() or []
+                for r in rows:
+                    # DictRow in Postgres; support tuple fallback just in case
+                    rid = r["id"] if isinstance(r, dict) or hasattr(r, 'keys') else r[0]
+                    cidx = r["chunk_index"] if isinstance(r, dict) or hasattr(r, 'keys') else r[1]
+                    content = r["content"] if isinstance(r, dict) or hasattr(r, 'keys') else r[2]
+                    fname = r["filename"] if isinstance(r, dict) or hasattr(r, 'keys') else r[3]
+                    ofname = r["original_filename"] if isinstance(r, dict) or hasattr(r, 'keys') else r[4]
+                    chunks.append({
+                        "chunk_id": rid,
+                        "chunk_index": cidx,
+                        "content": (content[:200] + "...") if isinstance(content, str) and len(content) > 200 else content,
+                        "filename": fname,
+                        "original_filename": ofname
+                    })
+            return {"success": True, "chunks": chunks}
+        else:
+            # Legacy SQLite debug path
+            import sqlite3
+            conn = sqlite3.connect(rag_engine.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT c.id, c.chunk_index, c.content, d.filename, d.original_filename
+                FROM rag_chunks c
+                JOIN rag_documents d ON c.document_id = d.id
+                WHERE c.group_id = ?
+                ORDER BY d.id, c.chunk_index
+                LIMIT 100
+            """, (group_id,))
+            for row in cursor.fetchall():
+                chunks.append({
+                    "chunk_id": row[0],
+                    "chunk_index": row[1],
+                    "content": row[2][:200] + "..." if len(row[2]) > 200 else row[2],
+                    "filename": row[3],
+                    "original_filename": row[4]
+                })
+            conn.close()
+            return {"success": True, "chunks": chunks}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore debug: {str(e)}")

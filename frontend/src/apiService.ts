@@ -145,22 +145,53 @@ class ApiService {
   }
 
   private async handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
-    try {
-      const data = await response.json();
-      
-      if (response.ok) {
-        return { success: true, data };
-      } else {
+    // Fast path: no content
+    if (response.status === 204 || response.headers.get('content-length') === '0') {
+      return { success: true };
+    }
+
+    const isDev = (import.meta as any)?.env?.DEV;
+    const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+
+    // Helper to trim a long text for error snippets
+    const trimSnippet = (txt: string, max = 400) => {
+      if (txt.length <= max) return txt;
+      return txt.slice(0, max) + '…';
+    };
+
+    // If JSON (or looks like it) try to parse as JSON first
+    if (contentType.includes('application/json') || contentType.includes('+json')) {
+      try {
+        const data = await response.json();
+        if (response.ok) {
+          return { success: true, data };
+        }
         return {
           success: false,
-          error: data.detail || data.message || 'Request failed'
+          error: (data && (data.detail || data.message || data.error)) || `Request failed (${response.status})`
+        };
+      } catch (e: any) {
+        // Fall through to attempt raw text for diagnostics
+        if (isDev) console.warn('[apiService] JSON parse failed, attempting text fallback:', e?.message);
+      }
+    }
+
+    // Not JSON or JSON parse failed: read as text
+    try {
+      const rawText = await response.text();
+      if (!response.ok) {
+        // Provide a more informative error including status & snippet
+        const snippet = trimSnippet(rawText.replace(/\s+/g, ' ').trim());
+        return {
+          success: false,
+            error: snippet || `Request failed (${response.status})`
         };
       }
-    } catch (error) {
-      return {
-        success: false,
-        error: 'Failed to parse response'
-      };
+      // If OK but not JSON, return the raw text inside data (caller must handle)
+      return { success: true, data: rawText as any };
+    } catch (e: any) {
+      if (isDev) console.error('[apiService] Failed to read response body:', e?.message);
+      return { success: false, error: 'Failed to parse response' };
     }
   }
 
@@ -782,8 +813,6 @@ class ApiService {
   async listForms(): Promise<ApiResponse<{ forms: { id: string; name: string; description?: string; items_count: number }[] }>> {
     return this.makeRequest(`/forms`);
   }
-    // Server-side decrypted content when authenticated
-    content?: string;
   async getForm(formId: string): Promise<ApiResponse<{ form: { id: string; name: string; description?: string; items: any[] } }>> {
     return this.makeRequest(`/forms/${encodeURIComponent(formId)}`);
   }

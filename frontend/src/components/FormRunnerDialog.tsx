@@ -9,11 +9,11 @@ type Props = {
   conversationId?: string | null
   personalityId?: string | null
   onPostSummary?: (summary: string) => void
-  onPostStructured?: (payload: any) => void
+  // onPostStructured removed to avoid duplicate UI bubble emission
   onConversationReady?: (conversationId: string) => void
 }
 
-const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onPostStructured, onConversationReady }) => {
+const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onConversationReady }) => {
   const [forms, setForms] = React.useState<{ id: string; name: string; description?: string }[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
   const [items, setItems] = React.useState<any[]>([])
@@ -111,8 +111,8 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     try {
       // Build structured summary rows with labels and group/series metadata
   const structured = { rows: items.map((it:any) => ({ id: it.id || it.factor, question: it.description || it.label || '', value: values[it.id || it.factor], group: it.group || '', series: it.series || '' })) }
-      // Provide a backwards compatible textual summary for simple clients
-      // Use 'Domanda | Risposta' headers (question/answer) and render booleans as 'Sì'/'No'
+  // Provide a backwards compatible textual summary for simple clients
+  // Use 'Domanda | Risposta' headers (question/answer) and render booleans as 'Sì'/'No'
       const lines: string[] = []
       lines.push('Domanda | Risposta')
       lines.push('--- | ---')
@@ -128,7 +128,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
       lines.push('• Scrivi "sì" per confermare')
       lines.push('• Scrivi "no" per reinviare il form')
       const summary = lines.join('\n')
-  // Update UI immediately: send only textual summary via callback
+  // Emit ONLY textual summary to prevent duplicate bubbles (structured bubble removed)
   onPostSummary?.(summary)
       // Persist to DB best-effort: ensure conversation exists, then send textual summary to conversation (keep existing behavior)
       if (res.success) {
@@ -147,7 +147,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
         if (convId) {
           // Send textual summary to DB for compatibility
           await apiService.sendMessage(convId, summary, 'assistant')
-          // Do NOT emit structured payload to avoid duplicate UI bubbles
+          // Deliberately suppress structured payload emission (previously used onPostStructured)
         }
       }
     } catch (e) {

@@ -1817,9 +1817,6 @@ const AppContent: React.FC = () => {
         onPostSummary={(summary: string) => {
           setMessages(prev => [...prev, { role: 'assistant' as const, content: summary, ts: Date.now() }])
         }}
-        onPostStructured={(payload:any) => {
-          setMessages(prev => [...prev, { role: 'assistant' as const, content: 'Risultati form', ts: Date.now(), __formResult: payload }])
-        }}
         onConversationReady={(cid: string) => {
           setCurrentConversationId(cid)
         }}

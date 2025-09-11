@@ -183,16 +183,19 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
                   <Box key={gi} sx={{ mb: 2 }}>
                     {g ? <Typography variant="subtitle1" sx={{ mb:1 }}>{g}</Typography> : null}
                     {onlyScales && groupItems.length > 1 ? (
-                      // Render scales in a horizontal row (series)
-                      <Stack direction="row" spacing={2} alignItems="center">
+                      // Render scales stacked vertically (one per row)
+                      <Stack direction="column" spacing={1} sx={{ width: '100%' }}>
                         {groupItems.map((it:any) => {
                           const id = it.id || it.factor
                           const val = values[id]
+                          const label = it.series || it.label || id
                           return (
-                            <Stack key={id} sx={{ minWidth: 140 }}>
-                              {it.series ? <Typography variant="caption">{it.series}</Typography> : <Typography variant="caption">{it.label||it.id}</Typography>}
-                              <TextField size="small" type="number" value={val ?? ''} onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))} inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} sx={{ mt:0.5 }} />
-                            </Stack>
+                            <Box key={id} sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+                              <Typography variant="caption" sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{label}</Typography>
+                              <TextField fullWidth size="small" type="number" value={val ?? ''}
+                                onChange={e=> setValues(v=> ({ ...v, [id]: Number(e.target.value) }))}
+                                inputProps={{ min: it.min ?? 0, max: it.max ?? 100, step: it.step ?? 1 }} sx={{ mt:0.5 }} />
+                            </Box>
                           )
                         })}
                       </Stack>

@@ -23,11 +23,11 @@ const FormResultRenderer: React.FC<Props> = ({ payload }) => {
           {g ? <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>{g}</Typography> : null}
           <Grid container spacing={1}>
             {groups[g].map((r: any, ri: number) => (
-              <Grid item xs={12} sm={6} md={4} key={ri}>
+              <Grid item xs={12} key={ri}>
                 <Card variant="outlined" sx={{ bgcolor: '#fff' }}>
                   <CardContent sx={{ p: 1 }}>
-                    <Typography variant="caption" color="text.secondary">{r.series || r.id}</Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{r.label || r.id}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.series || r.id}</Typography>
+                    <Typography variant="body2" sx={{ fontWeight: 600, whiteSpace: 'normal', wordBreak: 'break-word' }}>{r.label || r.id}</Typography>
                     <Box sx={{ mt: 0.5 }}>
                       {/* Render by inferred type */}
                       {typeof r.value === 'boolean' ? (

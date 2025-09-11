@@ -128,9 +128,8 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
       lines.push('• Scrivi "sì" per confermare')
       lines.push('• Scrivi "no" per reinviare il form')
       const summary = lines.join('\n')
-      // Update UI immediately: send both structured payload and textual summary via callbacks
-      onPostSummary?.(summary)
-      // If the caller expects structured form payload in the message object, provide it via onPostSummary as well by returning the structured payload through a side-channel: here we use a custom event via window (simple) or prefer to let App.tsx handle messages added locally.
+  // Update UI immediately: send only textual summary via callback
+  onPostSummary?.(summary)
       // Persist to DB best-effort: ensure conversation exists, then send textual summary to conversation (keep existing behavior)
       if (res.success) {
         let convId = conversationId || null
@@ -148,8 +147,7 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
         if (convId) {
           // Send textual summary to DB for compatibility
           await apiService.sendMessage(convId, summary, 'assistant')
-          // Notify caller with structured payload so UI can render rich result
-          try { if (typeof onPostStructured === 'function') { onPostStructured(structured) } } catch (e) { /* ignore */ }
+          // Do NOT emit structured payload to avoid duplicate UI bubbles
         }
       }
     } catch (e) {

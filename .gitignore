@@ -4,6 +4,16 @@
 .env.development.local
 .env.test.local
 .env.production.local
+# Ignore any environment variant like .env.something
+.env.*
+# (Keep a template if present)
+!.env.example
+
+# Explicit environment patterns per subproject
+backend/.env*
+backend/.env.*
+frontend/.env*
+frontend/.env.*
 
 # Python
 __pycache__/

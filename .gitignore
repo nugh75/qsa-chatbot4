@@ -4,6 +4,11 @@
 .env.development.local
 .env.test.local
 .env.production.local
+.env.counselorbot
+.env.dragoni
+.env.edurag
+.env.margottini
+.env.pef
 # Ignore any environment variant like .env.something
 .env.*
 # (Keep a template if present)

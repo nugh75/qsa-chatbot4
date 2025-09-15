@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres-counselorbot:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: [.env.counselorbot]
+    ports:
+      - "5532:5432"
+    volumes:
+      - pgdata-counselorbot:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qsa_user} -d $${POSTGRES_DB:-qsa_chatbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  backend-counselorbot:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file: [.env.counselorbot]
+    ports:
+      - "8112:8005"
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-counselorbot:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.counselorbot:/app/.env:ro
+    depends_on:
+      postgres-counselorbot:
+        condition: service_healthy
+
+  frontend-counselorbot:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-counselorbot:8005
+        VITE_SITE_NAME: counselorbot
+    restart: unless-stopped
+    ports:
+      - "5172:5175"
+    depends_on:
+      - backend-counselorbot
+
+volumes:
+  pgdata-counselorbot:

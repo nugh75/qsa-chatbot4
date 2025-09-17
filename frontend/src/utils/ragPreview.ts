@@ -12,8 +12,9 @@ export function buildDocumentAggregate(name: string, ragChunks?: RagChunk[]): st
   const related = ragChunks.filter(c => {
     const fn = c.filename || ''
     const base = fn.split('/').pop() || fn
-    const cleaned = normalizeDocName(base.split('_').pop() || base)
-    return cleaned && (cleaned === target || cleaned.includes(target) || target.includes(cleaned))
+    const cleanedFull = normalizeDocName(base)
+    const cleanedPartial = normalizeDocName(base.split('_').pop() || base)
+    return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === target || cleaned.includes(target) || target.includes(cleaned)))
   })
   if (!related.length) return ''
   related.sort((a,b)=> (a.chunk_index||0) - (b.chunk_index||0))
@@ -31,9 +32,8 @@ export function detectPreviewType(href: string): PreviewType {
 }
 
 export async function fetchTextTruncated(href: string, maxBytes = 200*1024): Promise<string> {
-  const res = await fetch(href)
+  const res = await fetch(href, { credentials: 'include' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const text = await res.text()
   return text.length > maxBytes ? text.slice(0, maxBytes) + '\n\n[contenuto troncato]' : text
 }
-

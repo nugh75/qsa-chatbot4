@@ -165,6 +165,26 @@ def _slugify(name: str) -> str:
     return s or "default"
 
 
+def _personality_id_exists(personality_id: str) -> bool:
+    if not personality_id:
+        return False
+    _ensure_personality_schema()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT 1 FROM personalities WHERE id = ? LIMIT 1", (personality_id,))
+        return cur.fetchone() is not None
+
+
+def _generate_unique_personality_id(base_slug: str) -> str:
+    slug = base_slug or "personalita"
+    candidate = slug
+    suffix = 2
+    while _personality_id_exists(candidate):
+        candidate = f"{slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 def load_personalities() -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: personalities sono gestite esclusivamente via DB')
@@ -366,3 +386,58 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
             'show_source_docs': bool(d.get('show_source_docs', True)),
         }
+
+
+def duplicate_personality(
+    source_id: str,
+    *,
+    new_name: Optional[str] = None,
+    new_id: Optional[str] = None,
+    set_default: bool = False,
+) -> Dict:
+    existing = get_personality(source_id)
+    if not existing:
+        raise ValueError('Personalità di origine non trovata')
+
+    name = (new_name or '').strip()
+    if not name:
+        base_name = existing.get('name') or source_id
+        name = f"{base_name} (copia)"
+
+    provided_id = (new_id or '').strip()
+    if provided_id:
+        candidate_id = _slugify(provided_id)
+        if _personality_id_exists(candidate_id):
+            raise ValueError('Esiste già una personalità con questo id')
+    else:
+        base_slug = _slugify(name)
+        if not base_slug:
+            base_slug = _slugify(existing.get('id') or 'personalita')
+        candidate_id = _generate_unique_personality_id(base_slug)
+
+    res = upsert_personality(
+        name=name,
+        system_prompt_id=existing.get('system_prompt_id', ''),
+        provider=existing.get('provider', 'local'),
+        model=existing.get('model', ''),
+        welcome_message=existing.get('welcome_message'),
+        guide_id=existing.get('guide_id'),
+        context_window=existing.get('context_window'),
+        temperature=existing.get('temperature'),
+        personality_id=candidate_id,
+        set_default=set_default,
+        avatar=existing.get('avatar'),
+        tts_provider=existing.get('tts_provider'),
+        tts_voice=existing.get('tts_voice'),
+        active=existing.get('active', True),
+        enabled_pipeline_topics=existing.get('enabled_pipeline_topics'),
+        enabled_rag_groups=existing.get('enabled_rag_groups'),
+        enabled_mcp_servers=existing.get('enabled_mcp_servers'),
+        enabled_data_tables=existing.get('enabled_data_tables'),
+        enabled_forms=existing.get('enabled_forms'),
+        max_tokens=existing.get('max_tokens'),
+        show_pipeline_topics=existing.get('show_pipeline_topics'),
+        show_source_docs=existing.get('show_source_docs'),
+    )
+    res['name'] = name
+    return res

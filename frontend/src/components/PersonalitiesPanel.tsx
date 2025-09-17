@@ -5,6 +5,7 @@ import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { authFetch, BACKEND } from '../utils/authFetch'
 import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer } from '../types/admin'
 
@@ -443,6 +444,34 @@ const PersonalitiesPanel: React.FC = () => {
     load()
   }
 
+  const duplicate = async (p: PersonalityEntry) => {
+    const suggested = `${p.name} (copia)`
+    const input = prompt('Nome per la nuova personalità', suggested)
+    if (input === null) return
+    const finalName = input.trim()
+    if (!finalName) {
+      alert('Nome non valido')
+      return
+    }
+    try {
+      const res = await authFetch(`${BACKEND}/api/admin/personalities/${encodeURIComponent(p.id)}/duplicate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: finalName })
+      })
+      const data = await res.json().catch(() => ({}))
+      if (res.ok) {
+        await load()
+        setMsg(`Personalità duplicata: ${data.name || finalName}`)
+      } else {
+        const detail = (data && (data.detail || data.error)) || 'Errore duplicazione personalità'
+        alert(detail)
+      }
+    } catch (e) {
+      alert('Errore duplicazione personalità')
+    }
+  }
+
   return (
     <Paper variant="outlined" sx={{ p:2 }}>
       <Stack direction="row" spacing={1} alignItems="center">
@@ -548,6 +577,11 @@ const PersonalitiesPanel: React.FC = () => {
                   <Tooltip title="Modifica">
                     <IconButton size="small" onClick={()=>openEdit(p)}>
                       <EditIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Duplica">
+                    <IconButton size="small" onClick={()=>duplicate(p)}>
+                      <ContentCopyIcon fontSize="small" />
                     </IconButton>
                   </Tooltip>
                   <Tooltip title="Imposta default">

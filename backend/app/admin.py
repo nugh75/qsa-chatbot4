@@ -48,6 +48,7 @@ from .personalities import (
     upsert_personality,
     delete_personality,
     set_default_personality,
+    duplicate_personality,
 )
 from .logging_utils import LOG_DIR, get_system_logger
 from .database import db_manager, USING_POSTGRES
@@ -1303,7 +1304,9 @@ async def update_system_prompt(payload: SystemPromptIn):
 async def reset_system_prompt():
     """Ripristina un prompt di default minimale."""
     try:
-        default_text = "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+        default_text = (
+            "Sei un assistente virtuale generico. Rispondi in italiano con tono cordiale e conciso, facendo domande per chiarire le esigenze dell'utente."
+        )
         save_system_prompt(default_text)
         return {"success": True, "prompt": default_text}
     except Exception as e:
@@ -1592,6 +1595,12 @@ class PersonalityIn(BaseModel):
     show_pipeline_topics: Optional[bool] = True
     show_source_docs: Optional[bool] = True
 
+
+class PersonalityDuplicateIn(BaseModel):
+    name: Optional[str] = None
+    new_id: Optional[str] = None
+    set_default: bool = False
+
 @router.get("/admin/personalities")
 async def list_personalities_admin():
     try:
@@ -1649,6 +1658,26 @@ async def upsert_personality_admin(p: PersonalityIn):
         return {"success": True, **res}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore salvataggio personalità: {str(e)}")
+
+
+@router.post("/admin/personalities/{personality_id}/duplicate")
+async def duplicate_personality_admin(personality_id: str, payload: Optional[PersonalityDuplicateIn] = None):
+    try:
+        data = payload or PersonalityDuplicateIn()
+        res = duplicate_personality(
+            personality_id,
+            new_name=data.name,
+            new_id=data.new_id,
+            set_default=data.set_default,
+        )
+        return {"success": True, **res}
+    except ValueError as e:
+        message = str(e)
+        status = 404 if 'non trovata' in message.lower() else 400
+        raise HTTPException(status_code=status, detail=message)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore duplicazione personalità: {str(e)}")
+
 
 @router.delete("/admin/personalities/{personality_id}")
 async def delete_personality_admin(personality_id: str):

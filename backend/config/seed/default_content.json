@@ -1,11 +1,11 @@
 {
   "system_prompts": {
-    "active_id": "counselorbot",
+    "active_id": "default",
     "prompts": [
       {
-        "id": "counselorbot",
-        "name": "Counselorbot (QSA)",
-        "text": "# Prompt di sistema\n\nSei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+        "id": "default",
+        "name": "Assistente",
+        "text": "Sei un assistente virtuale generico. Rispondi sempre in italiano con tono cordiale e conciso, fai domande per comprendere il bisogno dell'utente e offri indicazioni pratiche quando possibile."
       }
     ]
   },
@@ -14,28 +14,28 @@
     "prompts": [
       {
         "id": "default",
-        "name": "Default",
-        "text": "Sei un assistente che genera un REPORT di una conversazione tra utente e counselorbot. Obiettivo: riassunto strutturato in italiano."
+        "name": "Report sintetico",
+        "text": "Genera un breve resoconto strutturato della conversazione in italiano. Includi titolo, obiettivo dell'utente, punti chiave e prossimi passi suggeriti. Mantieni un tono neutro."
       }
     ]
   },
   "welcome": {
-    "active_id": "wm_default",
+    "active_id": "wm_minimal",
     "messages": [
       {
-        "id": "wm_default",
+        "id": "wm_minimal",
         "title": "Benvenuto",
-        "content": "Ciao! Sono Counselorbot. Posso aiutarti a riflettere sulle tue strategie di apprendimento."
+        "content": "Ciao! Sono qui per assisterti. Dimmi pure da dove vuoi iniziare."
       }
     ]
   },
   "guides": {
-    "active_id": "gd_default",
+    "active_id": "gd_minimal",
     "guides": [
       {
-        "id": "gd_default",
-        "title": "Guida rapida",
-        "content": "Condividi i tuoi risultati QSA o le aree che vuoi esplorare. Io ti farò domande e ti darò spunti."
+        "id": "gd_minimal",
+        "title": "Come iniziare",
+        "content": "Condividi un obiettivo o una domanda e ti guiderò passo dopo passo."
       }
     ]
   }

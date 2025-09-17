@@ -9,7 +9,7 @@
 - Introduced per-chunk `chunk_label` in unified `source_docs.rag_chunks` for clearer citation mapping.
 - Unified message payload: `source_docs` now wraps `rag_chunks`, `pipeline_topics`, `rag_groups` (legacy arrays removed).
 - Document preview dialog aggregates chunk content via internal `doc://` links auto-injected from `[DOC filename]` references.
-- Markdown normalization (unescape literal \n, improved paragraph spacing, soft breaks via remark-breaks) for consistent rendering including "Fonti consultate:" section.
+- Markdown normalization (unescape literal \n, improved paragraph spacing, soft breaks via remark-breaks) for consistent rendering of the source metadata blocks.
 - Removed decorative emojis across UI; standardized on clean SVG/MUI icons only.
 
 - Predefined Queries & NLQ (admin): safe, parameterized predefined queries with dropdown + dynamic form; simple NLQ endpoint to map natural requests to queries. See `docs/QUICK_QUERIES_GUIDE.md` for a non‑technical guide. Endpoints:
@@ -24,7 +24,7 @@
 - Introdotta etichetta per chunk (`chunk_label`) in `source_docs.rag_chunks` per mappare le citazioni.
 - Unificato il payload dei messaggi: `source_docs` contiene `rag_chunks`, `pipeline_topics`, `rag_groups` (rimosse liste legacy).
 - Dialog di anteprima documento che aggrega il contenuto dei chunk tramite link interni `doc://` generati da riferimenti `[DOC nomefile]`.
-- Normalizzazione Markdown (de-escape \n, spaziatura paragrafi, soft break con remark-breaks) per rendere correttamente la sezione "Fonti consultate:".
+- Normalizzazione Markdown (de-escape \n, spaziatura paragrafi, soft break con remark-breaks) per rendere correttamente i blocchi con le fonti.
 - Rimosse tutte le emoji decorative nell'interfaccia; solo icone SVG/MUI.
 
 ---

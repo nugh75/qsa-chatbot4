@@ -250,7 +250,9 @@ const AppContent: React.FC = () => {
   const [previewType, setPreviewType] = useState<'pdf' | 'markdown' | 'text' | null>(null)
   const [previewTitle, setPreviewTitle] = useState<string>('')
   const [previewContent, setPreviewContent] = useState<string>('')
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null) // object URL for pdf
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null) // object URL for inline rendering (e.g. PDF blob)
+  const [previewSourceHref, setPreviewSourceHref] = useState<string | null>(null)
+  const [previewDownloadName, setPreviewDownloadName] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState<string | null>(null)
   // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
@@ -260,14 +262,61 @@ const AppContent: React.FC = () => {
 
   // (doc:// link injection is handled by prepareChatMarkdown)
 
+  const handleDownloadOriginal = () => {
+    if (!previewSourceHref) return
+    try {
+      const anchor = document.createElement('a')
+      anchor.href = previewSourceHref
+      anchor.target = '_blank'
+      anchor.rel = 'noopener'
+      if (previewDownloadName) {
+        anchor.download = previewDownloadName.replace(/\s+/g, '_')
+      }
+      document.body.appendChild(anchor)
+      anchor.click()
+      document.body.removeChild(anchor)
+    } catch (err) {
+      console.warn('[preview] fallback download', err)
+      window.open(previewSourceHref, '_blank')
+    }
+  }
+
   const openPreviewForLink = async (href: string, title: string, ragChunksForContext?: SourceDocs['rag_chunks']) => {
     console.debug('[preview] openPreviewForLink', { href, title, chunkCount: ragChunksForContext?.length })
+    const downloadMatch = href.match(/\/api\/rag\/download\/([^/?#]+)/)
+    if (!href.startsWith('doc://') && downloadMatch && ragChunksForContext && ragChunksForContext.length) {
+      const docId = decodeURIComponent(downloadMatch[1])
+      const relatedChunk = ragChunksForContext.find(c => c.document_id !== undefined && String(c.document_id) === docId)
+      if (relatedChunk && relatedChunk.filename) {
+        const derivedTitle = relatedChunk.filename.split('/').pop() || relatedChunk.filename
+        const proxyHref = `doc://${encodeURIComponent(derivedTitle)}`
+        await openPreviewForLink(proxyHref, derivedTitle, ragChunksForContext)
+        return
+      }
+    }
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl)
       setPreviewUrl(null)
     }
     setPreviewOpen(true)
-    setPreviewTitle(title || href)
+    const safeTitle = title || href
+    setPreviewTitle(safeTitle)
+    setPreviewSourceHref(null)
+    const deriveDownloadName = () => {
+      if (!href) return safeTitle
+      if (href.startsWith('doc://')) {
+        return decodeURIComponent(href.slice('doc://'.length)) || safeTitle
+      }
+      try {
+        const url = new URL(href, window.location.origin)
+        const segments = url.pathname.split('/').filter(Boolean)
+        if (segments.length) return decodeURIComponent(segments[segments.length - 1])
+      } catch {
+        /* ignore parse errors */
+      }
+      return safeTitle
+    }
+    setPreviewDownloadName(deriveDownloadName())
     setPreviewLoading(true)
     setPreviewError(null)
     setPreviewContent('')
@@ -275,6 +324,22 @@ const AppContent: React.FC = () => {
       if (href.startsWith('doc://')) {
         const name = href.slice('doc://'.length)
         const agg = buildDocumentAggregate(name, ragChunksForContext)
+        const normalizedTarget = normalizeDocName(decodeURIComponent(name))
+        if (ragChunksForContext && ragChunksForContext.length) {
+          const relatedChunk = ragChunksForContext.find(c => {
+            const fn = c.filename || ''
+            const base = fn.split('/').pop() || fn
+            const cleanedFull = normalizeDocName(base)
+            const cleanedPartial = normalizeDocName(base.split('_').pop() || base)
+            return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === normalizedTarget || cleaned.includes(normalizedTarget) || normalizedTarget.includes(cleaned)))
+          })
+          if (relatedChunk) {
+            const candidateHref = relatedChunk.download_url || (relatedChunk.document_id ? `/api/rag/download/${relatedChunk.document_id}` : null)
+            if (candidateHref) {
+              setPreviewSourceHref(candidateHref)
+            }
+          }
+        }
         if (!agg) {
           // Fallback: mostra elenco chunk candidati per debug
           const candidates = (ragChunksForContext||[]).filter(c=>{
@@ -292,8 +357,9 @@ const AppContent: React.FC = () => {
       } else {
         const type = detectPreviewType(href)
         setPreviewType(type)
+        setPreviewSourceHref(href)
         if (type === 'pdf') {
-          const res = await fetch(href)
+          const res = await fetch(href, { credentials:'include' })
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
@@ -320,6 +386,8 @@ const AppContent: React.FC = () => {
     setPreviewType(null)
     setPreviewContent('')
     setPreviewError(null)
+    setPreviewSourceHref(null)
+    setPreviewDownloadName(null)
   }
 
   // Helpers markdown (reinserted here so they're in scope before usage)
@@ -1290,11 +1358,42 @@ const AppContent: React.FC = () => {
                         components={{
                           a: ({node, href, children, ...props}) => {
                             const h = href || ''
-                            const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
+                            const labelText = ((children as any)?.toString?.() || '').trim()
+                            const ragChunks = m.source_docs?.rag_chunks
+                            let matchedDocName: string | null = null
+                            let chunkPreviewHref: string | null = null
+                            if (ragChunks && ragChunks.length) {
+                              const normalizedLabel = normalizeDocName(labelText.replace(/^DOC\s+/i, ''))
+                              if (normalizedLabel) {
+                                const relatedChunk = ragChunks.find(c => {
+                                  const fn = c.filename || ''
+                                  const base = fn.split('/').pop() || fn
+                                  const cleanedFull = normalizeDocName(base)
+                                  const cleanedPartial = normalizeDocName(base.split('_').pop() || base)
+                                  return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === normalizedLabel || cleaned.includes(normalizedLabel) || normalizedLabel.includes(cleaned)))
+                                })
+                                if (relatedChunk && relatedChunk.filename) {
+                                  matchedDocName = relatedChunk.filename.split('/').pop() || relatedChunk.filename
+                                  chunkPreviewHref = `doc://${encodeURIComponent(matchedDocName)}`
+                                }
+                              }
+                            }
+                            const isDoc = !!chunkPreviewHref || /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
                             if (!isDoc) {
                               return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
                             }
-                            return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
+                            const effectiveHref = chunkPreviewHref || h
+                            const effectiveTitle = matchedDocName || labelText || h
+                            return (
+                              <a
+                                href={chunkPreviewHref ? '#' : h}
+                                {...props}
+                                onClick={(e)=>{ e.preventDefault(); openPreviewForLink(effectiveHref, effectiveTitle, ragChunks) }}
+                                style={{ cursor:'pointer', textDecoration:'underline' }}
+                              >
+                                {children}
+                              </a>
+                            )
                           },
                           table: ({node, ...props}) => (
                             <Box className="markdown-table-wrapper" sx={{ width:'100%', overflowX:'auto', my:1 }}>
@@ -1503,23 +1602,36 @@ const AppContent: React.FC = () => {
                                       <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Documenti ({docEntries.length}) ordinati per similarità</Box>
                                       <Stack spacing={0.5}>
                                         {docEntries.map((d,di)=>{
-                                          const baseName = d.filename ? (d.filename.split('_').pop() || d.filename) : d.filename || 'Documento';
+                                          const baseName = d.filename ? (d.filename.split('/').pop() || d.filename) : 'Documento'
+                                          const previewHref = `doc://${encodeURIComponent(baseName)}`
+                                          const primaryHref = d.chunks?.[0]?.download_url || (d.document_id ? `/api/rag/download/${d.document_id}` : null)
                                           return (
                                             <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
                                               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:0.3 }}>
                                                 <Box sx={{ display:'flex', alignItems:'center', gap:0.8 }}>
                                                   <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', display:'flex', alignItems:'center', gap:0.6 }}>
-                                                    {d.stored_filename && d.document_id ? (
-                                                      <Link href={d.chunks?.[0]?.download_url || `/api/rag/download/${d.document_id}`} target="_blank" rel="noopener" underline="hover" sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}>
-                                                        {baseName}
-                                                      </Link>
-                                                    ) : (
-                                                      baseName
-                                                    )}
+                                                    <Link
+                                                      component="button"
+                                                      type="button"
+                                                      underline="hover"
+                                                      sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', background:'none', border:0, p:0, cursor:'pointer' }}
+                                                      onClick={()=> openPreviewForLink(previewHref, baseName, m.source_docs?.rag_chunks)}
+                                                    >
+                                                      {baseName}
+                                                    </Link>
                                                     {d.maxSim ? <Box component="span" sx={{ fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
                                                   </Box>
-                                                  {d.stored_filename && d.document_id && (
-                                                    <Tooltip title="Scarica file originale"><IconButton size="small" onClick={()=> window.open(d.chunks?.[0]?.download_url || `/api/rag/download/${d.document_id}`,'_blank')} sx={{ p:0.3 }}>
+                                                  {primaryHref && (
+                                                    <Tooltip title="Scarica file originale"><IconButton size="small" onClick={()=>{
+                                                      const anchor = document.createElement('a')
+                                                      anchor.href = primaryHref
+                                                      anchor.target = '_blank'
+                                                      anchor.rel = 'noopener'
+                                                      anchor.download = baseName.replace(/\s+/g,'_')
+                                                      document.body.appendChild(anchor)
+                                                      anchor.click()
+                                                      document.body.removeChild(anchor)
+                                                    }} sx={{ p:0.3 }}>
                                                       <SmallDownloadIcon size={14} />
                                                     </IconButton></Tooltip>
                                                   )}
@@ -2139,8 +2251,8 @@ const AppContent: React.FC = () => {
               setTimeout(()=> URL.revokeObjectURL(url), 2000)
             }}>Scarica aggregato</Button>
           )}
-          {previewType && (
-            <Button size="small" onClick={()=>{ if (previewType==='pdf' && previewUrl) window.open(previewUrl, '_blank'); else window.open(previewTitle, '_blank') }} disabled={previewLoading || !!previewError}>Apri originale</Button>
+          {previewSourceHref && (
+            <Button size="small" onClick={handleDownloadOriginal} disabled={previewLoading || !!previewError}>Scarica originale</Button>
           )}
           <Button onClick={closePreview}>Chiudi</Button>
         </DialogActions>

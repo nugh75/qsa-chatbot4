@@ -56,7 +56,7 @@ git push origin HEAD --tags
 - Chunk labels (`chunk_label`) surfaced in both streaming and non-stream chat responses.
 - Unified `source_docs` message payload replacing legacy separate arrays.
 - Document preview dialog fed by aggregated chunks via `doc://` links.
-- Markdown normalization + `remark-breaks` for soft line breaks and improved "Fonti consultate:" formatting.
+- Markdown normalization + `remark-breaks` for soft line breaks and improved formatting of the sources metadata blocks.
 
 ### Changed
 - Removed all emoji decorations in frontend; standardized on SVG (MUI) icons.
@@ -235,4 +235,3 @@ git push origin master --tags
 - To push this release and tag to your remote:
   - `git push origin master --tags`
 - If running in dev, start backend and frontend as usual, then open `/admin` and login with an admin user.
-

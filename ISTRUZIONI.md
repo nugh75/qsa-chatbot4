@@ -30,7 +30,7 @@ Recent additions / Aggiunte recenti:
 - Per‑chunk metadata: `chunk_label`, `similarity`, `download_url` for original file.
 - Unified `source_docs` object: { rag_chunks, pipeline_topics, rag_groups }.
 - Document preview dialog aggregating chunk content via `doc://` links.
-- Markdown normalization (line breaks, "Fonti consultate:" formatting).
+- Markdown normalization (line breaks, source section formatting).
 - All emoji removed from UI (SVG icons only).
 
 ## 5) System Prompt / Prompt di Sistema

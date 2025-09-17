@@ -131,7 +131,7 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         if context_parts:
             context = "\n".join(context_parts)
             header = f"[CONTESTO RAG - {len(context_parts)} documenti rilevanti trovati]\n\n"
-            footer = "\n[ISTRUZIONI: Quando usi informazioni da queste fonti, cita il nome del file usando il formato: [  nome_file.pdf](download_link) ]"
+            footer = "\n[ISTRUZIONI: Quando utilizzi informazioni da queste fonti, cita il nome del file usando il formato: [DOC nome_file.pdf] senza aggiungere link.]"
             assembled = header + context + footer
             print(f"[RAG] Contesto assemblato con {len(context_parts)} fonti, lunghezza={len(assembled)}")
             return assembled
@@ -144,47 +144,34 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
 
 def format_response_with_citations(response: str, search_results: List[Dict]) -> str:
     """
-    Aggiunge link di download ai file citati nella risposta
-    
+    Adatta eventuali citazioni della risposta al formato `[DOC nome_file]`.
+    I dettagli completi delle fonti sono ora gestiti dal pannello delle fonti RAG.
+
     Args:
         response: Risposta dell'LLM
-        search_results: Risultati della ricerca RAG
-        
+        search_results: Risultati della ricerca RAG (usati solo per verificare i nomi file)
+
     Returns:
-        Risposta con link ai file sorgente
+        Risposta con citazioni normalizzate, senza appendere sezioni aggiuntive
     """
     if not search_results:
         return response
-    
-    # Mappa file citati
-    file_links = {}
-    for result in search_results:
-        filename = result.get("original_filename", result.get("filename", ""))
-        document_id = result.get("document_id")
-        if filename and document_id:
-            # Link placeholder - in futuro implementeremo download reale
-            download_link = f"/api/rag/download/{document_id}"
-            file_links[filename] = download_link
-    
-    # Cerca pattern di citazioni nel response e aggiungi link
+
     import re
-    
-    # Pattern per citazioni: [  filename]
-    citation_pattern = r'\[ \s+([^\]]+)\]'
-    
-    def replace_citation(match):
+
+    known_filenames = {
+        result.get("original_filename", result.get("filename", ""))
+        for result in search_results
+        if result.get("original_filename") or result.get("filename")
+    }
+
+    # Pattern per citazioni ereditate: [  filename]
+    citation_pattern = r"\[ \s+([^\]]+)\]"
+
+    def replace_citation(match) -> str:
         filename = match.group(1).strip()
-        if filename in file_links:
-            return f"[  {filename}]({file_links[filename]})"
-        return match.group(0)  # Return original if no link found
-    
-    response_with_links = re.sub(citation_pattern, replace_citation, response)
-    
-    # Se non ci sono citazioni esplicite ma abbiamo risultati, aggiungi sezione fonti
-    if citation_pattern not in response_with_links and file_links:
-        sources_section = "\n\n**Fonti consultate:**\n"
-        for filename, link in file_links.items():
-            sources_section += f"- [{filename}]({link})\n"
-        response_with_links += sources_section
-    
-    return response_with_links
+        if filename and filename in known_filenames:
+            return f"[DOC {filename}]"
+        return match.group(0)
+
+    return re.sub(citation_pattern, replace_citation, response)

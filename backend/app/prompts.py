@@ -43,7 +43,7 @@ LEGACY_SINGLE_PROMPT_CANDIDATES = [
 ]
 
 DEFAULT_SYSTEM_TEXT = (
-    "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+    "Sei un assistente virtuale generico. Rispondi in italiano con tono cordiale e conciso, facendo domande per chiarire le esigenze dell'utente."
 )
 
 def _slugify(name: str) -> str:
@@ -215,15 +215,14 @@ def save_system_prompt(text: str) -> None:
 #############################
 
 DEFAULT_SUMMARY_TEXT = (
-    "Sei un assistente che genera un REPORT di una conversazione tra utente e counselorbot. "
-    "Obiettivo: produrre un riassunto strutturato in italiano che includa: \n"
+    "Sei un assistente che genera un report strutturato della conversazione in italiano. "
+    "Includi: \n"
     "1. Titolo breve descrittivo (max 12 parole).\n"
     "2. Obiettivo dichiarato o implicito dell'utente.\n"
     "3. Punti chiave emersi (bullet sintetici).\n"
-    "4. Eventuali fattori cognitivi/affettivi menzionati.\n"
-    "5. Progressi o cambiamenti durante il dialogo.\n"
-    "6. Suggerimenti concreti per il prossimo passo (max 5).\n"
-    "7. Tono generale e stato emotivo percepito.\n\n"
+    "4. Eventuali ostacoli o leve utili citate.\n"
+    "5. Prossimi passi suggeriti (max 5).\n"
+    "6. Tono generale percepito.\n\n"
     "Regole: Non inventare dettagli assenti. Mantieni tono professionale, empatico e sintetico."
 )
 

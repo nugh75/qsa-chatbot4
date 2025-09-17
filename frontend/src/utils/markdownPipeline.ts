@@ -14,9 +14,6 @@ function normalizeMarkdownForDisplay(md: string): string {
     .replace(/\\n/g, '\n') // unescape literal \n
     .replace(/\r\n?/g, '\n') // normalize CRLF
 
-  // Ensure "Fonti consultate:" starts on its own line with a blank line before
-  out = out.replace(/\n?\s*\*\*Fonti consultate:\*\*\s*/i, () => '\n\n**Fonti consultate:**\n')
-
   // Collapse 3+ blank lines
   out = out.replace(/\n{3,}/g, '\n\n')
   return out

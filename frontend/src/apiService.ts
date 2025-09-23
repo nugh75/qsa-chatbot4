@@ -3,7 +3,7 @@
  */
 
 import { CredentialManager } from './crypto';
-import type { PersonalityEntry } from './types/admin';
+import type { PersonalityEntry, SystemPromptEntry } from './types/admin';
 import type Msg from './types/message';
 
 // Dynamic API base resolution to avoid hard-coded localhost in deployed/tunneled environments.
@@ -423,6 +423,10 @@ class ApiService {
 
   async getPersonalities(): Promise<ApiResponse<{ default_id: string|null; personalities: PersonalityEntry[] }>> {
     return this.makeRequest('/personalities');
+  }
+
+  async listSystemPrompts(): Promise<ApiResponse<{ active_id: string | null; prompts: SystemPromptEntry[] }>> {
+    return this.makeRequest<{ active_id: string | null; prompts: SystemPromptEntry[] }>('/admin/system-prompts');
   }
   
   async getConversationSummary(conversationId: string): Promise<ApiResponse<{ conversation_id: string; summary: string }>> {

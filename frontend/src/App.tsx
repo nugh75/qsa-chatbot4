@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import type { PersonalityEntry } from './types/admin'
+import type { PersonalityEntry, SystemPromptEntry } from './types/admin'
 import type Msg from './types/message'
 import type { SourceDocs } from './types/message'
 import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText, LinearProgress } from '@mui/material'
@@ -193,6 +193,7 @@ const AppContent: React.FC = () => {
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
   const [personalities, setPersonalities] = useState<PersonalityEntry[]>([])
+  const [systemPromptMap, setSystemPromptMap] = useState<Partial<Record<string, SystemPromptEntry>>>({})
   const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
   const [error,setError] = useState<string|undefined>()
   const [loading,setLoading] = useState(false)
@@ -257,6 +258,37 @@ const AppContent: React.FC = () => {
   const [previewError, setPreviewError] = useState<string | null>(null)
   // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
   const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
+
+  useEffect(() => {
+    if (!isAuthenticated || !user?.is_admin) {
+      setSystemPromptMap({})
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { apiService } = await import('./apiService')
+        const res = await apiService.listSystemPrompts()
+        if (!cancelled && res.success && res.data) {
+          const entries = Array.isArray(res.data.prompts) ? res.data.prompts : []
+          const map: Partial<Record<string, SystemPromptEntry>> = {}
+          entries.forEach(entry => {
+            if (entry && entry.id) {
+              map[entry.id] = entry
+            }
+          })
+          setSystemPromptMap(map)
+        }
+      } catch {
+        if (!cancelled) {
+          setSystemPromptMap({})
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, user?.is_admin])
 
   // Build aggregated content for a document name from rag chunks (moved to utils)
 
@@ -432,6 +464,17 @@ const AppContent: React.FC = () => {
   // Avatar dinamico: se personalità ha avatar_url usa quello, altrimenti fallback statico
   const selectedPersonality = personalities.find(p=> p.id === selectedPersonalityId)
   const assistantAvatarSrc = selectedPersonality?.avatar_url || '/volto.png'
+  const adminPersonalityInfo = React.useMemo(() => {
+    if (!user?.is_admin || !selectedPersonality) return null
+    const promptId = selectedPersonality.system_prompt_id || ''
+    const promptEntry = promptId ? systemPromptMap[promptId] : undefined
+    const provider = selectedPersonality.provider || '-'
+    const model = selectedPersonality.model || '-'
+    const promptName = promptEntry?.name || promptId || '-'
+    const textRaw = promptEntry?.text?.trim()
+    const promptText = textRaw && textRaw.length > 0 ? promptEntry?.text || '-' : '-'
+    return { provider, model, systemPromptName: promptName || '-', systemPromptText: promptText }
+  }, [selectedPersonality, systemPromptMap, user?.is_admin])
 
   // Carica configurazione pubblica e welcome/guide attivi
   useEffect(() => {
@@ -1226,9 +1269,10 @@ const AppContent: React.FC = () => {
         onLogin={()=> setShowLoginDialog(true)}
         onLogout={handleLogout}
         dense={isMobile}
-  personalities={personalities}
-  selectedPersonalityId={selectedPersonalityId}
-  onChangePersonality={(id)=> setSelectedPersonalityId(id)}
+        personalities={personalities}
+        selectedPersonalityId={selectedPersonalityId}
+        onChangePersonality={(id)=> setSelectedPersonalityId(id)}
+        adminPersonalityInfo={adminPersonalityInfo}
       />
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (

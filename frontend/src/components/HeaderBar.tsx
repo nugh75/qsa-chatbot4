@@ -1,5 +1,5 @@
 import React from 'react'
-import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar } from '@mui/material'
+import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar, Typography } from '@mui/material'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 
 // Simple inline SVG icons (uniform style)
@@ -28,9 +28,15 @@ export interface HeaderBarProps {
   onLogout?: ()=> void
   dense?: boolean
   isAdmin?: boolean
+  adminPersonalityInfo?: {
+    provider: string
+    model: string
+    systemPromptName: string
+    systemPromptText: string
+  } | null
 }
 
-const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalityId, onChangePersonality, onOpenSidebar, onDownloadPdf, onDownloadTxt, onDownloadReport, onNewChat, onShowGuide, onOpenArena, showArena, isAuthenticated, onLogin, onLogout, dense, isAdmin }) => {
+const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalityId, onChangePersonality, onOpenSidebar, onDownloadPdf, onDownloadTxt, onDownloadReport, onNewChat, onShowGuide, onOpenArena, showArena, isAuthenticated, onLogin, onLogout, dense, isAdmin, adminPersonalityInfo }) => {
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const [menuAnchor, setMenuAnchor] = React.useState<null | HTMLElement>(null)
@@ -123,6 +129,50 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
               </MenuItem>
             </Menu>
           </>
+        )}
+        {isAdmin && adminPersonalityInfo && (
+          <Tooltip
+            arrow
+            placement={isMobile ? 'bottom-end' : 'bottom'}
+            title={
+              <Box sx={{ maxWidth: 360 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Dettagli personalità</Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Provider:</strong> {adminPersonalityInfo.provider || '-'}</Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Modello:</strong> {adminPersonalityInfo.model || '-'}</Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Prompt:</strong> {adminPersonalityInfo.systemPromptName || '-'}</Typography>
+                <Typography variant="body2" sx={{ mt: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {adminPersonalityInfo.systemPromptText || '-'}
+                </Typography>
+              </Box>
+            }
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: isMobile ? 'flex-end' : 'flex-start',
+                ml: isMobile ? 0 : 2,
+                maxWidth: isMobile ? 180 : 260,
+                cursor: 'default'
+              }}
+            >
+              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
+                Provider · Modello · Prompt
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 600,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  width: '100%'
+                }}
+              >
+                {(adminPersonalityInfo.provider || '-') + ' · ' + (adminPersonalityInfo.model || '-') + ' · ' + (adminPersonalityInfo.systemPromptName || '-')}
+              </Typography>
+            </Box>
+          </Tooltip>
         )}
         <Box sx={{ flex:1 }} />
       </Toolbar>

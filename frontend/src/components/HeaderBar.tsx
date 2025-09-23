@@ -1,5 +1,5 @@
 import React from 'react'
-import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar, Typography } from '@mui/material'
+import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar, Typography, Dialog, DialogTitle, DialogContent, DialogActions, Button } from '@mui/material'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
 
 // Simple inline SVG icons (uniform style)
@@ -43,6 +43,7 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
   const [desktopAnchor, setDesktopAnchor] = React.useState<null | HTMLElement>(null)
   const menuOpen = Boolean(menuAnchor)
   const desktopOpen = Boolean(desktopAnchor)
+  const [infoDialogOpen, setInfoDialogOpen] = React.useState(false)
   const handleOpenMenu = (e: React.MouseEvent<HTMLElement>) => setMenuAnchor(e.currentTarget)
   const handleCloseMenu = () => setMenuAnchor(null)
   const handleOpenDesktop = (e: React.MouseEvent<HTMLElement>) => setDesktopAnchor(e.currentTarget)
@@ -131,29 +132,22 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
           </>
         )}
         {isAdmin && adminPersonalityInfo && (
-          <Tooltip
-            arrow
-            placement={isMobile ? 'bottom-end' : 'bottom'}
-            title={
-              <Box sx={{ maxWidth: 360 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>Dettagli personalità</Typography>
-                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Provider:</strong> {adminPersonalityInfo.provider || '-'}</Typography>
-                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Modello:</strong> {adminPersonalityInfo.model || '-'}</Typography>
-                <Typography variant="body2" sx={{ whiteSpace: 'normal' }}><strong>Prompt:</strong> {adminPersonalityInfo.systemPromptName || '-'}</Typography>
-                <Typography variant="body2" sx={{ mt: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                  {adminPersonalityInfo.systemPromptText || '-'}
-                </Typography>
-              </Box>
-            }
-          >
+          <>
             <Box
+              component="button"
+              type="button"
+              onClick={()=> setInfoDialogOpen(true)}
               sx={{
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: isMobile ? 'flex-end' : 'flex-start',
                 ml: isMobile ? 0 : 2,
                 maxWidth: isMobile ? 180 : 260,
-                cursor: 'default'
+                border: 'none',
+                background: 'none',
+                cursor: 'pointer',
+                p: 0,
+                textAlign: isMobile ? 'right' : 'left'
               }}
             >
               <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
@@ -172,7 +166,31 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
                 {(adminPersonalityInfo.provider || '-') + ' · ' + (adminPersonalityInfo.model || '-') + ' · ' + (adminPersonalityInfo.systemPromptName || '-')}
               </Typography>
             </Box>
-          </Tooltip>
+            <Dialog
+              open={infoDialogOpen}
+              onClose={()=> setInfoDialogOpen(false)}
+              maxWidth="sm"
+              fullWidth
+            >
+              <DialogTitle>Dettagli chatbot</DialogTitle>
+              <DialogContent dividers>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                  <Typography variant="body2"><strong>Provider:</strong> {adminPersonalityInfo.provider || '-'}</Typography>
+                  <Typography variant="body2"><strong>Modello:</strong> {adminPersonalityInfo.model || '-'}</Typography>
+                  <Typography variant="body2"><strong>Prompt:</strong> {adminPersonalityInfo.systemPromptName || '-'}</Typography>
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 600 }}>Testo prompt</Typography>
+                    <Typography variant="body2" sx={{ mt: 0.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {adminPersonalityInfo.systemPromptText || '-'}
+                    </Typography>
+                  </Box>
+                </Box>
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={()=> setInfoDialogOpen(false)} size="small" variant="contained">Chiudi</Button>
+              </DialogActions>
+            </Dialog>
+          </>
         )}
         <Box sx={{ flex:1 }} />
       </Toolbar>

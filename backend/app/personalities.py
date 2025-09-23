@@ -287,7 +287,7 @@ def upsert_personality(
                 model = EXCLUDED.model,
                 tts_provider = EXCLUDED.tts_provider,
                 tts_voice = EXCLUDED.tts_voice,
-                avatar = COALESCE(EXCLUDED.avatar, personalities.avatar),
+                avatar = EXCLUDED.avatar,
                 welcome_message = EXCLUDED.welcome_message,
                 guide_id = EXCLUDED.guide_id,
                 context_window = EXCLUDED.context_window,

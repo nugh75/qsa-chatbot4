@@ -8,6 +8,9 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Allow larger file uploads for avatars and attachments (default is 1m)
+    client_max_body_size 10M;
+
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
@@ -38,6 +41,9 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Allow larger uploads specifically for API endpoints
+        client_max_body_size 10M;
         
         # For streaming responses
         proxy_buffering off;

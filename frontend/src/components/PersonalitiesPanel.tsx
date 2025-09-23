@@ -291,6 +291,15 @@ const PersonalitiesPanel: React.FC = () => {
     if (!name.trim()) return
     setSaving(true); setErr(null)
     try {
+      // Preserva il filename dell'avatar esistente quando non si cambia avatar
+      let avatarFilename = null
+      if (!removeAvatar && !avatarFile) {
+        // Se non stiamo rimuovendo l'avatar e non abbiamo un nuovo file,
+        // preserva l'avatar esistente
+        const anyEditing: any = editing
+        avatarFilename = anyEditing?.avatar || null
+      }
+
       const res = await authFetch(`${BACKEND}/api/admin/personalities`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -307,6 +316,7 @@ const PersonalitiesPanel: React.FC = () => {
           context_window: contextWindow === '' ? null : contextWindow, 
           temperature, 
           max_tokens: maxTokens === '' ? null : maxTokens,
+          avatar: avatarFilename, // Includi l'avatar esistente quando non si cambia
           remove_avatar: removeAvatar, 
           active,
           enabled_pipeline_topics: selectedPipelineTopics,
@@ -318,107 +328,139 @@ const PersonalitiesPanel: React.FC = () => {
           show_source_docs: showSourceDocs
         })
       })
-      if (res.ok) {
-        let updatedAvatarUrl: string | null = null
-        let personalityId = editing?.id || name.trim().toLowerCase().replace(/[^a-z0-9\-\s]/g,'').replace(/\s+/g,'-')
-        // Upload avatar if needed
-        if (avatarFile && !removeAvatar) {
-          try {
-            const form = new FormData()
-            form.append('file', avatarFile)
-            const up = await authFetch(`${BACKEND}/api/admin/personalities/${personalityId}/avatar`, { method: 'POST', body: form })
-            if (up.ok) {
-              try { 
-                const upJson = await up.json(); 
-                updatedAvatarUrl = upJson.url || null;
-                console.log('[PersonalitiesPanel] Avatar upload success, URL:', updatedAvatarUrl);
-              } catch {}
-            } else {
-              console.warn('Avatar upload failed', up.status, up.statusText)
+      if (!res.ok) {
+        const d = await res.json().catch(() => null)
+        setErr((d as any)?.detail || 'Errore salvataggio')
+        return
+      }
+
+      let responseData: any = null
+      try {
+        responseData = await res.json()
+      } catch {
+        responseData = null
+      }
+
+      const fallbackId = name.trim().toLowerCase().replace(/[^a-z0-9\-\s]/g,'').replace(/\s+/g,'-')
+      let personalityId = responseData?.id || editing?.id || fallbackId
+      if (!personalityId) personalityId = fallbackId
+
+      let updatedAvatarUrl: string | null = null
+      let uploadedAvatarFilename: string | null = null
+
+      if (avatarFile && !removeAvatar) {
+        try {
+          const form = new FormData()
+          form.append('file', avatarFile)
+          const up = await authFetch(`${BACKEND}/api/admin/personalities/${personalityId}/avatar`, { method: 'POST', body: form })
+          if (up.ok) {
+            try {
+              const upJson = await up.json()
+              const rawUrl = upJson?.url || null
+              uploadedAvatarFilename = upJson?.filename || null
+              if (rawUrl) {
+                updatedAvatarUrl = /^https?:\/\//i.test(rawUrl)
+                  ? rawUrl
+                  : `${BACKEND.endsWith('/') ? BACKEND.slice(0, -1) : BACKEND}${rawUrl.startsWith('/') ? '' : '/'}${rawUrl}`
+              }
+              console.log('[PersonalitiesPanel] Avatar upload success, URL:', updatedAvatarUrl)
+            } catch {
             }
-          } catch(e){ console.warn('Avatar upload error', e) }
-        } else if (removeAvatar) {
-          updatedAvatarUrl = null
-        }
-        // Optimistic local update of personalities list (avoid full reload flicker)
-        setItems(prev => {
-          const list = [...prev.personalities]
-          const idx = list.findIndex(p => p.id === personalityId)
-          if (idx >= 0) {
-            const p = { ...list[idx] }
-            if (updatedAvatarUrl !== null) p.avatar_url = updatedAvatarUrl
-            if (removeAvatar) p.avatar_url = null
-            p.name = name.trim()
-            p.provider = provider
-            p.model = model
-            p.system_prompt_id = systemPromptId
-            p.tts_provider = ttsProvider || null
-            ;(p as any).tts_voice = ttsVoice || null
-            p.welcome_message = welcomeMessageId || null
-            p.guide_id = guideId || null
-            p.context_window = contextWindow === '' ? null : (contextWindow as number)
-            p.temperature = temperature
-            p.max_tokens = maxTokens === '' ? null : (maxTokens as number)
-            p.active = active
-            ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
-            ;(p as any).enabled_rag_groups = selectedRagGroups
-            ;(p as any).enabled_mcp_servers = selectedMcpServers
-            ;(p as any).enabled_data_tables = selectedDataTables
-            ;(p as any).enabled_forms = selectedForms
-            ;(p as any).show_pipeline_topics = showPipelineTopics
-            ;(p as any).show_source_docs = showSourceDocs
-            list[idx] = p
           } else {
-            list.push({
-              id: personalityId,
-              name: name.trim(),
-              provider,
-              model,
-              system_prompt_id: systemPromptId,
-              avatar_url: updatedAvatarUrl,
-              tts_provider: ttsProvider || null,
-              tts_voice: ttsVoice || null,
-              welcome_message: welcomeMessageId || null,
-              guide_id: guideId || null,
-              context_window: contextWindow === '' ? null : (contextWindow as number),
-              temperature,
-              max_tokens: maxTokens === '' ? null : (maxTokens as number),
-              active,
-              enabled_pipeline_topics: selectedPipelineTopics,
-              enabled_rag_groups: selectedRagGroups,
-              enabled_mcp_servers: selectedMcpServers,
-              enabled_data_tables: selectedDataTables,
-              enabled_forms: selectedForms,
-              show_pipeline_topics: showPipelineTopics,
-              show_source_docs: showSourceDocs
-            })
+            console.warn('Avatar upload failed', up.status, up.statusText)
           }
-          return { ...prev, personalities: list }
-        })
-        if (updatedAvatarUrl !== null || removeAvatar) {
-          // Clean up any object URLs first
-          if (avatarFile && avatarPreview) {
-            try { URL.revokeObjectURL(avatarPreview) } catch {}
-          }
-          
-          // Update preview with final server URL (replacing any ObjectURL)
-          console.log('[PersonalitiesPanel] Updating avatar preview from:', avatarPreview, 'to:', updatedAvatarUrl);
-          setAvatarPreview(updatedAvatarUrl)
-          setAvatarKey(prev => prev + 1) // Force re-render
+        } catch (e) {
+          console.warn('Avatar upload error', e)
         }
-        
-        // Background refresh to sync any server-derived fields (system default id etc.)
-        load()
-        setMsg('Salvato')
-        
-        // Close dialog after a brief delay to let user see the updated avatar preview
-        setTimeout(() => {
-          setDialogOpen(false)
-        }, 1000) // 1 second delay to show the updated avatar
-        
-      } else { const d=await res.json(); setErr(d.detail || 'Errore salvataggio') }
-    } catch { setErr('Errore rete') } finally { setSaving(false) }
+      } else if (removeAvatar) {
+        updatedAvatarUrl = null
+        uploadedAvatarFilename = null
+      }
+
+      setItems(prev => {
+        const list = [...prev.personalities]
+        const idx = list.findIndex(p => p.id === personalityId)
+        if (idx >= 0) {
+          const p = { ...list[idx] }
+          if (updatedAvatarUrl !== null) {
+            p.avatar_url = updatedAvatarUrl
+            if (uploadedAvatarFilename !== null) (p as any).avatar = uploadedAvatarFilename
+          }
+          if (removeAvatar) {
+            p.avatar_url = null
+            ;(p as any).avatar = null
+          }
+          p.name = name.trim()
+          p.provider = provider
+          p.model = model
+          p.system_prompt_id = systemPromptId
+          p.tts_provider = ttsProvider || null
+          ;(p as any).tts_voice = ttsVoice || null
+          p.welcome_message = welcomeMessageId || null
+          p.guide_id = guideId || null
+          p.context_window = contextWindow === '' ? null : (contextWindow as number)
+          p.temperature = temperature
+          p.max_tokens = maxTokens === '' ? null : (maxTokens as number)
+          p.active = active
+          ;(p as any).enabled_pipeline_topics = selectedPipelineTopics
+          ;(p as any).enabled_rag_groups = selectedRagGroups
+          ;(p as any).enabled_mcp_servers = selectedMcpServers
+          ;(p as any).enabled_data_tables = selectedDataTables
+          ;(p as any).enabled_forms = selectedForms
+          ;(p as any).show_pipeline_topics = showPipelineTopics
+          ;(p as any).show_source_docs = showSourceDocs
+          list[idx] = p
+        } else {
+          list.push({
+            id: personalityId,
+            name: name.trim(),
+            provider,
+            model,
+            system_prompt_id: systemPromptId,
+            avatar_url: updatedAvatarUrl,
+            avatar: uploadedAvatarFilename,
+            tts_provider: ttsProvider || null,
+            tts_voice: ttsVoice || null,
+            welcome_message: welcomeMessageId || null,
+            guide_id: guideId || null,
+            context_window: contextWindow === '' ? null : (contextWindow as number),
+            temperature,
+            max_tokens: maxTokens === '' ? null : (maxTokens as number),
+            active,
+            enabled_pipeline_topics: selectedPipelineTopics,
+            enabled_rag_groups: selectedRagGroups,
+            enabled_mcp_servers: selectedMcpServers,
+            enabled_data_tables: selectedDataTables,
+            enabled_forms: selectedForms,
+            show_pipeline_topics: showPipelineTopics,
+            show_source_docs: showSourceDocs
+          })
+        }
+        return { ...prev, personalities: list }
+      })
+
+      if (updatedAvatarUrl !== null || removeAvatar) {
+        if (avatarFile && avatarPreview) {
+          try { URL.revokeObjectURL(avatarPreview) } catch {}
+        }
+        console.log('[PersonalitiesPanel] Updating avatar preview from:', avatarPreview, 'to:', updatedAvatarUrl)
+        setAvatarPreview(updatedAvatarUrl)
+        setAvatarKey(prev => prev + 1)
+      }
+
+      load()
+      setMsg('Salvato')
+
+      setTimeout(() => {
+        setDialogOpen(false)
+      }, 1000)
+    } catch {
+      setErr('Errore rete')
+    } finally {
+      setSaving(false)
+    }
   }
+
 
   const runTest = async () => {
     if (!testMessage.trim()) return
@@ -427,7 +469,13 @@ const PersonalitiesPanel: React.FC = () => {
       const headers: Record<string,string> = { 'Content-Type':'application/json', 'X-LLM-Provider': provider }
       if (model) headers['X-LLM-Model'] = model
       if (provider === 'ollama' && ollamaBaseUrl.trim()) headers['X-Ollama-Base-Url'] = ollamaBaseUrl.trim()
-      const r = await authFetch(`${BACKEND}/api/chat`, { method:'POST', headers, body: JSON.stringify({ message: testMessage }) })
+      if (editing?.id) headers['X-Personality-Id'] = editing.id
+      if (typeof temperature === 'number') headers['X-LLM-Temperature'] = String(temperature)
+      const payload = {
+        message: testMessage,
+        sessionId: editing?.id ? `personality-${editing.id}-test` : 'personality-test'
+      }
+      const r = await authFetch(`${BACKEND}/api/chat`, { method:'POST', headers, body: JSON.stringify(payload) })
       const data = await r.json()
       setTestResult(data)
     } catch(e) { setTestResult({ error: 'Errore test' }) } finally { setTesting(false) }

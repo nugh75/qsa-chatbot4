@@ -1705,10 +1705,14 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
         ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else 'png'
         if ext not in allowed:
             raise HTTPException(status_code=400, detail="Formato immagine non supportato")
-        # Prepara path salvataggio (usare directory persistente /app/storage/avatars)
-        avatars_dir = Path('/app/storage/avatars')
+        # Prepara path salvataggio (supporta override tramite STORAGE_ROOT, fallback a backend/storage)
+        storage_root_env = os.getenv('STORAGE_ROOT')
+        here = Path(__file__).resolve().parent.parent
+        base_storage = Path(storage_root_env).expanduser() if storage_root_env else (here / 'storage')
+        avatars_dir = base_storage / 'avatars'
         # Diagnostic: ensure directory is writable
         try:
+            base_storage.mkdir(parents=True, exist_ok=True)
             avatars_dir.mkdir(parents=True, exist_ok=True)
             if not os.access(avatars_dir, os.W_OK):
                 # Attempt to open a temp file to confirm
@@ -1725,7 +1729,7 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
             raise HTTPException(status_code=500, detail=f"Errore preparazione directory avatars: {_e}")
         # Migrazione automatica: se vecchia dir esiste ed è diversa, copia file mancanti una volta
         try:
-            old_dir = Path(__file__).parent.parent / 'storage' / 'avatars'
+            old_dir = here / 'storage' / 'avatars'
             if old_dir.exists() and old_dir.resolve() != avatars_dir.resolve():
                 avatars_dir.mkdir(parents=True, exist_ok=True)
                 for p in old_dir.iterdir():

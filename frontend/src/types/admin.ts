@@ -36,6 +36,7 @@ export interface PersonalityEntry {
   model: string;
   system_prompt_id: string;
   avatar_url?: string | null;
+  avatar?: string | null; // raw filename returned by admin endpoint
   active?: boolean; // active personalities appear in chat dropdown
   tts_provider?: string | null;
   tts_voice?: string | null;

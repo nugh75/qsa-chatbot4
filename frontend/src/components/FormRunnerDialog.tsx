@@ -28,22 +28,29 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
         const source = (r.data.forms || []) as any[]
         const list = (enabledFormIds && enabledFormIds.length) ? source.filter((f:any)=> enabledFormIds.includes(f.id)) : source
         // server already normalizes legacy items; still accept old shape
-        setForms(list as any)
-        // Prefer last used form from localStorage; fallback to first available
-        if (list.length) {
+        const sorted = [...list].sort((a:any, b:any)=> (a?.name || '').localeCompare(b?.name || '', 'it', { numeric: true, sensitivity: 'base' }))
+        setForms(sorted as any)
+        let nextId = selectedId
+        if (sorted.length) {
+          const firstId = sorted[0].id
           try {
             const last = localStorage.getItem('last_form_id')
-            if (last && list.some(f=> f.id === last)) {
-              setSelectedId(last)
-            } else if (!selectedId) {
-              setSelectedId(list[0].id)
+            if (last && sorted.some(f=> f.id === last)) {
+              nextId = last
             }
           } catch {
-            if (!selectedId) setSelectedId(list[0].id)
+            // ignore storage errors
           }
+          if (!nextId || !sorted.some(f=> f.id === nextId)) {
+            nextId = firstId
+          }
+        } else {
+          nextId = ''
         }
+        setSelectedId(nextId)
       } else {
         setForms([])
+        setSelectedId('')
       }
     })()
   },[open, enabledFormIds])
@@ -161,9 +168,35 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>Inserisci esiti questionario</DialogTitle>
       <DialogContent sx={{ pt:1 }}>
-        <TextField select size="small" fullWidth label="Seleziona form" value={selectedId} onChange={e=> setSelectedId(e.target.value)} sx={{ mb:1 }}>
-          {forms.map(f=> <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
-        </TextField>
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="subtitle1" sx={{ mb:1 }}>Seleziona form</Typography>
+          {forms.length ? (
+            <Paper variant="outlined" sx={{ p:1, maxHeight: 240, overflowY: 'auto' }}>
+              <FormControl component="fieldset" sx={{ width: '100%' }}>
+                <RadioGroup value={selectedId} onChange={e=> setSelectedId(e.target.value)}>
+                  {forms.map(form => (
+                    <FormControlLabel
+                      key={form.id}
+                      value={form.id}
+                      control={<Radio />}
+                      sx={{ alignItems: 'flex-start', '& .MuiFormControlLabel-label': { flex: 1 } }}
+                      label={
+                        <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 600, whiteSpace: 'normal', wordBreak: 'break-word' }}>{form.name}</Typography>
+                          {form.description ? (
+                            <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{form.description}</Typography>
+                          ) : null}
+                        </Box>
+                      }
+                    />
+                  ))}
+                </RadioGroup>
+              </FormControl>
+            </Paper>
+          ) : (
+            <Typography variant="body2" color="text.secondary">Nessun form disponibile. Crea un form in Admin → Questionari.</Typography>
+          )}
+        </Box>
         {items.length>0 ? (
           <Paper variant="outlined" sx={{ p: 2 }}>
             {/* Group items by `group` field (fallback to empty string) */}
@@ -288,13 +321,9 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
             })()}
           </Paper>
         ) : (
-          <>
-            {forms.length === 0 ? (
-              <Typography variant="body2" color="text.secondary">Nessun form disponibile. Crea un form in Admin → Questionari.</Typography>
-            ) : (
-              <Typography variant="body2" color="text.secondary">Nessun form selezionato</Typography>
-            )}
-          </>
+          forms.length ? (
+            <Typography variant="body2" color="text.secondary">Seleziona un form per iniziare la compilazione.</Typography>
+          ) : null
         )}
       </DialogContent>
       <DialogActions>

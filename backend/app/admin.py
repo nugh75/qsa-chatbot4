@@ -61,6 +61,7 @@ import hashlib
 import httpx
 import asyncio, uuid, time
 import threading
+from .openai_utils import build_openai_headers
 
 # ---- TTS Download Task Persistence Helpers ----
 # We add lightweight JSON persistence so that async download tasks survive process restarts.
@@ -354,7 +355,7 @@ async def _fetch_openrouter_models(api_key: str) -> list[str]:
 async def _fetch_openai_models(api_key: str) -> list[str]:
     import httpx
     async with httpx.AsyncClient(timeout=30) as cx:
-        r = await cx.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"})
+        r = await cx.get("https://api.openai.com/v1/models", headers=build_openai_headers(api_key))
         r.raise_for_status()
         data = r.json()
         keep = []
@@ -1250,7 +1251,7 @@ async def test_api_key(provider: str):
             elif provider == "openai":
                 # Test OpenAI
                 url = "https://api.openai.com/v1/models"
-                headers = {"Authorization": f"Bearer {api_key}"}
+                headers = build_openai_headers(api_key)
                 response = await client.get(url, headers=headers)
                 if response.status_code == 200:
                     return {"success": True, "message": "API key OpenAI valida"}
@@ -1260,7 +1261,7 @@ async def test_api_key(provider: str):
             elif provider == "openrouter":
                 # Test OpenRouter
                 url = "https://openrouter.ai/api/v1/models"
-                headers = {"Authorization": f"Bearer {api_key}"}
+                headers = build_openai_headers(api_key)
                 response = await client.get(url, headers=headers)
                 if response.status_code == 200:
                     return {"success": True, "message": "API key OpenRouter valida"}
@@ -3700,7 +3701,7 @@ async def get_available_models(ai_provider: str):
                     async with httpx.AsyncClient() as client:
                         response = await client.get(
                             "https://api.openai.com/v1/models",
-                            headers={"Authorization": f"Bearer {api_key}"}
+                            headers=build_openai_headers(api_key)
                         )
                         if response.status_code == 200:
                             data = response.json()
@@ -3728,7 +3729,7 @@ async def get_available_models(ai_provider: str):
             
             try:
                 import httpx
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                headers = build_openai_headers(api_key) if api_key else {}
                 async with httpx.AsyncClient() as client:
                     response = await client.get("https://openrouter.ai/api/v1/models", headers=headers)
                     if response.status_code == 200:

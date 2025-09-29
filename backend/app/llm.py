@@ -1,6 +1,8 @@
 import os, httpx, json, re, traceback
 from typing import List, Dict, Tuple, Optional, Any, Callable
 
+from .openai_utils import build_openai_headers
+
 ###############################
 # Constants & Helpers
 ###############################
@@ -223,13 +225,15 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             return None
         openai_messages = _prepare_messages_for_provider(messages, 'openai')
         async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openai']) as cx:
-            r = await cx.post("https://api.openai.com/v1/chat/completions",
-                               headers={"Authorization": f"Bearer {api_key}"},
-                               json={
+            r = await cx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=build_openai_headers(api_key),
+                json={
                                    "model": p_model or DEFAULT_MODELS['openai'],
                                    "messages": openai_messages,
                                    "temperature": float(temperature)
-                               })
+                },
+            )
         if not r.is_success:
             errors['openai'] = f"http {r.status_code} {r.text[:120]}"
             return None

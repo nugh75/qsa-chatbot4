@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 from .logging_utils import log_interaction, log_system
+from .openai_utils import build_openai_headers
 import tempfile
 import io
 
@@ -368,10 +369,7 @@ async def openai_tts_generate(text: str, voice: str = "nova", api_key: str = Non
         "voice": voice,
         "response_format": "mp3"
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = build_openai_headers(api_key, {"Content-Type": "application/json"})
     
     try:
         async with httpx.AsyncClient(timeout=60) as client:

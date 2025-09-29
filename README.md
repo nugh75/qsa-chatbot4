@@ -614,6 +614,8 @@ make models  # downloads Whisper small, Piper it_IT-riccardo-x_low, and embeddin
 | **Ollama** | `OLLAMA_BASE_URL` | Local/remote server |
 | **Local** | None | Rule-based responses |
 
+> ℹ️ If you use project-scoped OpenAI keys (`sk-proj-*`), set `OPENAI_PROJECT_ID` (or `OPENAI_PROJECT`) in the environment so API requests include the required `OpenAI-Project` header. Organization-scoped headers are also supported via `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION`.
+
 ## 🎵 Supported TTS Providers
 
 | Provider | Configuration | Notes |
@@ -1148,6 +1150,8 @@ qsa-chatbot/
 | **OpenRouter** | `OPENROUTER_API_KEY` | Accesso a multiple AI |
 | **Ollama** | `OLLAMA_BASE_URL` | Server locale o remoto |
 | **Local** | Nessuna | Per modelli locali |
+
+> ℹ️ Se utilizzi chiavi OpenAI legate a un progetto (`sk-proj-*`), definisci `OPENAI_PROJECT_ID` (o `OPENAI_PROJECT`) nelle variabili d'ambiente per includere l'header `OpenAI-Project`. Sono supportati anche gli header organizzativi tramite `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION`.
 
 ## 🎵 Provider TTS Supportati
 

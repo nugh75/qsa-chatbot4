@@ -1,0 +1,63 @@
+name: pef
+
+# ----------------- Template comuni -----------------
+x-pg: &pg
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qsa_user} -d $${POSTGRES_DB:-qsa_chatbot}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 5s
+
+x-be: &be
+  build: ./backend
+  restart: unless-stopped
+  volumes:
+    - ./backend/storage:/app/storage
+    - ./backend/models:/app/models
+    - ./backend/config:/app/config
+  depends_on: {}
+
+x-fe: &fe
+  restart: unless-stopped
+  depends_on: []
+
+# ----------------- Servizi PEF -----------------
+services:
+  # ---- Postgres PEF ----
+  postgres-pef:
+    <<: *pg
+    env_file: [.env.pef]
+    ports: ["5535:5432"]
+    volumes: ["pgdata-pef:/var/lib/postgresql/data"]
+
+  # ---- Backend PEF ----
+  backend-pef:
+    <<: *be
+    env_file: [.env.pef]
+    ports: ["8115:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-pef:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.pef:/app/.env:ro
+    depends_on: { postgres-pef: { condition: service_healthy } }
+
+  # ---- Frontend PEF ----
+  frontend-pef:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-pef:8005
+        VITE_SITE_NAME: pef
+    ports: ["5175:5175"]
+    depends_on: [backend-pef]
+
+# ----------------- Volumi -----------------
+volumes:
+  pgdata-pef:

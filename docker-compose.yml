@@ -63,6 +63,12 @@ services:
     ports: ["5536:5432"]
     volumes: ["pgdata-dragoni:/var/lib/postgresql/data"]
 
+  postgres-poggi:
+    <<: *pg
+    env_file: [.env.poggi]
+    ports: ["5537:5432"]
+    volumes: ["pgdata-poggi:/var/lib/postgresql/data"]
+
   # ---- Backend (volumi compatti + logs separati) ----
   backend-agrusti:
     <<: *be
@@ -136,6 +142,18 @@ services:
       - ./.env.dragoni:/app/.env:ro
     depends_on: { postgres-dragoni: { condition: service_healthy } }
 
+  backend-poggi:
+    <<: *be
+    env_file: [.env.poggi]
+    ports: ["8117:8005"]
+    volumes:
+      - ./backend/storage:/app/storage
+      - ./backend/storage/logs-poggi:/app/storage/logs
+      - ./backend/models:/app/models
+      - ./backend/config:/app/config
+      - ./.env.poggi:/app/.env:ro
+    depends_on: { postgres-poggi: { condition: service_healthy } }
+
   # ---- Frontend (solo args e porta cambiano) ----
   frontend-agrusti:
     <<: *fe
@@ -203,6 +221,17 @@ services:
     ports: ["5177:5175"]
     depends_on: [backend-dragoni]
 
+  frontend-poggi:
+    <<: *fe
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-poggi:8005
+        VITE_SITE_NAME: poggi
+    ports: ["5178:5175"]
+    depends_on: [backend-poggi]
+
 # ----------------- Volumi -----------------
 volumes:
   pgdata-agrusti:
@@ -211,3 +240,4 @@ volumes:
   pgdata-margottini:
   pgdata-pef:
   pgdata-dragoni:
+  pgdata-poggi:

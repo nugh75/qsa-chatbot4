@@ -279,7 +279,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       <DialogTitle>
         <Box display="flex" alignItems="center" gap={1}>
           <PersonIcon />
-          Accesso Counselorbot
+          Accesso
         </Box>
       </DialogTitle>
 

@@ -98,7 +98,6 @@ class ApiService {
     try {
       // Aggiungi header di autenticazione se disponibile
       const accessToken = CredentialManager.getAccessToken();
-  console.log('makeRequest - Access token from storage:', accessToken?.substring(0, 20) + '...');
       
       if (accessToken) {
         options.headers = {
@@ -106,15 +105,11 @@ class ApiService {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         };
-  console.log('makeRequest - Added Authorization header');
       } else if (!options.headers) {
         options.headers = {
           'Content-Type': 'application/json'
         };
-  console.log('makeRequest - No token found, only Content-Type header');
       }
-
-  console.log('makeRequest - Making request to:', `${API_BASE_URL}${endpoint}`);
       const response = await fetch(url, options);
       
       // Se token scaduto, prova refresh
@@ -273,8 +268,10 @@ class ApiService {
   }
 
   // Conversation endpoints (da implementare nel backend)
-  async getConversations(): Promise<ApiResponse<ConversationData[]>> {
-    return this.makeRequest<ConversationData[]>('/conversations');
+  async getConversations(impersonateUserId?: number | null): Promise<ApiResponse<ConversationData[]>> {
+    const params = impersonateUserId ? `?impersonate_user_id=${impersonateUserId}` : '';
+    // Usa trailing slash per evitare redirect FastAPI (307) che può perdere la porta via proxy
+    return this.makeRequest<ConversationData[]>(`/conversations/${params}`.replace('//','/'));
   }
 
   async createConversation(titleEncrypted: string): Promise<ApiResponse<{ conversation_id: string }>> {
@@ -286,8 +283,9 @@ class ApiService {
     });
   }
 
-  async getConversationMessages(conversationId: string): Promise<ApiResponse<MessageData[]>> {
-    return this.makeRequest<MessageData[]>(`/conversations/${conversationId}/messages`);
+  async getConversationMessages(conversationId: string, impersonateUserId?: number | null): Promise<ApiResponse<MessageData[]>> {
+    const params = impersonateUserId ? `?impersonate_user_id=${impersonateUserId}` : '';
+    return this.makeRequest<MessageData[]>(`/conversations/${conversationId}/messages${params}`);
   }
 
   async sendMessage(
@@ -636,6 +634,12 @@ class ApiService {
   async archiveRagDocument(documentId: number, archived: boolean): Promise<ApiResponse<any>> {
     return this.makeRequest(`/admin/rag/documents/${documentId}/archive`, { method: 'POST', body: JSON.stringify({ archived }) });
   }
+  async updateRagDocumentPermissions(documentId: number, allow_preview: boolean, allow_download: boolean): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/permissions`, { method: 'POST', body: JSON.stringify({ allow_preview, allow_download }) });
+  }
+  async updateRagDocumentName(documentId: number, name: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/name`, { method: 'PUT', body: JSON.stringify({ name }) });
+  }
   async ragDocumentMetadata(documentId: number): Promise<ApiResponse<{ document: any }>> {
     return this.makeRequest<{ document: any }>(`/admin/rag/documents/${documentId}/metadata`);
   }
@@ -670,6 +674,30 @@ class ApiService {
       return { success: false, error: data.detail || 'Upload failed' };
     } catch {
       return { success: false, error: 'Upload parse error' };
+    }
+  }
+
+  async replaceRagDocument(documentId: number, file: File, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<any>> {
+    const form = new FormData();
+    form.append('file', file);
+    if (typeof opts?.chunk_size === 'number' && !Number.isNaN(opts.chunk_size)) {
+      form.append('chunk_size', String(opts.chunk_size));
+    }
+    if (typeof opts?.chunk_overlap === 'number' && !Number.isNaN(opts.chunk_overlap)) {
+      form.append('chunk_overlap', String(opts.chunk_overlap));
+    }
+    const accessToken = CredentialManager.getAccessToken();
+    const resp = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace`, {
+      method: 'POST',
+      headers: accessToken ? { 'Authorization': `Bearer ${accessToken}` } : undefined,
+      body: form
+    });
+    try {
+      const data = await resp.json();
+      if (resp.ok) return { success: true, data };
+      return { success: false, error: data.detail || 'Replace failed' };
+    } catch {
+      return { success: false, error: 'Replace parse error' };
     }
   }
 

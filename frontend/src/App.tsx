@@ -36,6 +36,7 @@ import FormRunnerDialog from './components/FormRunnerDialog'
 import FormResultRenderer from './components/FormResultRenderer'
 import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { CredentialManager } from './crypto'
 import { createApiService } from './types/api'
 import AdminPanel from './AdminPanel'
 import { ThemeProvider } from '@mui/material/styles'
@@ -43,6 +44,7 @@ import { appTheme } from './theme'
 import RAGContextSelector from './components/RAGContextSelector'
 import SurveyForm from './SurveyForm'
 import SurveyResults from './SurveyResults'
+import { QualitativeFeedbackDialog } from './components/QualitativeFeedbackDialog'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
 import { prepareChatMarkdown, toPlainText } from './utils/markdownPipeline'
@@ -53,6 +55,7 @@ import { useTheme, useMediaQuery } from '@mui/material'
 import MobileChatBar from './components/MobileChatBar'
 import HeaderBar from './components/HeaderBar'
 import SiteFooter from './components/SiteFooter'
+import PdfViewer from './components/PdfViewer'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -173,7 +176,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
 
 // Componente App interno che usa AuthContext
 const AppContent: React.FC = () => {
-  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus } = useAuth();
+  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus, impersonatedUser } = useAuth();
   const [forcePwdOpen, setForcePwdOpen] = useState(false)
   const [forceNewPwd, setForceNewPwd] = useState('')
   const [forceNewPwd2, setForceNewPwd2] = useState('')
@@ -234,6 +237,7 @@ const AppContent: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
+  const [showQualitativeFeedback, setShowQualitativeFeedback] = useState(false)
   const [showAttachments, setShowAttachments] = useState(false)
   const [showFormDialog, setShowFormDialog] = useState(false)
   // Traccia file già annunciati in chat per non duplicare il riepilogo
@@ -255,7 +259,27 @@ const AppContent: React.FC = () => {
   const [previewSourceHref, setPreviewSourceHref] = useState<string | null>(null)
   const [previewDownloadName, setPreviewDownloadName] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewAllowDownload, setPreviewAllowDownload] = useState<boolean>(true)
+  const [previewAllowPreview, setPreviewAllowPreview] = useState<boolean>(true)
+
+  const buildAuthRequestInit = (init?: RequestInit): RequestInit => {
+    const token = CredentialManager.getAccessToken()
+    const headers = new Headers(init?.headers || {})
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+    return {
+      ...init,
+      headers,
+      credentials: init?.credentials ?? 'include'
+    }
+  }
+
+  const fetchWithAuth = (url: string, init?: RequestInit) => fetch(url, buildAuthRequestInit(init))
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewMode, setPreviewMode] = useState<'aggregated' | 'original'>('aggregated')
+  const previewAggregateRef = React.useRef<{ type: typeof previewType; content: string; url: string | null } | null>(null)
+  const previewOriginalRef = React.useRef<{ type: typeof previewType; content: string; url: string | null } | null>(null)
   // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
   const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
 
@@ -294,28 +318,157 @@ const AppContent: React.FC = () => {
 
   // (doc:// link injection is handled by prepareChatMarkdown)
 
-  const handleDownloadOriginal = () => {
-    if (!previewSourceHref) return
+  const buildDispositionHref = (href: string, disposition: 'inline' | 'attachment') => {
     try {
-      const anchor = document.createElement('a')
-      anchor.href = previewSourceHref
-      anchor.target = '_blank'
-      anchor.rel = 'noopener'
-      if (previewDownloadName) {
-        anchor.download = previewDownloadName.replace(/\s+/g, '_')
+      const url = new URL(href, window.location.origin)
+      url.searchParams.set('disposition', disposition)
+      if (typeof window !== 'undefined' && url.origin === window.location.origin) {
+        return url.pathname + url.search + url.hash
       }
-      document.body.appendChild(anchor)
-      anchor.click()
-      document.body.removeChild(anchor)
-    } catch (err) {
-      console.warn('[preview] fallback download', err)
-      window.open(previewSourceHref, '_blank')
+      return url.toString()
+    } catch {
+      const cleaned = href
+        .replace(/([?&])disposition=[^&#]*/g, '$1')
+        .replace(/&&+/g, '&')
+        .replace(/\?&/, '?')
+        .replace(/[?&]$/, '')
+      const separator = cleaned.includes('?') ? '&' : '?'
+      return `${cleaned}${separator}disposition=${disposition}`
     }
+  }
+
+  const handleDownloadOriginal = async () => {
+    if (!previewSourceHref) return
+    const targetHref = previewAllowDownload
+      ? buildDispositionHref(previewSourceHref, 'attachment')
+      : buildDispositionHref(previewSourceHref, 'inline')
+    try {
+      const response = await fetchWithAuth(targetHref)
+      if (!response.ok) {
+        if (response.status === 403) {
+          setPreviewError('Accesso non consentito per questo documento')
+          return
+        }
+        if (response.status === 401) {
+          setPreviewError('Autenticazione richiesta per scaricare il documento')
+          return
+        }
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      if (previewAllowDownload) {
+        const anchor = document.createElement('a')
+        anchor.href = objectUrl
+        anchor.target = '_blank'
+        anchor.rel = 'noopener'
+        anchor.download = (previewDownloadName || 'documento').replace(/\s+/g, '_')
+        document.body.appendChild(anchor)
+        anchor.click()
+        document.body.removeChild(anchor)
+      } else {
+        window.open(objectUrl, '_blank', 'noopener')
+      }
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000)
+    } catch (err: any) {
+      console.warn('[preview] fallback download', err)
+      if (err?.message?.includes('HTTP')) {
+        setPreviewError(err.message)
+      } else {
+        window.open(targetHref, '_blank')
+      }
+    }
+  }
+
+  const showAggregatedSnapshot = () => {
+    const snapshot = previewAggregateRef.current
+    if (!snapshot) return
+    setPreviewType(snapshot.type)
+    setPreviewContent(snapshot.content)
+    setPreviewUrl(snapshot.url || null)
+    setPreviewMode('aggregated')
+    setPreviewLoading(false)
+  }
+
+  const handleViewOriginal = async () => {
+    if (!previewSourceHref) return
+    if (!previewAllowPreview) {
+      setPreviewError('Anteprima originale non consentita per questo documento')
+      return
+    }
+    if (!previewAggregateRef.current) {
+      previewAggregateRef.current = {
+        type: previewType,
+        content: previewContent,
+        url: previewUrl
+      }
+    }
+    if (previewOriginalRef.current) {
+      const cached = previewOriginalRef.current
+      setPreviewType(cached.type)
+      setPreviewContent(cached.content)
+      setPreviewUrl(cached.url || null)
+      setPreviewMode('original')
+      setPreviewError(null)
+      return
+    }
+
+    setPreviewMode('original')
+    setPreviewLoading(true)
+    setPreviewError(null)
+
+    try {
+      const inlineHref = buildDispositionHref(previewSourceHref, 'inline')
+      const type = detectPreviewType(previewSourceHref)
+      let content = ''
+      let objectUrl: string | null = null
+      if (type === 'pdf') {
+        const res = await fetchWithAuth(inlineHref)
+        if (!res.ok) {
+          if (res.status === 403) {
+            setPreviewError('Anteprima non consentita per questo documento')
+            showAggregatedSnapshot()
+            return
+          }
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const blob = await res.blob()
+        objectUrl = URL.createObjectURL(blob)
+        setPreviewUrl(objectUrl)
+        setPreviewContent('')
+      } else {
+        content = await fetchTextTruncated(inlineHref, 200*1024, buildAuthRequestInit())
+        setPreviewContent(content)
+        setPreviewUrl(null)
+      }
+      setPreviewType(type)
+      previewOriginalRef.current = { type, content, url: objectUrl }
+    } catch (err: any) {
+      console.warn('[preview] errore caricamento originale', err)
+      setPreviewError(err?.message || 'Errore durante il caricamento del file originale')
+      showAggregatedSnapshot()
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const handleBackToAggregated = () => {
+    showAggregatedSnapshot()
   }
 
   const openPreviewForLink = async (href: string, title: string, ragChunksForContext?: SourceDocs['rag_chunks']) => {
     console.debug('[preview] openPreviewForLink', { href, title, chunkCount: ragChunksForContext?.length })
     const downloadMatch = href.match(/\/api\/rag\/download\/([^/?#]+)/)
+    const isDocProtocol = href.startsWith('doc://')
+    setPreviewMode(isDocProtocol ? 'aggregated' : 'original')
+    if (previewAggregateRef.current?.url) {
+      URL.revokeObjectURL(previewAggregateRef.current.url)
+    }
+    previewAggregateRef.current = null
+    if (previewOriginalRef.current?.url) {
+      URL.revokeObjectURL(previewOriginalRef.current.url)
+    }
+    previewOriginalRef.current = null
     if (!href.startsWith('doc://') && downloadMatch && ragChunksForContext && ragChunksForContext.length) {
       const docId = decodeURIComponent(downloadMatch[1])
       const relatedChunk = ragChunksForContext.find(c => c.document_id !== undefined && String(c.document_id) === docId)
@@ -334,6 +487,8 @@ const AppContent: React.FC = () => {
     const safeTitle = title || href
     setPreviewTitle(safeTitle)
     setPreviewSourceHref(null)
+    setPreviewAllowDownload(true)
+    setPreviewAllowPreview(true)
     const deriveDownloadName = () => {
       if (!href) return safeTitle
       if (href.startsWith('doc://')) {
@@ -353,7 +508,7 @@ const AppContent: React.FC = () => {
     setPreviewError(null)
     setPreviewContent('')
     try {
-      if (href.startsWith('doc://')) {
+      if (isDocProtocol) {
         const name = href.slice('doc://'.length)
         const agg = buildDocumentAggregate(name, ragChunksForContext)
         const normalizedTarget = normalizeDocName(decodeURIComponent(name))
@@ -369,6 +524,8 @@ const AppContent: React.FC = () => {
             const candidateHref = relatedChunk.download_url || (relatedChunk.document_id ? `/api/rag/download/${relatedChunk.document_id}` : null)
             if (candidateHref) {
               setPreviewSourceHref(candidateHref)
+              setPreviewAllowDownload(relatedChunk.allow_download !== false)
+              setPreviewAllowPreview(relatedChunk.allow_preview !== false)
             }
           }
         }
@@ -380,26 +537,36 @@ const AppContent: React.FC = () => {
             const cleaned = normalizeDocName(base.split('_').pop() || base)
             return cleaned.includes(normalizeDocName(decodeURIComponent(name)))
           })
+          const fallbackContent = `# ${decodeURIComponent(name)}\n\nNessun aggregato completo trovato.\n\nChunk candidati trovati: ${candidates.length}\n\n` + candidates.map(c=>`### Chunk ${c.chunk_index} (${c.filename})\n${c.preview || c.content || '(vuoto)'}\n`).join('\n')
           setPreviewType('markdown')
-          setPreviewContent(`# ${decodeURIComponent(name)}\n\nNessun aggregato completo trovato.\n\nChunk candidati trovati: ${candidates.length}\n\n` + candidates.map(c=>`### Chunk ${c.chunk_index} (${c.filename})\n${c.preview || c.content || '(vuoto)'}\n`).join('\n'))
+          setPreviewContent(fallbackContent)
+          previewAggregateRef.current = { type: 'markdown', content: fallbackContent, url: null }
         } else {
+          const aggregateContent = `# ${decodeURIComponent(name)}\n\n${agg}`
           setPreviewType('markdown')
-          setPreviewContent(`# ${decodeURIComponent(name)}\n\n${agg}`)
+          setPreviewContent(aggregateContent)
+          previewAggregateRef.current = { type: 'markdown', content: aggregateContent, url: null }
         }
       } else {
         const type = detectPreviewType(href)
         setPreviewType(type)
         setPreviewSourceHref(href)
+        let objectUrl: string | null = null
+        let content = ''
         if (type === 'pdf') {
-          const res = await fetch(href, { credentials:'include' })
+          const res = await fetchWithAuth(href)
           if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
+          objectUrl = url
           setPreviewUrl(url)
+          setPreviewContent('')
         } else {
-          const text = await fetchTextTruncated(href)
-          setPreviewContent(text)
+          content = await fetchTextTruncated(href, 200*1024, buildAuthRequestInit())
+          setPreviewContent(content)
+          setPreviewUrl(null)
         }
+        previewOriginalRef.current = { type, content, url: objectUrl }
       }
     } catch (e: any) {
       console.warn('[preview] error', e)
@@ -415,6 +582,15 @@ const AppContent: React.FC = () => {
       URL.revokeObjectURL(previewUrl)
       setPreviewUrl(null)
     }
+    if (previewOriginalRef.current?.url) {
+      URL.revokeObjectURL(previewOriginalRef.current.url)
+    }
+    previewOriginalRef.current = null
+    if (previewAggregateRef.current?.url) {
+      URL.revokeObjectURL(previewAggregateRef.current.url)
+    }
+    previewAggregateRef.current = null
+    setPreviewMode('aggregated')
     setPreviewType(null)
     setPreviewContent('')
     setPreviewError(null)
@@ -1629,11 +1805,11 @@ const AppContent: React.FC = () => {
                                   const sorted = [...(m.source_docs?.rag_chunks || [])].sort((a,b)=> (b.similarity||0) - (a.similarity||0));
                                   const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity);
                                   // Group by document_id if available, else by filename
-                                  const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; maxSim:number; chunks:any[]}>;
+                                  const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; original_filename?:string; maxSim:number; chunks:any[]}>;
                                   filtered.forEach(ch => {
                                     const key = (ch.document_id || ch.filename || 'unknown') + '';
                                     if(!groupsByDoc[key]) {
-                                      groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, maxSim: ch.similarity||0, chunks: [] };
+                                      groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, original_filename: ch.original_filename, maxSim: ch.similarity||0, chunks: [] };
                                     }
                                     groupsByDoc[key].chunks.push(ch);
                                     if((ch.similarity||0) > groupsByDoc[key].maxSim) {
@@ -1648,24 +1824,42 @@ const AppContent: React.FC = () => {
                                         {docEntries.map((d,di)=>{
                                           const baseName = d.filename ? (d.filename.split('/').pop() || d.filename) : 'Documento'
                                           const previewHref = `doc://${encodeURIComponent(baseName)}`
-                                          const primaryHref = d.chunks?.[0]?.download_url || (d.document_id ? `/api/rag/download/${d.document_id}` : null)
+                                          const shouldHideLinks = selectedPersonality?.hide_rag_links === true
+                                          const primaryHref = !shouldHideLinks ? (d.chunks?.[0]?.download_url || (d.document_id ? `/api/rag/download/${d.document_id}` : null)) : null
+
+                                          // Check if this is a web source (original_filename is URL)
+                                          const isWebSource = d.original_filename && (d.original_filename.startsWith('http://') || d.original_filename.startsWith('https://'))
+                                          const displayName = isWebSource && d.original_filename ? (new URL(d.original_filename).hostname) : baseName
+
                                           return (
                                             <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
                                               <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:0.3 }}>
                                                 <Box sx={{ display:'flex', alignItems:'center', gap:0.8 }}>
                                                   <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', display:'flex', alignItems:'center', gap:0.6 }}>
-                                                    <Link
-                                                      component="button"
-                                                      type="button"
-                                                      underline="hover"
-                                                      sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', background:'none', border:0, p:0, cursor:'pointer' }}
-                                                      onClick={()=> openPreviewForLink(previewHref, baseName, m.source_docs?.rag_chunks)}
-                                                    >
-                                                      {baseName}
-                                                    </Link>
+                                                    {isWebSource ? (
+                                                      <Link
+                                                        href={d.original_filename}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        underline="hover"
+                                                        sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}
+                                                      >
+                                                        {displayName}
+                                                      </Link>
+                                                    ) : (
+                                                      <Link
+                                                        component="button"
+                                                        type="button"
+                                                        underline="hover"
+                                                        sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', background:'none', border:0, p:0, cursor:'pointer' }}
+                                                        onClick={()=> openPreviewForLink(previewHref, baseName, m.source_docs?.rag_chunks)}
+                                                      >
+                                                        {baseName}
+                                                      </Link>
+                                                    )}
                                                     {d.maxSim ? <Box component="span" sx={{ fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
                                                   </Box>
-                                                  {primaryHref && (
+                                                  {primaryHref && !isWebSource && (
                                                     <Tooltip title="Scarica file originale"><IconButton size="small" onClick={()=>{
                                                       const anchor = document.createElement('a')
                                                       anchor.href = primaryHref
@@ -1956,10 +2150,14 @@ const AppContent: React.FC = () => {
           Hai 30 secondi per dirci se il chatbot ti sta aiutando?
         </Typography>
         <Link component="button" type="button" underline="hover" onClick={()=> setShowSurvey(true)} sx={{ fontSize: '0.875rem', p:0 }}>
-          Compila il questionario anonimo
+          Questionario
         </Link>
         <Typography variant="body2" component="span" sx={{ color:'text.secondary' }}>·</Typography>
-        <Link href="/survey-results" underline="hover" sx={{ fontSize: '0.875rem', p:0 }}>
+        <Link component="button" type="button" underline="hover" onClick={()=> setShowQualitativeFeedback(true)} sx={{ fontSize: '0.875rem', p:0 }}>
+          Feedback
+        </Link>
+        <Typography variant="body2" component="span" sx={{ color:'text.secondary' }}>·</Typography>
+        <Link href="/survey-results" underline="none" sx={{ fontSize: '0.875rem', p:0 }}>
           Vedi risultati
         </Link>
       </Box>
@@ -1985,11 +2183,11 @@ const AppContent: React.FC = () => {
         onConversationSelect={async (id) => {
           setCurrentConversationId(id);
           setLoading(true);
-          
+
           try {
             // Carica i messaggi della conversazione selezionata (senza decriptazione client-side)
             const apiService = await import('./apiService').then(m => m.apiService);
-            const response = await apiService.getConversationMessages(id);
+            const response = await apiService.getConversationMessages(id, impersonatedUser?.id);
               if (response.success && response.data) {
               let normalized: Msg[] = response.data.map((msg: any) => {
                 const ts = new Date(msg.timestamp).getTime();
@@ -2247,6 +2445,13 @@ const AppContent: React.FC = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Qualitative Feedback Dialog */}
+      <QualitativeFeedbackDialog
+        open={showQualitativeFeedback}
+        onClose={() => setShowQualitativeFeedback(false)}
+        backendUrl={BACKEND}
+      />
+
       {/* Document Preview Dialog */}
       <Dialog open={previewOpen} onClose={closePreview} fullWidth maxWidth={previewType==='pdf' ? 'lg' : 'md'}>
         <DialogTitle sx={{ pr: 6 }}>
@@ -2265,8 +2470,8 @@ const AppContent: React.FC = () => {
             <Alert severity="error">{previewError}</Alert>
           )}
           {!previewLoading && !previewError && previewType === 'pdf' && previewUrl && (
-            <Box sx={{ width:'100%', height: '100%', '& iframe': { border: 'none' } }}>
-              <iframe src={previewUrl} style={{ width: '100%', height: 480 }} title={previewTitle} />
+            <Box sx={{ width: '100%', height: '100%', minHeight: 480 }}>
+              <PdfViewer sourceUrl={previewUrl} key={previewUrl} />
             </Box>
           )}
           {!previewLoading && !previewError && (previewType === 'markdown' || previewType === 'text') && (
@@ -2282,7 +2487,7 @@ const AppContent: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          {previewType === 'markdown' && previewContent && previewContent.includes('### Chunk') && (
+          {previewMode === 'aggregated' && previewType === 'markdown' && previewContent && previewContent.includes('### Chunk') && (
             <Button size="small" onClick={()=>{
               const blob = new Blob([previewContent], { type:'text/markdown' })
               const url = URL.createObjectURL(blob)
@@ -2295,8 +2500,20 @@ const AppContent: React.FC = () => {
               setTimeout(()=> URL.revokeObjectURL(url), 2000)
             }}>Scarica aggregato</Button>
           )}
-          {previewSourceHref && (
-            <Button size="small" onClick={handleDownloadOriginal} disabled={previewLoading || !!previewError}>Scarica originale</Button>
+          {previewMode === 'aggregated' && previewSourceHref && previewAllowPreview && (
+            <Button size="small" onClick={handleViewOriginal} disabled={previewLoading || !!previewError}>
+              Visualizza originale
+            </Button>
+          )}
+          {previewMode === 'original' && previewAggregateRef.current && (
+            <Button size="small" onClick={handleBackToAggregated} disabled={previewLoading}>
+              Torna ai chunk
+            </Button>
+          )}
+          {previewMode === 'original' && previewSourceHref && previewAllowDownload && (
+            <Button size="small" onClick={handleDownloadOriginal} disabled={previewLoading || !!previewError}>
+              Scarica originale
+            </Button>
           )}
           <Button onClick={closePreview}>Chiudi</Button>
         </DialogActions>

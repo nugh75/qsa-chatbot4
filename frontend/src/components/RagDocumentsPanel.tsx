@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { apiService } from '../apiService';
+import { CredentialManager } from '../crypto';
 import {
   Box, Button, Card, CardContent, Dialog, DialogActions, DialogContent, DialogTitle,
   Grid, IconButton, LinearProgress, List, ListItem, ListItemText as MUIListItemText,
@@ -28,6 +29,7 @@ import IosShareIcon from '@mui/icons-material/IosShare';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
+import LockIcon from '@mui/icons-material/Lock';
 
 interface RagGroup {
   id: number;
@@ -37,6 +39,9 @@ interface RagGroup {
   chunk_count?: number;
   created_at?: string;
 }
+
+const RAW_BACKEND = ((import.meta as any)?.env?.VITE_BACKEND_URL || (typeof window !== 'undefined' && window.location ? window.location.origin : 'http://localhost:8005')).replace(/\/+$/, '');
+const API_BASE = `${RAW_BACKEND}/api`;
 
 const RagDocumentsPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -88,12 +93,118 @@ const RagDocumentsPanel: React.FC = () => {
   const [reprocessOpen, setReprocessOpen] = useState(false);
   const [chunkSize, setChunkSize] = useState<string>('');
   const [chunkOverlap, setChunkOverlap] = useState<string>('');
+  const [replaceOpen, setReplaceOpen] = useState(false);
+  const [replaceFile, setReplaceFile] = useState<File | null>(null);
+  const [replaceChunkSize, setReplaceChunkSize] = useState('');
+  const [replaceChunkOverlap, setReplaceChunkOverlap] = useState('');
+  const [replaceLoading, setReplaceLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
+  const [allowPreview, setAllowPreview] = useState(true);
+  const [allowDownload, setAllowDownload] = useState(true);
 
   const openDocMenu = (e: React.MouseEvent<HTMLElement>, doc: any) => { setDocMenuAnchor(e.currentTarget); setActiveDoc(doc); };
   const closeDocMenu = () => { setDocMenuAnchor(null); };
   const refreshAfterAction = async () => { if (selectedGroup) { await loadDocuments(selectedGroup); } if (tab==='all') { await loadGlobalDocs(); } };
+
+  const openAdminDocument = async (docId: number, disposition: 'inline' | 'attachment') => {
+    if (typeof window === 'undefined') return;
+    const url = `${API_BASE}/admin/rag/documents/${docId}/download?disposition=${disposition}`;
+    const token = CredentialManager.getAccessToken();
+    const headers: HeadersInit = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    try {
+      setDownloading(true);
+      const resp = await fetch(url, { headers, credentials: 'include' });
+      if (!resp.ok) {
+        if (resp.status === 401) setSnack({ open: true, message: 'Autenticazione richiesta per scaricare il documento', severity: 'error' });
+        else if (resp.status === 403) setSnack({ open: true, message: 'Accesso al documento negato', severity: 'error' });
+        else setSnack({ open: true, message: `Errore download (${resp.status})`, severity: 'error' });
+        return;
+      }
+      const blob = await resp.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const dispositionHeader = resp.headers.get('content-disposition') || '';
+      const filenameMatch = dispositionHeader.match(/filename="?([^";]+)"?/i);
+      const downloadName = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `document_${docId}.pdf`;
+      if (disposition === 'attachment') {
+        const anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = downloadName.replace(/\s+/g, '_');
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+      } else {
+        const win = window.open(objectUrl, '_blank', 'noopener');
+        if (!win) {
+          const anchor = document.createElement('a');
+          anchor.href = objectUrl;
+          anchor.target = '_blank';
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+        }
+      }
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000);
+    } catch {
+      setSnack({ open: true, message: 'Errore imprevisto durante il download', severity: 'error' });
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleCopyPath = async (value?: string) => {
+    if (!value) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        setSnack({ open: true, message: 'Percorso copiato', severity: 'success' });
+      } else {
+        throw new Error('Clipboard non disponibile');
+      }
+    } catch {
+      setSnack({ open: true, message: 'Impossibile copiare il percorso', severity: 'error' });
+    }
+  };
+
+  const handleReplaceConfirm = async () => {
+    if (!activeDoc || !replaceFile) {
+      setSnack({ open: true, message: 'Seleziona un file PDF da caricare', severity: 'warning' });
+      return;
+    }
+    setReplaceLoading(true);
+    try {
+      const payload: { chunk_size?: number; chunk_overlap?: number } = {};
+      if (replaceChunkSize.trim()) {
+        const parsed = parseInt(replaceChunkSize, 10);
+        if (!Number.isNaN(parsed)) payload.chunk_size = parsed;
+      }
+      if (replaceChunkOverlap.trim()) {
+        const parsed = parseInt(replaceChunkOverlap, 10);
+        if (!Number.isNaN(parsed)) payload.chunk_overlap = parsed;
+      }
+      const res = await apiService.replaceRagDocument(activeDoc.id, replaceFile, payload);
+      if (res.success) {
+        const data: any = res.data || {};
+        setSnack({ open: true, message: `Ricarica completata (${data.chunk_count ?? 'n/d'} chunks)`, severity: 'success' });
+        if (data.document) {
+          setActiveDoc(data.document);
+        }
+        setReplaceOpen(false);
+        setReplaceFile(null);
+        setReplaceChunkSize('');
+        setReplaceChunkOverlap('');
+        await refreshAfterAction();
+      } else {
+        setSnack({ open: true, message: res.error || 'Errore durante la ricarica', severity: 'error' });
+      }
+    } catch (error) {
+      setSnack({ open: true, message: 'Errore durante la ricarica', severity: 'error' });
+    } finally {
+      setReplaceLoading(false);
+    }
+  };
 
   const formatBytes = (bytes: number): string => {
     if (!bytes) { return '0 B'; }
@@ -255,7 +366,7 @@ const RagDocumentsPanel: React.FC = () => {
   };
 
   const removeDocument = async (doc: any) => {
-  if (!window.confirm(`Eliminare documento '${doc.filename}'?`)) { return; }
+  if (!window.confirm(`Eliminare documento '${doc.original_filename || doc.filename}'?`)) { return; }
     await apiService.deleteRagDocument(doc.id);
     loadDocuments(selectedGroup!);
   };
@@ -406,7 +517,7 @@ const RagDocumentsPanel: React.FC = () => {
                   {quickResults.length===0 && <ListItem><MUIListItemText primary="Nessun risultato" /></ListItem>}
                   {quickResults.map(r => (
                     <ListItem key={`sr-${r.id}`} button onClick={()=> { setSelectedGroup(r.group_id); loadDocuments(r.group_id); setQuickResults(null); setQuickSearch(''); }}>
-                      <MUIListItemText primary={r.filename} secondary={`ID ${r.id} • gruppo ${r.group_name||r.group_id||'-'} • ${r.chunk_count} chunks`} />
+                      <MUIListItemText primary={r.original_filename || r.filename} secondary={`ID ${r.id} • gruppo ${r.group_name||r.group_id||'-'} • ${r.chunk_count} chunks`} />
                     </ListItem>
                   ))}
                 </>
@@ -447,7 +558,24 @@ const RagDocumentsPanel: React.FC = () => {
                   <ListItem key={doc.id} secondaryAction={
                     <Tooltip title="Elimina"><IconButton size="small" onClick={()=> removeDocument(doc)}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
                   }>
-          <MUIListItemText primary={doc.filename} secondary={`${doc.chunk_count||0} chunks • ${(doc.file_size/1024).toFixed(1)} KB`} />
+          <MUIListItemText
+            primary={doc.original_filename || doc.filename}
+            secondary={
+              <Box component="span" sx={{ display:'flex', flexDirection:'column', gap:0.25 }}>
+                <span>{`${doc.chunk_count || 0} chunks • ${formatBytes(doc.file_size || 0)}`}</span>
+                {doc.stored_path && (
+                  <Box component="span" sx={{ display:'flex', alignItems:'center', gap:0.5, flexWrap:'wrap' }}>
+                    <span style={{ wordBreak:'break-all' }}>{doc.stored_path}</span>
+                    <Tooltip title="Copia percorso">
+                      <IconButton size="small" onClick={()=> handleCopyPath(doc.stored_path)}>
+                        <ContentCopyIcon fontSize="inherit" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                )}
+              </Box>
+            }
+          />
                   </ListItem>
                 ))}
         {selectedGroup && documents.length===0 && <ListItem><MUIListItemText primary="Nessun documento" /></ListItem>}
@@ -474,15 +602,47 @@ const RagDocumentsPanel: React.FC = () => {
                           <TableCell sx={{ maxWidth:240 }}>
                             <Box sx={{ display:'flex', alignItems:'center', gap:0.5 }}>
                               {short && <Tooltip title="Estratto poco testo – valuta Reprocess"><WarningAmberIcon color="warning" fontSize="inherit" /></Tooltip>}
-                              <span>{doc.filename}</span>
+                              <span>{doc.original_filename || doc.filename}</span>
                               {doc.archived ? <Tooltip title="Archiviato"><ArchiveIcon fontSize="inherit" color="disabled" /></Tooltip> : null}
                             </Box>
+                            {doc.stored_path && (
+                              <Box sx={{ display:'flex', alignItems:'center', gap:0.5, mt:0.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ wordBreak:'break-all' }}>
+                                  {doc.stored_path}
+                                </Typography>
+                                <Tooltip title="Copia percorso">
+                                  <IconButton size="small" onClick={()=> handleCopyPath(doc.stored_path)}>
+                                    <ContentCopyIcon fontSize="inherit" />
+                                  </IconButton>
+                                </Tooltip>
+                              </Box>
+                            )}
                           </TableCell>
                           <TableCell>{formatBytes(doc.file_size || 0)}</TableCell>
                           <TableCell>{doc.chunk_count || 0}</TableCell>
                           <TableCell>{doc.updated_at ? formatDate(doc.updated_at) : (doc.created_at ? formatDate(doc.created_at) : '-')}</TableCell>
                           <TableCell align="right">
-                            <Tooltip title="Azioni"><IconButton size="small" onClick={(e)=> openDocMenu(e, doc)}><MoreVertIcon fontSize="inherit" /></IconButton></Tooltip>
+                            <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                              <Tooltip title="Visualizza originale">
+                                <span>
+                                  <IconButton size="small" disabled={!doc.stored_filename} onClick={()=> openAdminDocument(doc.id, 'inline')}>
+                                    <FindInPageIcon fontSize="inherit" />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                              <Tooltip title="Scarica originale">
+                                <span>
+                                  <IconButton size="small" disabled={!doc.stored_filename} onClick={()=> openAdminDocument(doc.id, 'attachment')}>
+                                    <FileDownloadIcon fontSize="inherit" />
+                                  </IconButton>
+                                </span>
+                              </Tooltip>
+                              <Tooltip title="Azioni">
+                                <IconButton size="small" onClick={(e)=> openDocMenu(e, doc)}>
+                                  <MoreVertIcon fontSize="inherit" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
                           </TableCell>
                         </TableRow>
                       );
@@ -550,16 +710,43 @@ const RagDocumentsPanel: React.FC = () => {
                         <TableCell>
                           <Box sx={{ display:'flex', alignItems:'center', gap:0.5 }}>
                             {short && <Tooltip title="Estratto poco testo – valuta Reprocess"><WarningAmberIcon color="warning" fontSize="inherit" /></Tooltip>}
-                            <span>{d.filename}</span>
+                            <span>{d.original_filename || d.filename}</span>
                           </Box>
+                          {d.stored_path && (
+                            <Box sx={{ display:'flex', alignItems:'center', gap:0.5, mt:0.5 }}>
+                              <Typography variant="caption" color="text.secondary" sx={{ wordBreak:'break-all' }}>
+                                {d.stored_path}
+                              </Typography>
+                              <Tooltip title="Copia percorso">
+                                <IconButton size="small" onClick={()=> handleCopyPath(d.stored_path)}>
+                                  <ContentCopyIcon fontSize="inherit" />
+                                </IconButton>
+                              </Tooltip>
+                            </Box>
+                          )}
                         </TableCell>
                         <TableCell>{d.chunk_count || 0}</TableCell>
                         <TableCell>{formatBytes(d.file_size||0)}</TableCell>
                         <TableCell>{d.created_at ? formatDate(d.created_at) : '-'}</TableCell>
                         <TableCell align="right">
-                          {(!d.group_id || !d.group_name) ? (
-                            <>
-                              <Tooltip title="Riassegna al gruppo 'Orfani'"><IconButton size="small" onClick={async ()=>{ try { const res = await apiService.reassignRagDocumentToOrphans(d.id); if (res.success) { const flags = res.data || {} as { duplicate_removed?: boolean; already_in_orphans?: boolean }; let msg = "Riassegnato al gruppo 'Orfani'"; if (flags.already_in_orphans) msg = "Già nel gruppo 'Orfani'"; if (flags.duplicate_removed) msg = "Duplicato rimosso (già presente negli 'Orfani')"; setSnack({open:true,message:msg,severity:'success'});
+                          <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center">
+                            <Tooltip title="Visualizza originale">
+                              <span>
+                                <IconButton size="small" disabled={!d.stored_filename} onClick={()=> openAdminDocument(d.id, 'inline')}>
+                                  <FindInPageIcon fontSize="inherit" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                            <Tooltip title="Scarica originale">
+                              <span>
+                                <IconButton size="small" disabled={!d.stored_filename} onClick={()=> openAdminDocument(d.id, 'attachment')}>
+                                  <FileDownloadIcon fontSize="inherit" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                            {(!d.group_id || !d.group_name) ? (
+                              <>
+                                <Tooltip title="Riassegna al gruppo 'Orfani'"><IconButton size="small" onClick={async ()=>{ try { const res = await apiService.reassignRagDocumentToOrphans(d.id); if (res.success) { const flags = res.data || {} as { duplicate_removed?: boolean; already_in_orphans?: boolean }; let msg = "Riassegnato al gruppo 'Orfani'"; if (flags.already_in_orphans) msg = "Già nel gruppo 'Orfani'"; if (flags.duplicate_removed) msg = "Duplicato rimosso (già presente negli 'Orfani')"; setSnack({open:true,message:msg,severity:'success'});
                                   if (!flags.duplicate_removed) { // Solo se esiste ancora il documento dopo la riassegnazione
                                     const doDelete = window.confirm(msg + '. Vuoi eliminarlo ora (eliminazione standard)?');
                                     if (doDelete) {
@@ -570,11 +757,12 @@ const RagDocumentsPanel: React.FC = () => {
                                   await loadGlobalDocs();
                                 } else { setSnack({open:true,message: (res.error || 'Riassegnazione fallita'),severity:'error'}); console.error('Reassign to orphans failed:', res); } } catch (e) { console.error('Reassign to orphans error:', e); setSnack({open:true,message:'Errore riassegnazione',severity:'error'});} }}><SwapHorizIcon fontSize="inherit" /></IconButton></Tooltip>
                               <Tooltip title="Elimina (forzato)"><IconButton size="small" onClick={async ()=>{ if (!window.confirm('Eliminare definitivamente il documento?')) return; try { const res = await apiService.forceDeleteRagDocument(d.id); if (res.success && (res.data?.deleted ?? true)) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); await loadGlobalDocs(); } else { setSnack({open:true,message:'Impossibile eliminare il documento',severity:'warning'}); } } catch { setSnack({open:true,message:'Errore eliminazione',severity:'error'});} }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
-                            </>
-                          ) : (
-                            // Per documenti non orfani, abilita l'eliminazione standard anche da questa vista
-                            <Tooltip title="Elimina"><IconButton size="small" onClick={async ()=>{ if (!window.confirm('Eliminare il documento?')) return; try { const res = await apiService.deleteRagDocument(d.id); if (res.success) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); await loadGlobalDocs(); } else { setSnack({open:true,message: res.error || 'Eliminazione fallita',severity:'warning'});} } catch { setSnack({open:true,message:'Errore eliminazione',severity:'error'});} }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
-                          )}
+                              </>
+                            ) : (
+                              // Per documenti non orfani, abilita l'eliminazione standard anche da questa vista
+                              <Tooltip title="Elimina"><IconButton size="small" onClick={async ()=>{ if (!window.confirm('Eliminare il documento?')) return; try { const res = await apiService.deleteRagDocument(d.id); if (res.success) { setSnack({open:true,message:'Documento eliminato',severity:'success'}); await loadGlobalDocs(); } else { setSnack({open:true,message: res.error || 'Eliminazione fallita',severity:'warning'});} } catch { setSnack({open:true,message:'Errore eliminazione',severity:'error'});} }}><DeleteIcon fontSize="inherit" /></IconButton></Tooltip>
+                            )}
+                          </Stack>
                         </TableCell>
                       </TableRow>
                     );
@@ -623,7 +811,7 @@ const RagDocumentsPanel: React.FC = () => {
       </CardContent>
       {/* Document Actions Menu */}
       <Menu anchorEl={docMenuAnchor} open={Boolean(docMenuAnchor)} onClose={()=> { closeDocMenu(); setActiveDoc(null); }}>
-        <MenuItem onClick={()=> { setRenameValue(activeDoc?.filename||''); setRenameOpen(true); closeDocMenu(); }} disabled={!activeDoc}>
+        <MenuItem onClick={()=> { setRenameValue(activeDoc?.original_filename || activeDoc?.filename||''); setRenameOpen(true); closeDocMenu(); }} disabled={!activeDoc}>
           <ListItemIcon><DriveFileRenameOutlineIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Rinomina" />
         </MenuItem>
@@ -635,13 +823,29 @@ const RagDocumentsPanel: React.FC = () => {
           <ListItemIcon><ContentCopyIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Duplica" />
         </MenuItem>
+        <MenuItem onClick={()=> { if (!activeDoc?.id) return; closeDocMenu(); openAdminDocument(activeDoc.id, 'inline'); }} disabled={!activeDoc?.stored_filename}>
+          <ListItemIcon><FindInPageIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Visualizza originale" />
+        </MenuItem>
+        <MenuItem onClick={()=> { if (!activeDoc?.id) return; closeDocMenu(); openAdminDocument(activeDoc.id, 'attachment'); }} disabled={!activeDoc?.stored_filename}>
+          <ListItemIcon><FileDownloadIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Scarica originale" />
+        </MenuItem>
+        <MenuItem onClick={()=> { if (!activeDoc) return; setReplaceFile(null); setReplaceChunkSize(''); setReplaceChunkOverlap(''); setReplaceOpen(true); closeDocMenu(); }} disabled={!activeDoc}>
+          <ListItemIcon><UploadFileIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Ricarica file" />
+        </MenuItem>
         <MenuItem onClick={()=> { setChunkSize(''); setChunkOverlap(''); setReprocessOpen(true); closeDocMenu(); }} disabled={!activeDoc}>
           <ListItemIcon><ReplayIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="Reprocess" />
+          <ListItemText primary="Rigenera chunk" />
         </MenuItem>
         <MenuItem onClick={async ()=> { if (!activeDoc) return; closeDocMenu(); setExporting(true); try { const res = await apiService.exportRagDocument(activeDoc.id); if (res.success) { const blob = new Blob([JSON.stringify(res.data, null, 2)], { type:'application/json' }); const a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`document_${activeDoc.id}.json`; a.click(); URL.revokeObjectURL(a.href); setSnack({open:true,message:'Export completato',severity:'success'}); } else { setSnack({open:true,message:'Export fallito',severity:'error'}); } } finally { setExporting(false); } }} disabled={!activeDoc || exporting}>
           <ListItemIcon><FileDownloadIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary={exporting? 'Export...' : 'Export JSON'} />
+        </MenuItem>
+        <MenuItem onClick={()=> { if (!activeDoc) return; closeDocMenu(); setAllowPreview(activeDoc.allow_preview !== false); setAllowDownload(activeDoc.allow_download !== false); setPermissionsOpen(true); }} disabled={!activeDoc}>
+          <ListItemIcon><LockIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Permessi" />
         </MenuItem>
         <MenuItem onClick={async ()=> { if (!activeDoc) return; closeDocMenu(); try { const archived = !activeDoc.archived; const res = await apiService.archiveRagDocument(activeDoc.id, archived); if (res.success) { setSnack({open:true,message: archived? 'Archiviato' : 'Ripristinato',severity:'success'}); await refreshAfterAction(); } } catch { setSnack({open:true,message:'Errore archivio',severity:'error'});} }} disabled={!activeDoc}>
           <ListItemIcon>{activeDoc?.archived ? <UnarchiveIcon fontSize="small" /> : <ArchiveIcon fontSize="small" />}</ListItemIcon>
@@ -662,7 +866,7 @@ const RagDocumentsPanel: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={()=> setRenameOpen(false)}>Annulla</Button>
-          <Button disabled={!renameValue.trim()} variant="contained" onClick={async ()=> { if (!activeDoc) return; try { const res = await apiService.renameRagDocument(activeDoc.id, renameValue.trim()); if (res.success) { setSnack({open:true,message:'Rinominato',severity:'success'}); await refreshAfterAction(); } } finally { setRenameOpen(false);} }}>Salva</Button>
+          <Button disabled={!renameValue.trim()} variant="contained" onClick={async ()=> { if (!activeDoc) return; try { const res = await apiService.updateRagDocumentName(activeDoc.id, renameValue.trim()); if (res.success) { setSnack({open:true,message:'Rinominato',severity:'success'}); await refreshAfterAction(); } } finally { setRenameOpen(false);} }}>Salva</Button>
         </DialogActions>
       </Dialog>
 
@@ -713,6 +917,70 @@ const RagDocumentsPanel: React.FC = () => {
         <DialogActions>
           <Button onClick={()=> setReprocessOpen(false)}>Annulla</Button>
           <Button variant="contained" onClick={async ()=> { if (!activeDoc) return; try { const payload:any = {}; if (chunkSize.trim()) payload.chunk_size = parseInt(chunkSize,10); if (chunkOverlap.trim()) payload.chunk_overlap = parseInt(chunkOverlap,10); const res = await apiService.reprocessRagDocument(activeDoc.id, payload); if (res.success) { setSnack({open:true,message:`Reprocess OK (${res.data?.chunk_count} chunks)`,severity:'success'}); await refreshAfterAction(); } else { setSnack({open:true,message:'Reprocess fallito',severity:'error'});} } finally { setReprocessOpen(false);} }}>Avvia</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Replace Document Dialog */}
+      <Dialog open={replaceOpen} onClose={()=> { if (!replaceLoading) { setReplaceOpen(false); setReplaceFile(null); setReplaceChunkSize(''); setReplaceChunkOverlap(''); } }} maxWidth="xs" fullWidth>
+        <DialogTitle>Ricarica file</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt:1 }}>
+            <Button component="label" variant="outlined" startIcon={<UploadFileIcon />} disabled={replaceLoading}>
+              Scegli PDF
+              <input hidden type="file" accept="application/pdf" onChange={e=> { const next = e.target.files?.[0] || null; setReplaceFile(next); e.target.value=''; }} />
+            </Button>
+            {replaceFile && (
+              <Typography variant="body2" sx={{ wordBreak:'break-all' }}>{replaceFile.name}</Typography>
+            )}
+            <TextField label="Chunk size (opzionale)" type="number" size="small" value={replaceChunkSize} onChange={e=> setReplaceChunkSize(e.target.value)} />
+            <TextField label="Chunk overlap (opzionale)" type="number" size="small" value={replaceChunkOverlap} onChange={e=> setReplaceChunkOverlap(e.target.value)} />
+            <Typography variant="caption" color="text.secondary">
+              Il nuovo file sostituirà quello esistente. Verranno rigenerati i chunk e gli embedding.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> { if (!replaceLoading) { setReplaceOpen(false); setReplaceFile(null); setReplaceChunkSize(''); setReplaceChunkOverlap(''); } }}>Annulla</Button>
+          <Button variant="contained" disabled={!replaceFile || replaceLoading} onClick={handleReplaceConfirm}>
+            {replaceLoading ? 'Ricarico…' : 'Ricarica'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Permissions Dialog */}
+      <Dialog open={permissionsOpen} onClose={()=> setPermissionsOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Permessi documento</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt:1 }}>
+            <FormControlLabel
+              control={<Checkbox checked={allowPreview} onChange={e=> setAllowPreview(e.target.checked)} />}
+              label="Consenti visualizzazione (preview)"
+            />
+            <FormControlLabel
+              control={<Checkbox checked={allowDownload} onChange={e=> setAllowDownload(e.target.checked)} />}
+              label="Consenti download"
+            />
+            <Typography variant="caption" color="text.secondary">
+              Controlla chi può visualizzare e scaricare questo documento. Se entrambi disabilitati, il documento sarà usato solo internamente dal RAG.
+            </Typography>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={()=> setPermissionsOpen(false)}>Annulla</Button>
+          <Button variant="contained" onClick={async ()=> {
+            if (!activeDoc) return;
+            try {
+              const res = await apiService.updateRagDocumentPermissions(activeDoc.id, allowPreview, allowDownload);
+              if (res.success) {
+                setSnack({open:true,message:'Permessi aggiornati',severity:'success'});
+                await refreshAfterAction();
+              } else {
+                setSnack({open:true,message:'Errore aggiornamento',severity:'error'});
+              }
+            } finally {
+              setPermissionsOpen(false);
+            }
+          }}>Salva</Button>
         </DialogActions>
       </Dialog>
 

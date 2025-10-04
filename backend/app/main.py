@@ -17,6 +17,7 @@ from .admin import router as admin_router
 from .admin import ensure_default_ai_provider
 from .auth_routes import router as auth_router
 from .conversation_routes import router as conversation_router
+from .admin_conversations import router as admin_conversations_router
 from .search_routes import router as search_router
 from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
@@ -33,6 +34,7 @@ from .health_routes import router as health_router
 from .database import db_manager as _dbm
 from .queries_routes import router as queries_router
 from .backup import router as backup_router
+from .web_sources_routes import router as web_sources_router, search_router as web_search_router
 
 # Carica le variabili di ambiente dal file .env (path esplicito) e log mascherato
 _env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -340,6 +342,7 @@ app.include_router(asr_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(conversation_router, prefix="/api")
+app.include_router(admin_conversations_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(admin_panel_router, prefix="/api")
 app.include_router(file_processing_router, prefix="/api")
@@ -352,6 +355,8 @@ app.include_router(forms_admin_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(queries_router, prefix="/api")
 app.include_router(backup_router, prefix="/api")
+app.include_router(web_sources_router, prefix="/api")
+app.include_router(web_search_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():

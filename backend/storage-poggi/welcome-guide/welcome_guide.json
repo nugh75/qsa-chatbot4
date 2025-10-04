@@ -1,0 +1,27 @@
+{
+  "welcome": {
+    "active_id": "wm_53539ba5",
+    "messages": [
+      {
+        "id": "wm_minimal",
+        "title": "Benvenuto",
+        "content": "Ciao! Sono qui per assisterti. Dimmi pure da dove vuoi iniziare."
+      },
+      {
+        "id": "wm_53539ba5",
+        "title": "EduRag",
+        "content": "Ciao, sono EduRAG!\nSono un tutor virtuale progettato per accompagnarti nello studio e aiutarti a comprendere meglio i contenuti del corso. Ti fornirò spiegazioni, esempi e domande per stimolare la tua riflessione.\n\nRicorda però che, come ogni intelligenza artificiale, posso commettere errori: usa sempre spirito critico e, quando necessario, confronta le mie risposte con il materiale del corso. Questo renderà il tuo apprendimento più solido e consapevole.\n\nPuoi anche scegliere tra diverse versioni di me, ognuna con un proprio stile e livello di approfondimento: le trovi nel menù a tendina accanto alla mia immagine.\n\nAllora, iniziamo! Di quale argomento vuoi parlare oggi?\n"
+      }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_minimal",
+    "guides": [
+      {
+        "id": "gd_minimal",
+        "title": "Come iniziare",
+        "content": "Condividi un obiettivo o una domanda e ti guiderò passo dopo passo."
+      }
+    ]
+  }
+}

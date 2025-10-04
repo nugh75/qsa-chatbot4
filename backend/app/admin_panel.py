@@ -331,73 +331,62 @@ async def get_admin_stats(
             detail=f"Error retrieving stats: {str(e)}"
         )
 
-@router.get("/users", response_model=List[UserInfo])
+@router.get("/users")
 async def get_users(
     limit: int = Query(50, description="Maximum users to return"),
     offset: int = Query(0, description="Offset for pagination"),
     search: Optional[str] = Query(None, description="Search by username or email"),
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Lista utenti con informazioni sui dispositivi"""
-    
+    """Lista utenti per impersonazione (solo admin)"""
+
     if not is_admin_user(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
-    
+
     try:
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             where_clause = "WHERE 1=1"
             params = []
-            
+
             if search:
                 where_clause += " AND (u.username LIKE ? OR u.email LIKE ?)"
                 search_pattern = f"%{search}%"
                 params.extend([search_pattern, search_pattern])
-            
+
+            # Simplified query for impersonation - just need id, email, username, is_admin
             query = f"""
-                SELECT 
+                SELECT
                     u.id,
-                    COALESCE(u.username, u.email, '') AS username,
                     u.email,
-                    u.is_active,
-                    u.created_at,
-                    u.last_login,
-                    COUNT(DISTINCT d.id) as device_count,
-                    COUNT(DISTINCT c.id) as conversation_count,
-                    COUNT(DISTINCT m.id) as message_count
+                    COALESCE(u.username, '') AS username,
+                    u.is_admin,
+                    u.created_at
                 FROM users u
-                LEFT JOIN devices d ON u.id = d.user_id AND d.is_active = 1
-                LEFT JOIN conversations c ON u.id = c.user_id AND c.is_deleted = 0
-                LEFT JOIN messages m ON c.id = m.conversation_id AND m.is_deleted = 0
                 {where_clause}
-                GROUP BY u.id, u.username, u.email, u.is_active, u.created_at, u.last_login
                 ORDER BY u.created_at DESC
                 LIMIT ? OFFSET ?
             """
-            
+
             params.extend([limit, offset])
             db_manager.exec(cursor, query, params)
-            
+
             users = []
             for row in cursor.fetchall():
-                users.append(UserInfo(
-                    id=row[0],
-                    username=row[1],
-                    email=row[2],
-                    is_active=bool(row[3]),
-                    created_at=row[4],
-                    last_login=row[5],
-                    device_count=row[6],
-                    conversation_count=row[7],
-                    message_count=row[8]
-                ))
-            
-            return users
-            
+                users.append({
+                    "id": row[0],
+                    "email": row[1],
+                    "username": row[2],
+                    "is_admin": bool(row[3]),
+                    "created_at": row[4]
+                })
+
+            return {"success": True, "users": users}
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

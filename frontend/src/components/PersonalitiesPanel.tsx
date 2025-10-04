@@ -59,6 +59,7 @@ const PersonalitiesPanel: React.FC = () => {
   // UI visibility flags
   const [showPipelineTopics, setShowPipelineTopics] = useState<boolean>(true)
   const [showSourceDocs, setShowSourceDocs] = useState<boolean>(true)
+  const [hideRagLinks, setHideRagLinks] = useState<boolean>(false)
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
   // Test inline LLM
@@ -255,6 +256,7 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedForms((p as any).enabled_forms || []);
     setShowPipelineTopics((p as any).show_pipeline_topics !== false)
     setShowSourceDocs((p as any).show_source_docs !== false)
+    setHideRagLinks((p as any).hide_rag_links === true)
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -325,7 +327,8 @@ const PersonalitiesPanel: React.FC = () => {
           enabled_data_tables: selectedDataTables,
           enabled_forms: selectedForms,
           show_pipeline_topics: showPipelineTopics,
-          show_source_docs: showSourceDocs
+          show_source_docs: showSourceDocs,
+          hide_rag_links: hideRagLinks
         })
       })
       if (!res.ok) {
@@ -409,6 +412,7 @@ const PersonalitiesPanel: React.FC = () => {
           ;(p as any).enabled_forms = selectedForms
           ;(p as any).show_pipeline_topics = showPipelineTopics
           ;(p as any).show_source_docs = showSourceDocs
+          ;(p as any).hide_rag_links = hideRagLinks
           list[idx] = p
         } else {
           list.push({
@@ -433,7 +437,8 @@ const PersonalitiesPanel: React.FC = () => {
             enabled_data_tables: selectedDataTables,
             enabled_forms: selectedForms,
             show_pipeline_topics: showPipelineTopics,
-            show_source_docs: showSourceDocs
+            show_source_docs: showSourceDocs,
+            hide_rag_links: hideRagLinks
           })
         }
         return { ...prev, personalities: list }
@@ -842,6 +847,7 @@ const PersonalitiesPanel: React.FC = () => {
                 <FormGroup>
                   <FormControlLabel control={<Checkbox size="small" checked={showPipelineTopics} onChange={e=> setShowPipelineTopics(e.target.checked)} />} label="Mostra Topics Pipeline" />
                   <FormControlLabel control={<Checkbox size="small" checked={showSourceDocs} onChange={e=> setShowSourceDocs(e.target.checked)} />} label="Mostra Fonti (RAG/Tabelle)" />
+                  <FormControlLabel control={<Checkbox size="small" checked={hideRagLinks} onChange={e=> setHideRagLinks(e.target.checked)} />} label="Nascondi link documenti RAG" />
                 </FormGroup>
               </Paper>
             </Box>

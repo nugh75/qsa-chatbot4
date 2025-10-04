@@ -1,0 +1,10 @@
+{
+  "active_id": "default",
+  "prompts": [
+    {
+      "id": "default",
+      "name": "Report sintetico",
+      "text": "Genera un breve resoconto strutturato della conversazione in italiano. Includi titolo, obiettivo dell'utente, punti chiave e prossimi passi suggeriti. Mantieni un tono neutro."
+    }
+  ]
+}

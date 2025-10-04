@@ -1,6 +1,7 @@
 import React from 'react'
 import { AppBar, Toolbar, Box, IconButton, Select, MenuItem, FormControl, Tooltip, useMediaQuery, useTheme, Menu, Avatar, Typography, Dialog, DialogTitle, DialogContent, DialogActions, Button } from '@mui/material'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
+import { UserImpersonation } from './UserImpersonation'
 
 // Simple inline SVG icons (uniform style)
 const PersonalitySvg = (props:any)=> (
@@ -75,6 +76,8 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
           </FormControl>
         </Box>
   {/* Voice selector rimosso */}
+        {/* User impersonation dropdown (visible only for admins) */}
+        {isAdmin && <UserImpersonation />}
   {/* Icone singole rimosse: tutte le azioni ora nel menu a tre puntini */}
         {/* Desktop overflow menu */}
         {!isMobile && (
@@ -133,39 +136,11 @@ const HeaderBar: React.FC<HeaderBarProps> = ({ personalities, selectedPersonalit
         )}
         {isAdmin && adminPersonalityInfo && (
           <>
-            <Box
-              component="button"
-              type="button"
-              onClick={()=> setInfoDialogOpen(true)}
-              sx={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: isMobile ? 'flex-end' : 'flex-start',
-                ml: isMobile ? 0 : 2,
-                maxWidth: isMobile ? 180 : 260,
-                border: 'none',
-                background: 'none',
-                cursor: 'pointer',
-                p: 0,
-                textAlign: isMobile ? 'right' : 'left'
-              }}
-            >
-              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
-                Provider · Modello · Prompt
-              </Typography>
-              <Typography
-                variant="body2"
-                sx={{
-                  fontWeight: 600,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  width: '100%'
-                }}
-              >
-                {(adminPersonalityInfo.provider || '-') + ' · ' + (adminPersonalityInfo.model || '-') + ' · ' + (adminPersonalityInfo.systemPromptName || '-')}
-              </Typography>
-            </Box>
+            <Tooltip title="Dettagli chatbot">
+              <IconButton size="small" onClick={()=> setInfoDialogOpen(true)} aria-label="info chatbot">
+                <PersonalitySvg />
+              </IconButton>
+            </Tooltip>
             <Dialog
               open={infoDialogOpen}
               onClose={()=> setInfoDialogOpen(false)}

@@ -22,6 +22,9 @@ Sono state introdotte le seguenti migliorie:
 5. Iniezione Link Documenti: Riferimenti semplici come `[DOC nomefile]` diventano link (schema `doc://`) con anteprima aggregata dei chunk correlati.
 6. Rimozione Emoji nella UI: Tutte le emoji ornamentali sono state rimosse dal frontend; restano solo icone SVG / MUI come da linea guida.
 
+### Impersonation (Admin "Visualizza come utente")
+Frontend (sidebar conversazioni e componente di selezione utente) ora invia automaticamente il parametro `impersonate_user_id` alle API `/api/conversations` quando un admin seleziona un utente dal menu "Visualizza come utente". Il backend già supportava questo query param (vedi `conversation_routes.get_user_conversations`). Se l'admin resetta la selezione torna a vedere le proprie conversazioni. Per estendere ad altri endpoint replicare il pattern: aggiungere `?impersonate_user_id=<id>` alla richiesta quando `impersonatedUser` è definito nel contesto auth.
+
 Per estendere la logica RAG o chat, aggiornare il contratto di `source_docs` invece di creare nuovi campi paralleli. Aggiungendo nuovi metadati per chunk, assicurarsi di propagarli sia negli endpoint streaming sia non-stream.
 
 ## Project Structure & Module Organization

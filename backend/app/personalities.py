@@ -71,6 +71,7 @@ def _ensure_personality_schema():
                   enabled_mcp_servers JSONB,
                   enabled_data_tables JSONB DEFAULT '[]'::jsonb,
                   enabled_forms JSONB DEFAULT '[]'::jsonb,
+                  hide_rag_links BOOLEAN DEFAULT FALSE,
                   is_default BOOLEAN NOT NULL DEFAULT FALSE,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -104,6 +105,14 @@ def _ensure_personality_schema():
             exists2 = cur.fetchone()
             if not exists2:
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_forms JSONB DEFAULT '[]'::jsonb")
+            # Ensure hide_rag_links column exists
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'hide_rag_links'
+            """)
+            exists_hide_rag = cur.fetchone()
+            if not exists_hide_rag:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN hide_rag_links BOOLEAN DEFAULT FALSE")
             # Show/hide flags for UI visibility
             db_manager.exec(cur, """
                 SELECT 1 FROM information_schema.columns
@@ -259,6 +268,7 @@ def upsert_personality(
     max_tokens: Optional[int] = None,
     show_pipeline_topics: Optional[bool] = None,
     show_source_docs: Optional[bool] = None,
+    hide_rag_links: Optional[bool] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -277,9 +287,9 @@ def upsert_personality(
                 id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
                 welcome_message, guide_id, context_window, temperature, max_tokens, active,
                 enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
-                show_pipeline_topics, show_source_docs,
+                show_pipeline_topics, show_source_docs, hide_rag_links,
                 is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -301,6 +311,7 @@ def upsert_personality(
                 enabled_forms = EXCLUDED.enabled_forms,
                 show_pipeline_topics = EXCLUDED.show_pipeline_topics,
                 show_source_docs = EXCLUDED.show_source_docs,
+                hide_rag_links = EXCLUDED.hide_rag_links,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
@@ -308,6 +319,7 @@ def upsert_personality(
             e_topics, e_groups, e_mcp, e_tables, e_forms,
             True if show_pipeline_topics is None else bool(show_pipeline_topics),
             True if show_source_docs is None else bool(show_source_docs),
+            False if hide_rag_links is None else bool(hide_rag_links),
             bool(False)
         ))
         if set_default:

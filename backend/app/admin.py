@@ -8,12 +8,13 @@ from .prompts import (
     set_active_summary_prompt,
     delete_summary_prompt
 )
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Query
+from pydantic import BaseModel, Field
 from typing import Dict, List, Any, Optional
 import json
 import os
 import logging
+import mimetypes
 from .prompts import (
     load_system_prompt,
     save_system_prompt,
@@ -1595,6 +1596,7 @@ class PersonalityIn(BaseModel):
     # UI visibility flags
     show_pipeline_topics: Optional[bool] = True
     show_source_docs: Optional[bool] = True
+    hide_rag_links: Optional[bool] = False  # nasconde i link ai documenti RAG
 
 
 class PersonalityDuplicateIn(BaseModel):
@@ -1653,6 +1655,7 @@ async def upsert_personality_admin(p: PersonalityIn):
             enabled_data_tables=p.enabled_data_tables,
             enabled_forms=p.enabled_forms,
             max_tokens=p.max_tokens,
+            hide_rag_links=p.hide_rag_links,
             show_pipeline_topics=p.show_pipeline_topics,
             show_source_docs=p.show_source_docs
         )
@@ -4367,8 +4370,24 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
         where_clause = f" WHERE {' AND '.join(conds)}" if conds else ""
         order_clause = " ORDER BY d.created_at DESC"
         limit_clause = " LIMIT ? OFFSET ?"
+        if USING_POSTGRES:
+            allow_select = ", d.allow_preview AS allow_preview, d.allow_download AS allow_download"
+        else:
+            import sqlite3
+            conn = sqlite3.connect(str(rag_engine.db_path))
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(rag_documents)")
+            cols = [r[1] for r in cur.fetchall()]
+            has_allow_preview = 'allow_preview' in cols
+            has_allow_download = 'allow_download' in cols
+            allow_preview_sql = "d.allow_preview" if has_allow_preview else "1"
+            allow_download_sql = "d.allow_download" if has_allow_download else "1"
+            allow_select = f", {allow_preview_sql} AS allow_preview, {allow_download_sql} AS allow_download"
+            cur.close()
+            conn.close()
         base = (
-            "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at "
+            "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at"
+            f"{allow_select} "
             "FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id"
         )
         if USING_POSTGRES:
@@ -4379,7 +4398,6 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
                 db_manager.exec(cur, base + where_clause + order_clause + limit_clause, [*params, limit, offset])
                 rows = cur.fetchall()
         else:
-            import sqlite3
             conn = sqlite3.connect(str(rag_engine.db_path))
             cur = conn.cursor()
             cur.execute(f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
@@ -4397,7 +4415,11 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
                 "stored_filename": r[5],
                 "file_size": r[6],
                 "chunk_count": r[7],
-                "created_at": r[8]
+                "created_at": r[8],
+                "allow_preview": bool(r[9]) if r[9] is not None else True,
+                "allow_download": bool(r[10]) if r[10] is not None else True,
+                "stored_path": str(rag_engine.originals_dir / r[5]) if r[5] else None,
+                "download_url": f"/api/admin/rag/documents/{r[0]}/download"
             } for r in rows
         ]
         return {"success": True, "total": total, "documents": docs}
@@ -4499,7 +4521,7 @@ async def admin_recover_rag_groups():
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/admin/rag/documents/{document_id}/download")
-async def admin_download_rag_document(document_id: int):
+async def admin_download_rag_document(document_id: int, disposition: Optional[str] = Query(None), mode: Optional[str] = Query(None)):
     """Scarica il PDF originale se salvato (stored_filename)."""
     try:
         stored_filename = None
@@ -4537,16 +4559,116 @@ async def admin_download_rag_document(document_id: int):
         if not path.exists():
             raise HTTPException(status_code=404, detail="File mancante su disco")
 
-        return FileResponse(
+        import mimetypes
+
+        requested = (disposition or mode or 'attachment').lower()
+        if requested not in {'attachment', 'inline', 'download', 'preview'}:
+            requested = 'attachment'
+        header_value = 'inline' if requested in {'inline', 'preview'} else 'attachment'
+
+        media_type, _ = mimetypes.guess_type(str(path))
+        response = FileResponse(
             str(path),
-            media_type="application/pdf",
-            filename=original_filename or stored_filename,
+            media_type=media_type or "application/octet-stream",
         )
+        safe_name = original_filename or stored_filename
+        response.headers['Content-Disposition'] = f'{header_value}; filename="{safe_name}"'
+        return response
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace")
+async def admin_rag_replace_document(
+    document_id: int,
+    file: UploadFile = File(...),
+    chunk_size: Optional[int] = Form(None),
+    chunk_overlap: Optional[int] = Form(None)
+):
+    """Ricarica un file PDF per un documento esistente e rigenera i chunk."""
+    import tempfile
+    import shutil
+    import time
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Sono supportati solo file PDF")
+
+    originals_dir = rag_engine.originals_dir
+    originals_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+        content_bytes = await file.read()
+        tmp.write(content_bytes)
+        temp_path = Path(tmp.name)
+
+    safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", file.filename.rsplit('/', 1)[-1]) or 'document.pdf'
+    stored_name = f"{int(time.time())}_{safe_base}"
+    stored_path = originals_dir / stored_name
+
+    try:
+        shutil.copy2(temp_path, stored_path)
+    except Exception as e:
+        try:
+            temp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Impossibile salvare il file: {e}")
+
+    try:
+        from .file_processing import extract_text_from_pdf_with_diagnostics
+
+        diagnostics = extract_text_from_pdf_with_diagnostics(str(temp_path))
+        text_content = diagnostics.get("text", "")
+        if not text_content.strip():
+            raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
+
+        try:
+            result = rag_engine.replace_document_file(
+                document_id,
+                new_text=text_content,
+                original_filename=file.filename,
+                stored_filename=stored_name,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        except Exception as e:
+            try:
+                stored_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(e))
+
+        old_stored = result.get("old_stored_filename")
+        if old_stored and old_stored != stored_name:
+            try:
+                old_path = originals_dir / old_stored
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:
+                pass
+
+        updated_doc = rag_engine.get_document(document_id)
+        return {
+            "success": True,
+            "document": updated_doc,
+            "chunk_count": result.get("chunk_count"),
+            "stored_filename": stored_name,
+            "stored_path": str(stored_path),
+            "diagnostics": {
+                "method": diagnostics.get("method"),
+                "pages": diagnostics.get("pages"),
+                "chars": diagnostics.get("chars"),
+                "short_text": diagnostics.get("short_text"),
+                "errors": diagnostics.get("errors", [])[:5]
+            }
+        }
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 @router.post("/admin/rag/fix-orphans")
 async def admin_fix_rag_orphans():
@@ -4763,6 +4885,10 @@ async def admin_rag_export_document(document_id: int):
 class RAGDocumentArchive(BaseModel):
     archived: bool
 
+class RAGDocumentPermissions(BaseModel):
+    allow_preview: bool
+    allow_download: bool
+
 @router.post("/admin/rag/documents/{document_id}/archive")
 async def admin_rag_archive_document(document_id: int, payload: RAGDocumentArchive):
     try:
@@ -4780,6 +4906,27 @@ async def admin_rag_document_metadata(document_id: int):
         return {"success": True, "document": doc}
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/permissions")
+async def admin_rag_update_document_permissions(document_id: int, payload: RAGDocumentPermissions, current_user = Depends(get_current_admin_user)):
+    """Aggiorna i permessi di visualizzazione e download di un documento"""
+    try:
+        rag_engine.set_document_permissions(document_id, payload.allow_preview, payload.allow_download)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentNameUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=500)
+
+@router.put("/admin/rag/documents/{document_id}/name")
+async def admin_rag_update_document_name(document_id: int, payload: RAGDocumentNameUpdate, current_user = Depends(get_current_admin_user)):
+    """Aggiorna il nome di un documento"""
+    try:
+        rag_engine.update_document_name(document_id, payload.name)
+        return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

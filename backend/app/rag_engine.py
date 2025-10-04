@@ -147,6 +147,8 @@ class RAGEngine:
                       content_preview TEXT,
                       chunk_count INTEGER NOT NULL DEFAULT 0,
                       archived BOOLEAN NOT NULL DEFAULT FALSE,
+                      allow_preview BOOLEAN NOT NULL DEFAULT TRUE,
+                      allow_download BOOLEAN NOT NULL DEFAULT TRUE,
                       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                       CONSTRAINT uq_documents_hash_group UNIQUE (file_hash, group_id)
@@ -167,6 +169,22 @@ class RAGEngine:
                 db_manager.exec(cur, "CREATE INDEX IF NOT EXISTS idx_chunks_group ON rag_chunks (group_id)")
                 db_manager.exec(cur, "CREATE INDEX IF NOT EXISTS idx_chunks_document ON rag_chunks (document_id)")
                 db_manager.exec(cur, "CREATE INDEX IF NOT EXISTS idx_documents_group ON rag_documents (group_id)")
+
+                # Migrazione: aggiungi allow_preview e allow_download se mancanti
+                db_manager.exec(cur, """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'rag_documents' AND column_name = 'allow_preview'
+                """)
+                if not cur.fetchone():
+                    db_manager.exec(cur, "ALTER TABLE rag_documents ADD COLUMN allow_preview BOOLEAN NOT NULL DEFAULT TRUE")
+
+                db_manager.exec(cur, """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'rag_documents' AND column_name = 'allow_download'
+                """)
+                if not cur.fetchone():
+                    db_manager.exec(cur, "ALTER TABLE rag_documents ADD COLUMN allow_download BOOLEAN NOT NULL DEFAULT TRUE")
+
                 conn.commit()
         else:
             # SQLite rag.db
@@ -691,28 +709,50 @@ class RAGEngine:
     
     def update_group(self, group_id: int, name: str = None, description: str = None):
         """Aggiorna nome e/o descrizione di un gruppo"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        updates = []
-        params = []
-        
-        if name is not None:
-            updates.append("name = ?")
-            params.append(name)
-        
-        if description is not None:
-            updates.append("description = ?")
-            params.append(description)
-        
-        if updates:
-            query = f"UPDATE rag_groups SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-            params.append(group_id)
-            cursor.execute(query, params)
-            conn.commit()
-        
-        conn.close()
-        logger.info(f"Gruppo {group_id} aggiornato")
+        if self.use_postgres and db_manager is not None:
+            updates = []
+            params = []
+
+            if name is not None:
+                updates.append("name = ?")
+                params.append(name)
+
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+
+            if updates:
+                query = f"UPDATE rag_groups SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                params.append(group_id)
+                with db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    db_manager.exec(cursor, query, tuple(params))
+                    conn.commit()
+
+            logger.info(f"Gruppo {group_id} aggiornato (PostgreSQL)")
+        else:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            updates = []
+            params = []
+
+            if name is not None:
+                updates.append("name = ?")
+                params.append(name)
+
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+
+            if updates:
+                query = f"UPDATE rag_groups SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                params.append(group_id)
+                cursor.execute(query, params)
+                conn.commit()
+
+            conn.close()
+            logger.info(f"Gruppo {group_id} aggiornato (SQLite)")
     
     def add_document(self, group_id: int, filename: str, content: str, original_filename: str = None, stored_filename: str | None = None) -> int:
         """
@@ -1194,7 +1234,8 @@ class RAGEngine:
                     cur,
                     f"""
                     SELECT c.id, c.content, c.chunk_index, c.metadata,
-                           d.id as document_id, d.filename, d.original_filename, d.stored_filename
+                           d.id as document_id, d.filename, d.original_filename, d.stored_filename,
+                           d.allow_preview, d.allow_download
                     FROM rag_chunks c
                     JOIN rag_documents d ON c.document_id = d.id
                     WHERE c.id IN ({placeholders})
@@ -1223,6 +1264,8 @@ class RAGEngine:
                         "stored_filename": row[7],
                         "chunk_label": chunk_label,
                         "download_url": f"/api/rag/download/{row[4]}",
+                        "allow_preview": row[8] if len(row) > 8 else True,
+                        "allow_download": row[9] if len(row) > 9 else True,
                     })
             return results
 
@@ -1234,7 +1277,8 @@ class RAGEngine:
             cursor.execute(
                 f"""
                 SELECT c.id, c.content, c.chunk_index, c.metadata,
-                       d.id as document_id, d.filename, d.original_filename, d.stored_filename
+                       d.id as document_id, d.filename, d.original_filename, d.stored_filename,
+                       d.allow_preview, d.allow_download
                 FROM rag_chunks c
                 JOIN rag_documents d ON c.document_id = d.id
                 WHERE c.id IN ({placeholders})
@@ -1255,6 +1299,8 @@ class RAGEngine:
                     "stored_filename": row[7],
                     "chunk_label": chunk_label,
                     "download_url": f"/api/rag/download/{row[4]}",
+                    "allow_preview": row[8] if len(row) > 8 else True,
+                    "allow_download": row[9] if len(row) > 9 else True,
                 })
         finally:
             conn.close()
@@ -1267,7 +1313,7 @@ class RAGEngine:
                 cursor = conn.cursor()
                 # archived, stored_filename, updated_at all exist in Postgres schema
                 db_manager.exec(cursor, """
-                    SELECT id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, updated_at, archived
+                    SELECT id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, updated_at, archived, allow_preview, allow_download
                     FROM rag_documents
                     WHERE group_id = ?
                     ORDER BY updated_at DESC
@@ -1279,56 +1325,50 @@ class RAGEngine:
                         "filename": row[1],
                         "original_filename": row[2],
                         "stored_filename": row[3],
+                        "stored_path": str(self.originals_dir / row[3]) if row[3] else None,
                         "file_size": row[4],
                         "content_preview": row[5],
                         "chunk_count": row[6],
                         "created_at": row[7],
                         "updated_at": row[8],
-                        "archived": bool(row[9])
+                        "archived": bool(row[9]),
+                        "allow_preview": bool(row[10]) if row[10] is not None else True,
+                        "allow_download": bool(row[11]) if row[11] is not None else True,
+                        "download_url": f"/api/admin/rag/documents/{row[0]}/download"
                     })
                 return documents
         else:
             conn = self._sqlite_conn()
             cursor = conn.cursor()
-            # Verifica che la colonna stored_filename esista (installazioni precedenti potrebbero non averla)
-            try:
-                cursor.execute("PRAGMA table_info(rag_documents)")
-                cols = [r[1] for r in cursor.fetchall()]
-                has_stored = 'stored_filename' in cols
-                if not has_stored:
-                    try:
-                        cursor.execute("ALTER TABLE rag_documents ADD COLUMN stored_filename TEXT")
-                        has_stored = True
-                    except Exception:
-                        has_stored = False
-            except Exception:
-                has_stored = False
+            cursor.execute("PRAGMA table_info(rag_documents)")
+            cols = [r[1] for r in cursor.fetchall()]
+            has_stored = 'stored_filename' in cols
+            has_archived_col = 'archived' in cols
+            has_allow_preview = 'allow_preview' in cols
+            has_allow_download = 'allow_download' in cols
+            has_updated = 'updated_at' in cols
 
-            # Verifica presenza colonna archived
-            try:
-                cursor.execute("PRAGMA table_info(rag_documents)")
-                cols2 = [r[1] for r in cursor.fetchall()]
-                has_archived_col = 'archived' in cols2
-            except Exception:
-                has_archived_col = False
+            if not has_stored:
+                try:
+                    cursor.execute("ALTER TABLE rag_documents ADD COLUMN stored_filename TEXT")
+                    has_stored = True
+                except Exception:
+                    has_stored = False
 
-            select_archived = ", archived" if has_archived_col else ", 0 as archived"
             stored_expr = "stored_filename" if has_stored else "NULL as stored_filename"
-            has_updated = False
-            try:
-                cursor.execute("PRAGMA table_info(rag_documents)")
-                colnames = [r[1] for r in cursor.fetchall()]
-                has_updated = 'updated_at' in colnames
-            except Exception:
-                has_updated = False
+            select_archived = ", archived" if has_archived_col else ", 0 as archived"
+            select_allow_preview = ", allow_preview" if has_allow_preview else ", 1 as allow_preview"
+            select_allow_download = ", allow_download" if has_allow_download else ", 1 as allow_download"
             order_col = 'updated_at' if has_updated else 'created_at'
+
             cursor.execute(f"""
-                SELECT id, filename, original_filename, {stored_expr}, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at {select_archived}
+                SELECT id, filename, original_filename, {stored_expr}, file_size, content_preview, chunk_count, created_at,
+                       COALESCE(updated_at, created_at) as updated_at{select_archived}{select_allow_preview}{select_allow_download}
                 FROM rag_documents
                 WHERE group_id = ?
                 ORDER BY {order_col} DESC
             """, (group_id,))
-            
+
             documents = []
             for row in cursor.fetchall():
                 documents.append({
@@ -1336,12 +1376,16 @@ class RAGEngine:
                     "filename": row[1],
                     "original_filename": row[2],
                     "stored_filename": row[3],
+                    "stored_path": str(self.originals_dir / row[3]) if row[3] else None,
                     "file_size": row[4],
                     "content_preview": row[5],
                     "chunk_count": row[6],
                     "created_at": row[7],
                     "updated_at": row[8],
-                    "archived": row[9] if len(row) > 9 else 0
+                    "archived": bool(row[9]) if row[9] is not None else False,
+                    "allow_preview": bool(row[10]) if row[10] is not None else True,
+                    "allow_download": bool(row[11]) if row[11] is not None else True,
+                    "download_url": f"/api/admin/rag/documents/{row[0]}/download"
                 })
             
             conn.close()
@@ -1352,7 +1396,7 @@ class RAGEngine:
         if self.use_postgres and db_manager is not None:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                db_manager.exec(cursor, "SELECT id, group_id, filename, original_filename, stored_filename, file_size, file_hash, content_preview, chunk_count, created_at, archived FROM rag_documents WHERE id = ?", (document_id,))
+                db_manager.exec(cursor, "SELECT id, group_id, filename, original_filename, stored_filename, file_size, file_hash, content_preview, chunk_count, created_at, archived, allow_preview, allow_download FROM rag_documents WHERE id = ?", (document_id,))
                 row = cursor.fetchone()
                 if not row:
                     return None
@@ -1362,12 +1406,16 @@ class RAGEngine:
                     "filename": row[2],
                     "original_filename": row[3],
                     "stored_filename": row[4],
+                    "stored_path": str(self.originals_dir / row[4]) if row[4] else None,
                     "file_size": row[5],
                     "file_hash": row[6],
                     "content_preview": row[7],
                     "chunk_count": row[8],
                     "created_at": row[9],
-                    "archived": bool(row[10])
+                    "archived": bool(row[10]),
+                    "allow_preview": bool(row[11]) if row[11] is not None else True,
+                    "allow_download": bool(row[12]) if row[12] is not None else True,
+                    "download_url": f"/api/admin/rag/documents/{row[0]}/download"
                 }
         else:
             conn = self._sqlite_conn()
@@ -1375,8 +1423,15 @@ class RAGEngine:
             cursor.execute("PRAGMA table_info(rag_documents)")
             cols = [r[1] for r in cursor.fetchall()]
             has_archived = 'archived' in cols
+            has_allow_preview = 'allow_preview' in cols
+            has_allow_download = 'allow_download' in cols
             select_archived = ", archived" if has_archived else ", 0 as archived"
-            cursor.execute(f"SELECT id, group_id, filename, original_filename, stored_filename, file_size, file_hash, content_preview, chunk_count, created_at{select_archived} FROM rag_documents WHERE id = ?", (document_id,))
+            select_allow_preview = ", allow_preview" if has_allow_preview else ", 1 as allow_preview"
+            select_allow_download = ", allow_download" if has_allow_download else ", 1 as allow_download"
+            cursor.execute(
+                f"SELECT id, group_id, filename, original_filename, stored_filename, file_size, file_hash, content_preview, chunk_count, created_at{select_archived}{select_allow_preview}{select_allow_download} FROM rag_documents WHERE id = ?",
+                (document_id,)
+            )
             row = cursor.fetchone()
             if not row:
                 conn.close()
@@ -1387,12 +1442,16 @@ class RAGEngine:
                 "filename": row[2],
                 "original_filename": row[3],
                 "stored_filename": row[4],
+                "stored_path": str(self.originals_dir / row[4]) if row[4] else None,
                 "file_size": row[5],
                 "file_hash": row[6],
                 "content_preview": row[7],
                 "chunk_count": row[8],
                 "created_at": row[9],
-                "archived": row[10] if len(row) > 10 else 0
+                "archived": bool(row[10]) if len(row) > 10 and row[10] is not None else False,
+                "allow_preview": bool(row[11]) if len(row) > 11 and row[11] is not None else True,
+                "allow_download": bool(row[12]) if len(row) > 12 and row[12] is not None else True,
+                "download_url": f"/api/admin/rag/documents/{row[0]}/download"
             }
             conn.close()
             return doc
@@ -1485,6 +1544,127 @@ class RAGEngine:
             new_name = f"{base_name}"  # keep same name; uniqueness non forzata
         new_id = self.add_document(target_group_id, new_name, full_text, original_filename=original_filename)
         return new_id
+
+    def replace_document_file(
+        self,
+        document_id: int,
+        *,
+        new_text: str,
+        original_filename: str,
+        stored_filename: str,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Sostituisce il contenuto di un documento con nuovo testo estratto dal PDF.
+
+        Rimuove i chunk esistenti, aggiorna metadati e rigenera i chunk.
+        Ritorna informazioni utili (chunk_count e precedente stored_filename).
+        """
+        if not new_text.strip():
+            raise ValueError("Testo estratto vuoto")
+
+        file_hash = hashlib.sha256(new_text.encode()).hexdigest()
+        preview = new_text[:500] + "..." if len(new_text) > 500 else new_text
+        text_length = len(new_text)
+
+        old_stored_filename: Optional[str] = None
+        group_id: Optional[int] = None
+
+        old_splitter = self.text_splitter
+        custom_splitter = None
+        if chunk_size or chunk_overlap:
+            custom_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size or getattr(old_splitter, '_chunk_size', 1000),
+                chunk_overlap=chunk_overlap or getattr(old_splitter, '_chunk_overlap', 200),
+                length_function=len,
+                separators=["\n\n", "\n", ". ", "! ", "? ", ", ", " ", ""]
+            )
+            self.text_splitter = custom_splitter
+        try:
+            if self.use_postgres and db_manager is not None:
+                with db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    db_manager.exec(cursor, "SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cursor.fetchone()
+                    if not row:
+                        raise ValueError("Documento non trovato")
+                    group_id, old_stored_filename = row
+                    db_manager.exec(cursor, "DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+                    db_manager.exec(
+                        cursor,
+                        """
+                        UPDATE rag_documents
+                        SET filename = ?, original_filename = ?, stored_filename = ?,
+                            file_hash = ?, file_size = ?, content_preview = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                        """,
+                        (
+                            original_filename,
+                            original_filename,
+                            stored_filename,
+                            file_hash,
+                            text_length,
+                            preview,
+                            document_id,
+                        ),
+                    )
+                    conn.commit()
+            else:
+                conn = self._sqlite_conn()
+                cursor = conn.cursor()
+                cursor.execute("SELECT group_id, stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                row = cursor.fetchone()
+                if not row:
+                    conn.close()
+                    raise ValueError("Documento non trovato")
+                group_id, old_stored_filename = row
+                cursor.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
+
+                cursor.execute("PRAGMA table_info(rag_documents)")
+                cols = [r[1] for r in cursor.fetchall()]
+                has_stored = 'stored_filename' in cols
+                has_updated = 'updated_at' in cols
+
+                update_sql = "UPDATE rag_documents SET filename = ?, original_filename = ?, file_hash = ?, file_size = ?, content_preview = ?"
+                params: list[Any] = [original_filename, original_filename, file_hash, text_length, preview]
+                if has_stored:
+                    update_sql += ", stored_filename = ?"
+                    params.append(stored_filename)
+                if has_updated:
+                    update_sql += ", updated_at = CURRENT_TIMESTAMP"
+                update_sql += " WHERE id = ?"
+                params.append(document_id)
+                cursor.execute(update_sql, params)
+                conn.commit()
+                conn.close()
+
+            if group_id is None:
+                raise ValueError("Gruppo documento non trovato")
+
+            chunk_count = self._process_document(document_id, group_id, new_text)
+
+            if self.use_postgres and db_manager is not None:
+                with db_manager.get_connection() as conn2:
+                    cur2 = conn2.cursor()
+                    db_manager.exec(cur2, "UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (chunk_count, document_id))
+                    conn2.commit()
+            else:
+                conn3 = self._sqlite_conn()
+                cur3 = conn3.cursor()
+                cur3.execute("UPDATE rag_documents SET chunk_count = ? WHERE id = ?", (chunk_count, document_id))
+                conn3.commit()
+                conn3.close()
+
+            return {
+                "chunk_count": chunk_count,
+                "old_stored_filename": old_stored_filename,
+                "stored_filename": stored_filename,
+                "group_id": group_id,
+            }
+        finally:
+            if custom_splitter is not None:
+                self.text_splitter = old_splitter
 
     def reprocess_document(self, document_id: int, chunk_size: Optional[int] = None, chunk_overlap: Optional[int] = None):
         """Rigenera i chunk di un documento ricostruendo il testo dai chunk esistenti."""
@@ -1750,7 +1930,58 @@ class RAGEngine:
             conn.close()
         # rebuild index to exclude/include document
         self._rebuild_group_index(group_id)
-    
+
+    def set_document_permissions(self, document_id: int, allow_preview: bool, allow_download: bool):
+        """Aggiorna i permessi di visualizzazione e download di un documento"""
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                db_manager.exec(cursor, "SELECT id FROM rag_documents WHERE id = ?", (document_id,))
+                if not cursor.fetchone():
+                    raise ValueError("Documento non trovato")
+                db_manager.exec(cursor, "UPDATE rag_documents SET allow_preview = ?, allow_download = ? WHERE id = ?",
+                              (bool(allow_preview), bool(allow_download), document_id))
+                conn.commit()
+        else:
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM rag_documents WHERE id = ?", (document_id,))
+            if not cursor.fetchone():
+                conn.close()
+                raise ValueError("Documento non trovato")
+            cursor.execute("UPDATE rag_documents SET allow_preview = ?, allow_download = ? WHERE id = ?",
+                         (1 if allow_preview else 0, 1 if allow_download else 0, document_id))
+            conn.commit()
+            conn.close()
+        logger.info(f"Permessi documento {document_id} aggiornati: preview={allow_preview}, download={allow_download}")
+
+    def update_document_name(self, document_id: int, new_name: str):
+        """Aggiorna il nome (original_filename) di un documento"""
+        if not new_name or not new_name.strip():
+            raise ValueError("Il nome del documento non può essere vuoto")
+
+        if self.use_postgres and db_manager is not None:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                db_manager.exec(cursor, "SELECT id FROM rag_documents WHERE id = ?", (document_id,))
+                if not cursor.fetchone():
+                    raise ValueError("Documento non trovato")
+                db_manager.exec(cursor, "UPDATE rag_documents SET original_filename = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                              (new_name.strip(), document_id))
+                conn.commit()
+        else:
+            conn = self._sqlite_conn()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM rag_documents WHERE id = ?", (document_id,))
+            if not cursor.fetchone():
+                conn.close()
+                raise ValueError("Documento non trovato")
+            cursor.execute("UPDATE rag_documents SET original_filename = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                         (new_name.strip(), document_id))
+            conn.commit()
+            conn.close()
+        logger.info(f"Nome documento {document_id} aggiornato: {new_name}")
+
     def delete_document(self, document_id: int):
         """Elimina un documento (soft/standard). Ritorna dict con esito.
 

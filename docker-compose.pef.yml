@@ -14,6 +14,7 @@ x-pg: &pg
 x-be: &be
   build: ./backend
   restart: unless-stopped
+  user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
   volumes:
     - ./backend/storage:/app/storage
     - ./backend/models:/app/models
@@ -39,10 +40,9 @@ services:
     env_file: [.env.pef]
     ports: ["8115:8005"]
     volumes:
-      - ./backend/storage:/app/storage
-      - ./backend/storage/logs-pef:/app/storage/logs
-      - ./backend/models:/app/models
-      - ./backend/config:/app/config
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/pef/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
       - ./.env.pef:/app/.env:ro
     depends_on: { postgres-pef: { condition: service_healthy } }
 

@@ -2,7 +2,7 @@
 API Routes per il sistema RAG
 Gestisce gruppi, documenti, upload e ricerca
 """
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status, Header
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status, Header, Query
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -306,25 +306,86 @@ def get_user_context(session_id: str = "default") -> List[int]:
     return user_contexts.get(session_id, [])
 
 @router.get("/rag/download/{document_id}")
-async def download_document(document_id: int):
-    """Download del documento originale se presente, altrimenti fallback testo ricostruito."""
+async def download_document(document_id: int, disposition: Optional[str] = Query(None), mode: Optional[str] = Query(None)):
+    """Download o visualizzazione del documento originale se presente, altrimenti fallback testo ricostruito.
+
+    Il parametro `disposition` (o legacy `mode`) permette di forzare `inline` o `attachment`.
+    Valori supportati: auto/default, inline/preview, attachment/download.
+    """
     from .rag_engine import rag_engine as _re
+    from fastapi.responses import Response
     doc = _re.get_document(document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Documento non trovato")
+
+    # Determina se usare Content-Disposition: inline (visualizza) o attachment (scarica)
+    allow_preview = bool(doc.get('allow_preview', True))
+    allow_download = bool(doc.get('allow_download', True))
+
+    requested = (disposition or mode or 'auto').lower()
+    if requested not in {'auto', 'inline', 'attachment', 'preview', 'download'}:
+        requested = 'auto'
+
+    if requested in {'inline', 'preview'}:
+        if not allow_preview:
+            raise HTTPException(status_code=403, detail="Visualizzazione non consentita per questo documento")
+        effective_disposition = 'inline'
+    elif requested in {'attachment', 'download'}:
+        if not allow_download:
+            raise HTTPException(status_code=403, detail="Download non consentito per questo documento")
+        effective_disposition = 'attachment'
+    else:
+        # auto
+        if allow_download:
+            effective_disposition = 'attachment'
+        elif allow_preview:
+            effective_disposition = 'inline'
+        else:
+            raise HTTPException(status_code=403, detail="Visualizzazione non consentita per questo documento")
+
     stored = doc.get('stored_filename')
     if stored:
         file_path = _re.originals_dir / stored
         if file_path.exists():
             media_type, _ = mimetypes.guess_type(str(file_path))
-            return FileResponse(path=str(file_path), filename=doc.get('original_filename') or stored, media_type=media_type or 'application/octet-stream')
+            original_name = doc.get('original_filename') or stored
+
+            # Crea FileResponse senza specificare filename per evitare Content-Disposition automatico
+            response = FileResponse(
+                path=str(file_path),
+                media_type=media_type or 'application/octet-stream'
+            )
+
+            # Imposta manualmente Content-Disposition in base ai permessi
+            response.headers['Content-Disposition'] = f'{effective_disposition}; filename="{original_name}"'
+
+            return response
     # Fallback ricostruzione testo
     try:
         export = _re.export_document(document_id)
         chunks = export.get('chunks', [])
         text = "\n".join(c.get('content','') for c in chunks)
-        import io
-        return FileResponse(path_or_file=io.BytesIO(text.encode('utf-8')), filename=(doc.get('original_filename') or f'document_{document_id}.txt'), media_type='text/plain')
+        content_bytes = text.encode('utf-8')
+        filename = doc.get('original_filename') or f'document_{document_id}.txt'
+
+        if effective_disposition == 'attachment':
+            # Forza download
+            return Response(
+                content=content_bytes,
+                media_type='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"'
+                }
+            )
+        else:
+            # Visualizza inline
+            return Response(
+                content=content_bytes,
+                media_type='text/plain',
+                headers={
+                    'Content-Disposition': f'inline; filename="{filename}"'
+                }
+            )
     except Exception:
         raise HTTPException(status_code=500, detail="Impossibile ricostruire il documento")
 

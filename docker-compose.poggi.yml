@@ -14,6 +14,7 @@ x-pg: &pg
 x-be: &be
   build: ./backend
   restart: unless-stopped
+  user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
   volumes:
     - ./backend/storage:/app/storage
     - ./backend/models:/app/models
@@ -39,11 +40,11 @@ services:
     env_file: [.env.poggi]
     ports: ["8117:8005"]
     volumes:
-      - ./backend/storage:/app/storage
-      - ./backend/storage/logs-poggi:/app/storage/logs
-      - ./backend/models:/app/models
-      - ./backend/config:/app/config
-      - ./.env.poggi:/app/.env:ro
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/poggi/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
+      # Monta il file env anche dove il backend lo cerca (backend/.env)
+      - ./.env.poggi:/app/backend/.env:ro
     depends_on: { postgres-poggi: { condition: service_healthy } }
 
   # ---- Frontend Poggi ----

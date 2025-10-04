@@ -1,7 +1,7 @@
 // Shared message types used across the frontend
 
 export type SourceDocs = {
-  rag_chunks?: { chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string; chunk_label?: string; download_url?: string }[]
+  rag_chunks?: { chunk_index?: number; filename?: string; original_filename?: string; similarity?: number; preview?: string; content?: string; document_id?: any; stored_filename?: string; chunk_label?: string; download_url?: string; allow_preview?: boolean; allow_download?: boolean }[]
   pipeline_topics?: { name: string; description?: string | null }[]
   rag_groups?: { id: any; name: string }[]
   data_tables?: { table_id: string; title: string; download_url?: string; row_ids?: (string|number)[] }[]

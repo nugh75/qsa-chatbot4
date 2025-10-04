@@ -20,6 +20,7 @@ import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
 import APIDocsPanel from './components/APIDocsPanel'
 import RagDocumentsPanel from './components/RagDocumentsPanel'
+import WebSourcesAdminTab from './components/WebSourcesAdminTab'
 import FormsBuilderPanel from './components/FormsBuilderPanel'
 import DataTablesPanel from './components/DataTablesPanel'
 import ModelsManagerPanel from './components/ModelsManagerPanel'
@@ -37,6 +38,7 @@ import remarkGfm from 'remark-gfm'
 import remarkSlugLocal from './utils/remarkSlugLocal'
 import BackupPanel from './components/BackupPanel'
 import DatabaseInfoPanel from './components/DatabaseInfoPanel'
+import ConversationsAdminTab from './components/ConversationsAdminTab'
 
 const AdminPanel: React.FC = () => {
   // Stato principale
@@ -74,9 +76,9 @@ const AdminPanel: React.FC = () => {
   const categories = [
   { id: 'conversation', label: 'LLM & Chat', panels: ['prompts', 'personalities', 'memory', 'welcome_guides', 'models_manager'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
-    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'data_tables', 'forms', 'pipeline'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
-    { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
+    { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'conversations', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
   { id: 'api', label: 'API & Tecnico', panels: ['apidocs','dbinfo'] },
     { id: 'backup', label: 'Backup', panels: ['backup_panel'] },
@@ -91,12 +93,14 @@ const AdminPanel: React.FC = () => {
     prompts: false,
     personalities: false,
     user_management: false,
+    conversations: false,
     usage: false,
     memory: false,
     apidocs: false,
     dbinfo: false,
     embedding: false,
     ragdocs: false,
+    web_sources: false,
     data_tables: false,
     forms: false,
     whisper_health: false,
@@ -409,8 +413,6 @@ const AdminPanel: React.FC = () => {
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
         <SettingsIcon />
         <Typography variant="h5" sx={{ mr: 2 }}>Pannello di amministrazione</Typography>
-  <Tooltip title="Chat"><IconButton size="small" href="/" color="primary"><ChatIcon fontSize="small" /></IconButton></Tooltip>
-  <Tooltip title="Arena"><IconButton size="small" href="/arena" color="primary"><ArenaIcon fontSize="small" /></IconButton></Tooltip>
   <Tooltip title="Guida Admin"><IconButton size="small" color="secondary" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton></Tooltip>
   <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> saveUiSettings(e.target.checked, undefined)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
         {loading && <LinearProgress sx={{ flexBasis: '100%', mt: 1 }} />}
@@ -492,6 +494,21 @@ const AdminPanel: React.FC = () => {
         </AccordionSummary>
         <AccordionDetails>
           <UserManagement />
+        </AccordionDetails>
+      </Accordion>
+  )}
+
+  {/* Conversazioni Utenti */}
+  {panelVisible('conversations') && (
+  <Accordion expanded={expandedPanels.conversations} onChange={handlePanelExpansion('conversations')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <ChatIcon fontSize="small" />
+            <Typography variant="h6">Conversazioni Utenti</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <ConversationsAdminTab />
         </AccordionDetails>
       </Accordion>
   )}
@@ -769,6 +786,21 @@ const AdminPanel: React.FC = () => {
         </AccordionSummary>
         <AccordionDetails>
           <RagDocumentsPanel />
+        </AccordionDetails>
+      </Accordion>
+  )}
+
+  {/* Web Sources Management */}
+  {panelVisible('web_sources') && (
+  <Accordion expanded={expandedPanels.web_sources} onChange={handlePanelExpansion('web_sources')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <CloudDownloadIcon fontSize="small" />
+            <Typography variant="h6">Web Sources</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <WebSourcesAdminTab />
         </AccordionDetails>
       </Accordion>
   )}

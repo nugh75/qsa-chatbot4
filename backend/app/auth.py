@@ -217,6 +217,39 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
+async def get_effective_user(
+    current_user: dict = Depends(get_current_active_user),
+    impersonate_user_id: Optional[int] = None
+):
+    """
+    Dependency che restituisce l'utente effettivo considerando l'impersonazione.
+    Se l'utente è admin e viene passato impersonate_user_id, restituisce l'utente impersonato.
+    Altrimenti restituisce l'utente corrente.
+    
+    Nota: impersonate_user_id deve essere passato esplicitamente come parametro della funzione route.
+    """
+    # Se non c'è impersonazione, ritorna utente corrente
+    if impersonate_user_id is None:
+        return current_user
+    
+    # Solo admin possono impersonare
+    if not is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can impersonate users"
+        )
+    
+    # Recupera utente impersonato
+    from .database import UserModel
+    impersonated_user = UserModel.get_user_by_id(impersonate_user_id)
+    if impersonated_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {impersonate_user_id} not found"
+        )
+    
+    return impersonated_user
+
 async def get_current_admin_user(current_user: dict = Depends(get_current_active_user)):
     """Dependency per ottenere utente amministratore"""
     if not is_admin_user(current_user):

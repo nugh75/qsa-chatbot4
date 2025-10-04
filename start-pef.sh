@@ -31,6 +31,22 @@ fi
 echo "✅ Verifica prerequisiti completata"
 echo ""
 
+echo "👤 Configurazione UID/GID per i container..."
+if [ -z "${DOCKER_UID:-}" ]; then
+    export DOCKER_UID="$(id -u)"
+fi
+if [ -z "${DOCKER_GID:-}" ]; then
+    export DOCKER_GID="$(id -g)"
+fi
+echo "   • DOCKER_UID=${DOCKER_UID}"
+echo "   • DOCKER_GID=${DOCKER_GID}"
+echo ""
+
+echo "🔄 Preparazione directory persistenti..."
+CHATBOT_DATA_ROOT="${CHATBOT_DATA_ROOT:-$(pwd)/runtime-data}" scripts/bootstrap_runtime_data.sh
+echo "✅ Runtime data pronte in ${CHATBOT_DATA_ROOT:-$(pwd)/runtime-data}"
+echo ""
+
 # Creazione delle directory di log se non esistono
 echo "📂 Creazione directory di log..."
 mkdir -p backend/storage/logs-pef

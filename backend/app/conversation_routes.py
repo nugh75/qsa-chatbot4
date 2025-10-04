@@ -105,11 +105,31 @@ async def create_conversation(
 @router.get("/", response_model=List[ConversationResponse])
 async def get_user_conversations(
     limit: int = 50,
+    impersonate_user_id: Optional[int] = Query(None, description="Admin only: impersonate user"),
     current_user: dict = Depends(get_current_active_user)
 ):
-    """Recupera le conversazioni dell'utente"""
+    """Recupera le conversazioni dell'utente (o dell'utente impersonato se admin)"""
+    from .auth import get_effective_user, is_admin_user
+    
     try:
-        conversations = ConversationModel.get_user_conversations(user_id=current_user["id"], limit=limit)
+        # Determina quale utente usare
+        effective_user = current_user
+        if impersonate_user_id is not None:
+            if not is_admin_user(current_user):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only admins can impersonate users"
+                )
+            from .database import UserModel
+            impersonated = UserModel.get_user_by_id(impersonate_user_id)
+            if impersonated is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"User {impersonate_user_id} not found"
+                )
+            effective_user = impersonated
+        
+        conversations = ConversationModel.get_user_conversations(user_id=effective_user["id"], limit=limit)
         # Attach decrypted title alongside encrypted value
         enriched = []
         for conv in conversations:
@@ -186,9 +206,29 @@ async def delete_conversation(
 async def get_conversation_messages(
     conversation_id: str,
     limit: int = 100,
+    impersonate_user_id: Optional[int] = Query(None, description="Admin only: impersonate user"),
     current_user: dict = Depends(get_current_active_user)
 ):
-    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=current_user["id"])
+    from .auth import is_admin_user
+
+    # Determina quale utente usare per verificare l'accesso alla conversazione
+    effective_user = current_user
+    if impersonate_user_id is not None:
+        if not is_admin_user(current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admins can impersonate users"
+            )
+        from .database import UserModel
+        impersonated = UserModel.get_user_by_id(impersonate_user_id)
+        if impersonated is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"User {impersonate_user_id} not found"
+            )
+        effective_user = impersonated
+
+    conversation = ConversationModel.get_conversation(conversation_id=conversation_id, user_id=effective_user["id"])
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     try:

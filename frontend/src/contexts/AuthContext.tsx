@@ -2,9 +2,10 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { ChatCrypto, CredentialManager } from '../crypto';
 import { createApiService } from '../types/api';
 
-interface UserInfo {
+export interface UserInfo {
   id: number;
   email: string;
+  username?: string;
   is_admin: boolean;
   created_at: string;
 }
@@ -16,9 +17,12 @@ interface AuthContextType {
   isLoading: boolean;
   needsCryptoReauth: boolean; // Indica se è necessario riloggarsi per la crittografia
   mustChangePassword: boolean;
+  impersonatedUser: UserInfo | null; // Utente impersonato (solo per admin)
   login: (user: UserInfo, crypto: ChatCrypto) => void;
   logout: () => void;
   checkAuthStatus: () => Promise<void>;
+  setImpersonation: (targetUser: UserInfo | null) => void;
+  getEffectiveUserId: () => number | null; // Restituisce l'ID dell'utente impersonato o dell'utente reale
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -45,6 +49,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [needsCryptoReauth, setNeedsCryptoReauth] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [impersonatedUser, setImpersonatedUser] = useState<UserInfo | null>(null);
 
   // Usa sempre il prefisso /api per evitare 404 (/auth/me prima restituiva 404)
   const apiService = createApiService(API_BASE);
@@ -136,6 +141,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setUser(null);
     setCrypto(null);
     setNeedsCryptoReauth(false);
+    setImpersonatedUser(null);
     clearStoredTokens();
   // No client-side crypto keys to remove
     
@@ -146,6 +152,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         headers: { Authorization: `Bearer ${token}` }
       }).catch(console.error);
     }
+  };
+
+  const setImpersonation = (targetUser: UserInfo | null) => {
+    // Solo gli admin possono impersonare
+    if (user?.is_admin) {
+      setImpersonatedUser(targetUser);
+    }
+  };
+
+  const getEffectiveUserId = (): number | null => {
+    return impersonatedUser?.id || user?.id || null;
   };
 
   // Auto-check auth status on mount
@@ -161,9 +178,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isLoading,
     needsCryptoReauth,
     mustChangePassword,
+    impersonatedUser,
     login,
     logout,
     checkAuthStatus,
+    setImpersonation,
+    getEffectiveUserId,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

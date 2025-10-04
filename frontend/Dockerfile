@@ -27,6 +27,9 @@ FROM nginx:1.27-alpine AS runtime
 
 WORKDIR /usr/share/nginx/html
 
+# Ensure modern MIME types are recognized (e.g. .mjs for JS modules)
+RUN sed -i 's|application/javascript[[:space:]]\+js;|application/javascript                           js mjs;|' /etc/nginx/mime.types
+
 # Copy built assets (using the site-specific dist directory)
 ARG VITE_SITE_NAME=default
 COPY --from=build /app/dist-${VITE_SITE_NAME} ./

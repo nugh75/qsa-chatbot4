@@ -61,6 +61,7 @@ export interface PersonalityEntry {
   // Visibilità in chat
   show_pipeline_topics?: boolean;
   show_source_docs?: boolean;
+  hide_rag_links?: boolean;
 }
 
 export interface PipelineOption {

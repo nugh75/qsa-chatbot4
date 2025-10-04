@@ -20,14 +20,14 @@ services:
     build:
       context: ./backend
     restart: unless-stopped
+    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     env_file: [.env.counselorbot]
     ports:
       - "8112:8005"
     volumes:
-      - ./backend/storage:/app/storage
-      - ./backend/storage/logs-counselorbot:/app/storage/logs
-      - ./backend/models:/app/models
-      - ./backend/config:/app/config
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/counselorbot/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
       - ./.env.counselorbot:/app/.env:ro
     depends_on:
       postgres-counselorbot:

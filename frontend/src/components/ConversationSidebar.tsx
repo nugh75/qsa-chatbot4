@@ -84,17 +84,18 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const [syncing, setSyncing] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
 
-  const { crypto: userCrypto, needsCryptoReauth } = useAuth();
+  const { crypto: userCrypto, needsCryptoReauth, impersonatedUser } = useAuth();
 
   // Carica conversazioni
   const loadConversations = useCallback(async () => {
     try {
       setLoading(true);
-  console.log('Caricamento conversazioni...');
-      
-      const response = await apiService.getConversations();
+  console.log('Caricamento conversazioni...', { impersonatedUserId: impersonatedUser?.id });
+
+  // Se l'admin sta impersonando un utente, passiamo l'ID come query param
+  const response = await apiService.getConversations(impersonatedUser?.id);
   console.log('Risposta API conversazioni:', response);
-      
+
   if (response.success && response.data) {
         // Preferisci titolo in chiaro fornito dal server; in alternativa, decritta lato client
         const normalized = await Promise.all(
@@ -120,9 +121,9 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [impersonatedUser?.id]);
 
-  // Carica conversazioni all'apertura
+  // Carica conversazioni all'apertura e quando cambia l'utente impersonato
   useEffect(() => {
     if (open) {
       loadConversations();

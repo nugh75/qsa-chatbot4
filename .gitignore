@@ -142,6 +142,7 @@ backend/piper_models/
 # Current model/cache locations
 backend/models/
 backend/storage/
+runtime-data/
 # Common large artifacts
 *.pt
 *.onnx

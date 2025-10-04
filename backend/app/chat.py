@@ -725,7 +725,9 @@ async def chat(
                     "preview": r.get("preview"),
                     "content": r.get("content"),
                     "chunk_label": r.get("chunk_label"),
-                    "download_url": f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None
+                    "download_url": f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None,
+                    "allow_preview": r.get("allow_preview", True),
+                    "allow_download": r.get("allow_download", True)
                 } for r in rag_results[:10]
             ]
         # Aggiungi tutti i topic rilevati (multi) mantenendo anche quello principale se non già incluso
@@ -1183,7 +1185,9 @@ async def chat_stream(
                                 "preview": (r.get("content") or "")[:200],
                                 "content": r.get("content"),
                                 "chunk_label": r.get("chunk_label"),
-                                "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None)
+                                "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None),
+                                "allow_preview": r.get("allow_preview", True),
+                                "allow_download": r.get("allow_download", True)
                             })
                         try:
                             rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
@@ -1210,7 +1214,9 @@ async def chat_stream(
                                 "preview": r.get("preview"),
                                 "content": r.get("content"),
                                 "chunk_label": r.get("chunk_label"),
-                                "download_url": r.get("download_url")
+                                "download_url": r.get("download_url"),
+                                "allow_preview": r.get("allow_preview", True),
+                                "allow_download": r.get("allow_download", True)
                             } for r in rag_results[:10]
                         ]
                     # Inserisci multi-topic
@@ -1374,7 +1380,9 @@ async def chat_stream(
                             "preview": r.get("preview"),
                             "content": r.get("content"),
                             "chunk_label": r.get("chunk_label"),
-                            "download_url": r.get("download_url")
+                            "download_url": r.get("download_url"),
+                            "allow_preview": r.get("allow_preview", True),
+                            "allow_download": r.get("allow_download", True)
                         } for r in rag_results[:10]
                     ]
                 topics_for_sources2 = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])

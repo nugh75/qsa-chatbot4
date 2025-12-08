@@ -23,6 +23,8 @@ interface AuthContextType {
   checkAuthStatus: () => Promise<void>;
   setImpersonation: (targetUser: UserInfo | null) => void;
   getEffectiveUserId: () => number | null; // Restituisce l'ID dell'utente impersonato o dell'utente reale
+  isGuest: boolean;
+  continueAsGuest: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -50,6 +52,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [needsCryptoReauth, setNeedsCryptoReauth] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [impersonatedUser, setImpersonatedUser] = useState<UserInfo | null>(null);
+  const [isGuest, setIsGuest] = useState(false);
 
   // Usa sempre il prefisso /api per evitare 404 (/auth/me prima restituiva 404)
   const apiService = createApiService(API_BASE);
@@ -142,6 +145,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setCrypto(null);
     setNeedsCryptoReauth(false);
     setImpersonatedUser(null);
+    setIsGuest(false);
     clearStoredTokens();
   // No client-side crypto keys to remove
     
@@ -165,6 +169,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     return impersonatedUser?.id || user?.id || null;
   };
 
+  const continueAsGuest = () => {
+    setIsGuest(true);
+    setUser(null);
+    setCrypto(null);
+  };
+
   // Auto-check auth status on mount
   useEffect(() => {
     checkAuthStatus();
@@ -184,6 +194,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     checkAuthStatus,
     setImpersonation,
     getEffectiveUserId,
+    isGuest,
+    continueAsGuest,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -71,6 +71,7 @@ def _ensure_personality_schema():
                   enabled_mcp_servers JSONB,
                   enabled_data_tables JSONB DEFAULT '[]'::jsonb,
                   enabled_forms JSONB DEFAULT '[]'::jsonb,
+                  starter_prompts JSONB DEFAULT '[]'::jsonb,
                   hide_rag_links BOOLEAN DEFAULT FALSE,
                   is_default BOOLEAN NOT NULL DEFAULT FALSE,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -128,6 +129,14 @@ def _ensure_personality_schema():
             exists4 = cur.fetchone()
             if not exists4:
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN show_source_docs BOOLEAN NOT NULL DEFAULT TRUE")
+            # Ensure starter_prompts column exists
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'starter_prompts'
+            """)
+            exists5 = cur.fetchone()
+            if not exists5:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN starter_prompts JSONB DEFAULT '[]'::jsonb")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -206,7 +215,7 @@ def load_personalities() -> Dict:
         items: List[Dict] = []
         for r in rows:
             d = dict(r)
-            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms']:
+            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts']:
                 v = d.get(k)
                 if isinstance(v, (bytes, str)):
                     try:
@@ -235,6 +244,7 @@ def load_personalities() -> Dict:
                 'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
                 'enabled_data_tables': d.get('enabled_data_tables') or [],
                 'enabled_forms': d.get('enabled_forms') or [],
+                'starter_prompts': d.get('starter_prompts') or [],
                 'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
                 'show_source_docs': bool(d.get('show_source_docs', True)),
             })
@@ -269,6 +279,7 @@ def upsert_personality(
     show_pipeline_topics: Optional[bool] = None,
     show_source_docs: Optional[bool] = None,
     hide_rag_links: Optional[bool] = None,
+    starter_prompts: Optional[List[str]] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -280,6 +291,7 @@ def upsert_personality(
     e_mcp = json.dumps(enabled_mcp_servers or [])
     e_tables = json.dumps(enabled_data_tables or [])
     e_forms = json.dumps(enabled_forms or [])
+    s_prompts = json.dumps(starter_prompts or [])
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
         db_manager.exec(cur, """
@@ -287,9 +299,9 @@ def upsert_personality(
                 id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
                 welcome_message, guide_id, context_window, temperature, max_tokens, active,
                 enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
-                show_pipeline_topics, show_source_docs, hide_rag_links,
+                show_pipeline_topics, show_source_docs, hide_rag_links, starter_prompts,
                 is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -312,6 +324,7 @@ def upsert_personality(
                 show_pipeline_topics = EXCLUDED.show_pipeline_topics,
                 show_source_docs = EXCLUDED.show_source_docs,
                 hide_rag_links = EXCLUDED.hide_rag_links,
+                starter_prompts = EXCLUDED.starter_prompts,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
@@ -320,6 +333,7 @@ def upsert_personality(
             True if show_pipeline_topics is None else bool(show_pipeline_topics),
             True if show_source_docs is None else bool(show_source_docs),
             False if hide_rag_links is None else bool(hide_rag_links),
+            s_prompts,
             bool(False)
         ))
         if set_default:
@@ -369,7 +383,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
         if not row:
             return None
         d = dict(row)
-        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms']:
+        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts']:
             if k in d and isinstance(d[k], (bytes, str)):
                 try:
                     d[k] = json.loads(d[k]) if d[k] else []
@@ -397,6 +411,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'enabled_forms': d.get('enabled_forms') or [],
             'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
             'show_source_docs': bool(d.get('show_source_docs', True)),
+            'starter_prompts': d.get('starter_prompts') or [],
         }
 
 
@@ -450,6 +465,7 @@ def duplicate_personality(
         max_tokens=existing.get('max_tokens'),
         show_pipeline_topics=existing.get('show_pipeline_topics'),
         show_source_docs=existing.get('show_source_docs'),
+        starter_prompts=existing.get('starter_prompts'),
     )
     res['name'] = name
     return res

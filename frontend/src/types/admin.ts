@@ -62,6 +62,7 @@ export interface PersonalityEntry {
   show_pipeline_topics?: boolean;
   show_source_docs?: boolean;
   hide_rag_links?: boolean;
+  starter_prompts?: string[];
 }
 
 export interface PipelineOption {

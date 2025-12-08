@@ -12,7 +12,8 @@ from .logging_utils import log_interaction, log_system
 from .usage import log_usage
 from .admin import load_config
 from .memory import get_memory
-from .auth import get_current_active_user
+
+from .auth import get_optional_current_user, get_current_active_user
 from .database import db_manager, MessageModel
 from fastapi.responses import StreamingResponse
 import asyncio
@@ -171,7 +172,7 @@ async def chat(
     x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
     x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
     x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Optional[dict] = Depends(get_optional_current_user)
 ):
     import uuid as _uuid
     request_id = f"req_{_uuid.uuid4().hex}"
@@ -227,7 +228,9 @@ async def chat(
     else:
         topic = detect_topic(full_user_message)
     
-    # Se abbiamo un conversation_id, salva nel database
+    # Se abbiamo un conversation_id, salva nel database (solo se utente autenticato)
+    # GUEST: se conversation_id è passato ma utente è None, assumiamo che non possiamo salvare su DB utente
+    # o potremmo avere un DB "guest" effimero. Per ora: solo authenticated have persistence.
     if conversation_id and current_user:
         try:
             # Genera ID unico per il messaggio utente
@@ -851,7 +854,7 @@ async def chat_stream(
     x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
     x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
     x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: dict = Depends(get_optional_current_user)
 ):
     import uuid as _uuid
     request_id = f"req_{_uuid.uuid4().hex}"

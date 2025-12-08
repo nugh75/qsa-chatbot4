@@ -1170,6 +1170,8 @@ class ApiService {
   async backupImportDelete(import_id: string): Promise<ApiResponse<{ deleted: string }>> {
     return this.makeRequest<{ deleted: string }>(`/backup/import/${encodeURIComponent(import_id)}`, { method: 'DELETE' });
   }
+
+
 }
 
 // Istanza singola del servizio API

@@ -217,6 +217,27 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
+security_optional = HTTPBearer(auto_error=False)
+
+async def get_optional_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)):
+    """Dependency per ottenere l'utente corrente opzionale (ritorna None se non autenticato/Guest)"""
+    if not credentials:
+        return None
+    
+    try:
+        token_data = AuthManager.verify_token(credentials.credentials)
+        if token_data is None:
+            return None
+        
+        from .database import UserModel
+        user = UserModel.get_user_by_id(token_data.user_id)
+        if user is None or not user.get("is_active"):
+            return None
+        
+        return user
+    except Exception:
+        return None
+
 async def get_effective_user(
     current_user: dict = Depends(get_current_active_user),
     impersonate_user_id: Optional[int] = None

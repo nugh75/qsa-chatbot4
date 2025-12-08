@@ -1698,7 +1698,9 @@ class PersonalityIn(BaseModel):
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
     enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
+    enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
     enabled_forms: Optional[List[str]] = None  # questionari abilitati
+    starter_prompts: Optional[List[str]] = None  # starter prompts specifici per personalità
     # UI visibility flags
     show_pipeline_topics: Optional[bool] = True
     show_source_docs: Optional[bool] = True
@@ -1763,9 +1765,10 @@ async def upsert_personality_admin(p: PersonalityIn):
             max_tokens=p.max_tokens,
             hide_rag_links=p.hide_rag_links,
             show_pipeline_topics=p.show_pipeline_topics,
-            show_source_docs=p.show_source_docs
+            show_source_docs=p.show_source_docs,
+            starter_prompts=p.starter_prompts
         )
-        return {"success": True, **res}
+        return {"success": True, "id": res['id']}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore salvataggio personalità: {str(e)}")
 
@@ -1920,7 +1923,7 @@ async def get_pipeline_options():
     except Exception as e:
         return {"success": False, "topics": [], "error": str(e)}
 
-@router.get("/admin/rag-options") 
+@router.get("/admin/rag-options")
 async def get_rag_options():
     """Ottieni gruppi RAG disponibili"""
     try:
@@ -1937,30 +1940,6 @@ async def get_rag_options():
         return {"success": False, "groups": [], "error": str(e)}
 
 # ---- MCP Servers Management ----
-from .mcp_manager import mcp_manager, MCPServerConfig
-
-@router.get("/admin/mcp-servers")
-async def get_mcp_servers():
-    """Ottieni lista di tutti i server MCP configurati"""
-    try:
-        servers = mcp_manager.get_servers()
-        return {"success": True, "servers": servers}
-    except Exception as e:
-        return {"success": False, "servers": [], "error": str(e)}
-
-@router.post("/admin/mcp-servers")
-async def create_mcp_server(server_data: MCPServerConfig):
-    """Crea un nuovo server MCP"""
-    try:
-        if mcp_manager.add_server(server_data):
-            return {"success": True, "message": f"Server MCP '{server_data.name}' creato"}
-        else:
-            raise HTTPException(status_code=400, detail="Errore nella creazione del server")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore creazione server MCP: {str(e)}")
-
-@router.put("/admin/mcp-servers/{server_id}")
-async def update_mcp_server(server_id: str, server_data: MCPServerConfig):
     """Aggiorna un server MCP esistente"""
     try:
         if mcp_manager.update_server(server_id, server_data):

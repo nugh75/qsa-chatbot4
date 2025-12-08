@@ -176,7 +176,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
 
 // Componente App interno che usa AuthContext
 const AppContent: React.FC = () => {
-  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus, impersonatedUser } = useAuth();
+  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus, impersonatedUser, isGuest } = useAuth();
   const [forcePwdOpen, setForcePwdOpen] = useState(false)
   const [forceNewPwd, setForceNewPwd] = useState('')
   const [forceNewPwd2, setForceNewPwd2] = useState('')
@@ -284,7 +284,7 @@ const AppContent: React.FC = () => {
   const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
 
   useEffect(() => {
-    if (!isAuthenticated || !user?.is_admin) {
+    if ((!isAuthenticated && !isGuest) || !user?.is_admin) {
       setSystemPromptMap({})
       return
     }
@@ -810,8 +810,8 @@ const AppContent: React.FC = () => {
     ]))
   }, [attachedFiles])
 
-  const send = async ()=>{
-    const text = input.trim()
+  const send = async (textOverride?: string)=>{
+    const text = (textOverride || input).trim()
     if(!text) {
       return
     }
@@ -1330,8 +1330,12 @@ const AppContent: React.FC = () => {
     return <AdminPanel />
   }
 
-  const [selectedChunk, setSelectedChunk] = useState<RAGResult|null>(null)
+  const [selectedChunk, setSelectedChunk] = useState<any>(null)
+  
+  // Starter Prompts now come from selectedPersonality
+  // const [starterPrompts, setStarterPrompts] = useState<string[]>([]); - REMOVED
 
+  // Effect to scroll to bottom when messages changeturn ( - Fixed comment from previous step while I'm here
   // --- MAIN RENDER ---
   return (
     <Container maxWidth="md" sx={{ pt: isMobile ? 1 : 2, pb: 6 }}>
@@ -1473,7 +1477,7 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
 
-  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflow:'hidden' }}>
+  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, maxHeight: isMobile ? 'calc(100vh - 200px)' : 700, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflowY:'auto' }}>
         {/* messages stack */}
         <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 6 : 0 }}>
           {messages.map((m,i)=>(
@@ -2086,6 +2090,32 @@ const AppContent: React.FC = () => {
                 />
               </Box>
             </Collapse>
+            
+            {/* Starter Prompts Bubbles */}
+            {!messages.some(m => m.role === 'user') && !loading && selectedPersonality && selectedPersonality.starter_prompts && selectedPersonality.starter_prompts.length > 0 && (
+              <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'center' }}>
+                {selectedPersonality.starter_prompts.map((prompt: string, idx: number) => {
+                  const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
+                  const label = isCmd ? prompt.split('|')[1] : prompt
+                  return (
+                  <Chip 
+                    key={idx} 
+                    label={label} 
+                    onClick={() => {
+                        if (isCmd) {
+                          setShowFormDialog(true)
+                        } else {
+                          send(prompt); 
+                        }
+                    }} 
+                    variant="outlined"
+                    clickable
+                    sx={{ borderColor: 'primary.main', color: 'primary.main', '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
+                  />
+                )})}
+              </Box>
+            )}
+            {/* Optional: Add instructions if also empty */}
           </Box>
           {(isRecording || playingMessageIndex !== null) && (
             <Box sx={{ px: 2, pb: 1 }}>
@@ -2297,7 +2327,7 @@ const AppContent: React.FC = () => {
       />
       
       <LoginDialog
-        open={showLoginDialog}
+        open={showLoginDialog && !isAuthenticated && !isGuest}
         onClose={() => setShowLoginDialog(false)}
         onLoginSuccess={(userInfo, cryptoInstance) => {
           login(userInfo, cryptoInstance);

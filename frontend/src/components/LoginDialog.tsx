@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Dialog,
   DialogTitle,
@@ -61,6 +62,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
   onClose,
   onLoginSuccess,
 }) => {
+  const { continueAsGuest } = useAuth();
   const [currentTab, setCurrentTab] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -481,6 +483,15 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
               startIcon={loading && <CircularProgress size={16} />}
             >
               {loading ? 'Attendere...' : currentTab === 0 ? 'Accedi' : 'Registrati'}
+            </Button>
+            <Button
+              onClick={() => {
+                continueAsGuest();
+                onClose();
+              }}
+              color="secondary"
+            >
+              Continua come ospite
             </Button>
           </>
         ) : (

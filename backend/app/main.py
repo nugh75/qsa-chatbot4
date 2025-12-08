@@ -320,6 +320,7 @@ try:
             enabled_pipeline_topics=None,
             enabled_rag_groups=None,
             enabled_data_tables=None,
+            starter_prompts=None,
             max_tokens=None
         )
         print("[seed] Assistant personality ensured (no default change)")
@@ -498,6 +499,7 @@ async def get_public_personalities():
                     "temperature": p.get("temperature"),
                     "enabled_forms": p.get("enabled_forms") or [],
                     "enabled_data_tables": p.get("enabled_data_tables") or [],
+                    "starter_prompts": p.get("starter_prompts") or [],
                     # UI visibility flags
                     "show_pipeline_topics": p.get("show_pipeline_topics", True),
                     "show_source_docs": p.get("show_source_docs", True),

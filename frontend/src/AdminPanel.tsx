@@ -590,13 +590,13 @@ const AdminPanel: React.FC = () => {
       </Accordion>
   )}
 
-  {/* Prompts (System & Summary) */}
+  {/* Prompts (System & Summary & Starter) */}
   {panelVisible('prompts') && (
   <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Prompts (System & Summary)</Typography>
+            <Typography variant="h6">Prompts (System, Summary, Starter)</Typography>
           </Box>
         </AccordionSummary>
         <AccordionDetails>

@@ -58,8 +58,10 @@ const PersonalitiesPanel: React.FC = () => {
   const [selectedForms, setSelectedForms] = useState<string[]>([])
   // UI visibility flags
   const [showPipelineTopics, setShowPipelineTopics] = useState<boolean>(true)
+
   const [showSourceDocs, setShowSourceDocs] = useState<boolean>(true)
   const [hideRagLinks, setHideRagLinks] = useState<boolean>(false)
+  const [starterPrompts, setStarterPrompts] = useState<string[]>([])
   const FULL_PROVIDERS = ['openai','gemini','claude','openrouter','ollama','local']
   const [providers, setProviders] = useState<string[]>(FULL_PROVIDERS)
   // Test inline LLM
@@ -216,8 +218,9 @@ const PersonalitiesPanel: React.FC = () => {
     setSelectedPipelineTopics([]);
     setSelectedRagGroups([]);
     setSelectedMcpServers([]);
-    setSelectedDataTables([]);
-    setSelectedForms([]);
+
+
+    setStarterPrompts([]);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -257,6 +260,7 @@ const PersonalitiesPanel: React.FC = () => {
     setShowPipelineTopics((p as any).show_pipeline_topics !== false)
     setShowSourceDocs((p as any).show_source_docs !== false)
     setHideRagLinks((p as any).hide_rag_links === true)
+    setStarterPrompts(p.starter_prompts || [])
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -328,7 +332,9 @@ const PersonalitiesPanel: React.FC = () => {
           enabled_forms: selectedForms,
           show_pipeline_topics: showPipelineTopics,
           show_source_docs: showSourceDocs,
-          hide_rag_links: hideRagLinks
+
+          hide_rag_links: hideRagLinks,
+          starter_prompts: starterPrompts
         })
       })
       if (!res.ok) {
@@ -412,7 +418,9 @@ const PersonalitiesPanel: React.FC = () => {
           ;(p as any).enabled_forms = selectedForms
           ;(p as any).show_pipeline_topics = showPipelineTopics
           ;(p as any).show_source_docs = showSourceDocs
+          ;(p as any).show_source_docs = showSourceDocs
           ;(p as any).hide_rag_links = hideRagLinks
+          p.starter_prompts = starterPrompts
           list[idx] = p
         } else {
           list.push({
@@ -438,7 +446,9 @@ const PersonalitiesPanel: React.FC = () => {
             enabled_forms: selectedForms,
             show_pipeline_topics: showPipelineTopics,
             show_source_docs: showSourceDocs,
-            hide_rag_links: hideRagLinks
+
+            hide_rag_links: hideRagLinks,
+            starter_prompts: starterPrompts
           })
         }
         return { ...prev, personalities: list }
@@ -847,9 +857,44 @@ const PersonalitiesPanel: React.FC = () => {
                 <FormGroup>
                   <FormControlLabel control={<Checkbox size="small" checked={showPipelineTopics} onChange={e=> setShowPipelineTopics(e.target.checked)} />} label="Mostra Topics Pipeline" />
                   <FormControlLabel control={<Checkbox size="small" checked={showSourceDocs} onChange={e=> setShowSourceDocs(e.target.checked)} />} label="Mostra Fonti (RAG/Tabelle)" />
-                  <FormControlLabel control={<Checkbox size="small" checked={hideRagLinks} onChange={e=> setHideRagLinks(e.target.checked)} />} label="Nascondi link documenti RAG" />
+                  <FormControlLabel
+              control={<Checkbox size="small" checked={hideRagLinks} onChange={e=> setHideRagLinks(e.target.checked)} />}
+              label="Nascondi link ai documenti RAG (se RAG attivo)"
+            />
                 </FormGroup>
               </Paper>
+            </Box>
+
+            <Box sx={{ mt: 2, p: 1, border: '1px solid #ddd', borderRadius: 1 }}>
+              <Typography variant="subtitle2" gutterBottom>Starter Prompts (Opzionale)</Typography>
+              <Typography variant="caption" display="block" color="text.secondary" sx={{ mb: 1 }}>
+                Frasi suggerite che appaiono quando la chat è vuota con questa personalità. Inserisci una frase e premi Invio.
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ mb: 1 }}>
+                <TextField
+                  fullWidth size="small"
+                  placeholder="Nuovo prompt..."
+                  onKeyPress={(e) => {
+                    if (e.key === 'Enter') {
+                        const val = (e.target as HTMLInputElement).value.trim();
+                        if (val) {
+                            setStarterPrompts([...starterPrompts, val]);
+                            (e.target as HTMLInputElement).value = '';
+                        }
+                    }
+                  }}
+                />
+              </Stack>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                {starterPrompts.map((sp, idx) => (
+                  <Chip
+                    key={idx}
+                    label={sp}
+                    onDelete={() => setStarterPrompts(starterPrompts.filter((_, i) => i !== idx))}
+                    size="small"
+                  />
+                ))}
+              </Box>
             </Box>
 
             {/* Gruppi RAG */}

@@ -184,7 +184,14 @@ const RagDocumentsPanel: React.FC = () => {
         const parsed = parseInt(replaceChunkOverlap, 10);
         if (!Number.isNaN(parsed)) payload.chunk_overlap = parsed;
       }
-      const res = await apiService.replaceRagDocument(activeDoc.id, replaceFile, payload);
+      
+      let res;
+      // Use chunked upload for files larger than 5MB to bypass proxy limits
+      if (replaceFile.size > 5 * 1024 * 1024) {
+        res = await apiService.replaceRagDocumentChunked(activeDoc.id, replaceFile, undefined, payload);
+      } else {
+        res = await apiService.replaceRagDocument(activeDoc.id, replaceFile, payload);
+      }
       if (res.success) {
         const data: any = res.data || {};
         setSnack({ open: true, message: `Ricarica completata (${data.chunk_count ?? 'n/d'} chunks)`, severity: 'success' });

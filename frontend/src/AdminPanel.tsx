@@ -11,6 +11,7 @@ import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon,
 
 import UserManagement from './components/UserManagement'
 // Rimosso ModelProvidersPanel (tab provider) — test LLM spostato sotto Personalità
+import APIKeysManagementPanel from './components/APIKeysManagementPanel'
 import TTSProvidersPanel from './components/TTSProvidersPanel'
 import WhisperPanel from './components/WhisperPanel'
 import MemoryPanel from './components/MemoryPanel';
@@ -23,7 +24,7 @@ import RagDocumentsPanel from './components/RagDocumentsPanel'
 import WebSourcesAdminTab from './components/WebSourcesAdminTab'
 import FormsBuilderPanel from './components/FormsBuilderPanel'
 import DataTablesPanel from './components/DataTablesPanel'
-import ModelsManagerPanel from './components/ModelsManagerPanel'
+
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
@@ -74,7 +75,7 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-  { id: 'conversation', label: 'LLM & Chat', panels: ['prompts', 'personalities', 'memory', 'welcome_guides', 'models_manager'] },
+  { id: 'conversation', label: 'LLM & Chat', panels: ['api_keys', 'prompts', 'personalities', 'memory', 'welcome_guides'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
@@ -109,7 +110,7 @@ const AdminPanel: React.FC = () => {
     footer_settings: false,
     mcp_servers: false,
     backup_panel: false,
-    models_manager: false,
+    api_keys: false,
   })
 
   // Token test
@@ -440,6 +441,21 @@ const AdminPanel: React.FC = () => {
 
       {/* Tab Provider rimosso */}
 
+  {/* API Keys Management */}
+  {panelVisible('api_keys') && (
+  <Accordion expanded={expandedPanels.api_keys} onChange={handlePanelExpansion('api_keys')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <KeyIcon fontSize="small" />
+            <Typography variant="h6">API Keys</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <APIKeysManagementPanel />
+        </AccordionDetails>
+      </Accordion>
+  )}
+
   {/* TTS */}
   {panelVisible('tts') && (
   <Accordion expanded={expandedPanels.tts} onChange={handlePanelExpansion('tts')}>
@@ -761,19 +777,6 @@ const AdminPanel: React.FC = () => {
     </Accordion>
   )}
 
-  {/* Models Manager (solo in Conversazione) */}
-  {panelVisible('models_manager') && (
-    <Accordion expanded={expandedPanels.models_manager} onChange={handlePanelExpansion('models_manager')} sx={{ mt:2 }}>
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
-          <Typography variant="h6">Modelli AI</Typography>
-        </Box>
-      </AccordionSummary>
-      <AccordionDetails>
-        <ModelsManagerPanel />
-      </AccordionDetails>
-    </Accordion>
-  )}
 
   {/* RAG Documenti */}
   {panelVisible('ragdocs') && (

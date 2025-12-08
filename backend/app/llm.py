@@ -1,5 +1,6 @@
 import os, httpx, json, re, traceback
 from typing import List, Dict, Tuple, Optional, Any, Callable
+from pathlib import Path
 
 from .openai_utils import build_openai_headers
 
@@ -7,12 +8,29 @@ from .openai_utils import build_openai_headers
 # Constants & Helpers
 ###############################
 
+# Path per il file delle API keys (nella directory config)
+_API_KEYS_FILE = Path(__file__).parent.parent / 'config' / 'api_keys.json'
+
+def _get_api_key_from_file_or_env(env_var: str) -> str:
+    """Ottiene una API key prima dal file JSON, poi dalle variabili d'ambiente"""
+    # Prima controlla il file delle chiavi salvate
+    if _API_KEYS_FILE.exists():
+        try:
+            with open(_API_KEYS_FILE, 'r') as f:
+                saved_keys = json.load(f)
+                if env_var in saved_keys and saved_keys[env_var]:
+                    return saved_keys[env_var]
+        except Exception:
+            pass
+    # Fallback alle variabili d'ambiente
+    return os.getenv(env_var, "")
+
 DEFAULT_MODELS: Dict[str, str] = {
-    "openrouter": "anthropic/claude-3.5-sonnet",
+    "openrouter": "meta-llama/llama-3.2-3b-instruct:free",
     "openai": "gpt-4o-mini",
-    "gemini": "gemini-1.5-pro",
+    "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
-    "claude": "claude-3-5-sonnet-20241022",
+    "claude": "claude-3-5-sonnet-latest",
 }
 
 PROVIDER_TIMEOUTS: Dict[str, int] = {
@@ -25,6 +43,7 @@ PROVIDER_TIMEOUTS: Dict[str, int] = {
 
 VERBOSE = os.getenv("LLM_VERBOSE", "1").lower() in ("1","true","yes","on")
 GENERIC_FALLBACK_TEXT = "risposta non disponible, prova un altro modello o personalità"
+
 
 def debug_log(*args, provider: Optional[str] = None):  # lightweight wrapper
     if VERBOSE:
@@ -186,7 +205,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
 
     # Provider adapter registry
     async def adapter_openrouter(p_model: str) -> Optional[str]:
-        api_key = os.getenv("OPENROUTER_API_KEY")
+        api_key = _get_api_key_from_file_or_env("OPENROUTER_API_KEY")
         debug_log(f"OPENROUTER_API_KEY presente: {'Sì' if api_key else 'No'}", provider='openrouter')
         if not api_key:
             errors['openrouter'] = 'missing api key'
@@ -219,7 +238,7 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         return content
 
     async def adapter_openai(p_model: str) -> Optional[str]:
-        api_key = os.getenv("OPENAI_API_KEY")
+        api_key = _get_api_key_from_file_or_env("OPENAI_API_KEY")
         if not api_key:
             errors['openai'] = 'missing api key'
             return None
@@ -245,20 +264,34 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         return content
 
     async def adapter_claude(p_model: str) -> Optional[str]:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        api_key = _get_api_key_from_file_or_env("ANTHROPIC_API_KEY")
         if not api_key:
             errors['claude'] = 'missing api key'
             return None
-        claude_messages = _prepare_messages_for_provider(messages, 'claude')
+        
+        # Claude richiede system prompt come parametro separato
+        system_prompt = None
+        claude_messages = []
+        for m in messages:
+            if m.get('role') == 'system':
+                system_prompt = m.get('content', '')
+            else:
+                claude_messages.append({"role": m['role'], "content": m.get('content', '')})
+        
+        # Costruisci payload
+        payload = {
+            "model": p_model or DEFAULT_MODELS['claude'],
+            "max_tokens": 2500,
+            "messages": claude_messages,
+            "temperature": temperature
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        
         async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['claude']) as cx:
             r = await cx.post("https://api.anthropic.com/v1/messages",
                                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                               json={
-                                   "model": p_model or DEFAULT_MODELS['claude'],
-                                   "max_tokens": 2500,
-                                   "messages": claude_messages,
-                                   "temperature": temperature
-                               })
+                               json=payload)
         if not r.is_success:
             errors['claude'] = f"http {r.status_code} {r.text[:120]}"
             return None
@@ -268,8 +301,9 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
             errors['claude'] = 'parse_error'
             return None
 
+
     async def adapter_gemini(p_model: str) -> Optional[str]:
-        api_key = os.getenv("GOOGLE_API_KEY")
+        api_key = _get_api_key_from_file_or_env("GOOGLE_API_KEY")
         if not api_key:
             errors['gemini'] = 'missing api key'
             return None
@@ -410,19 +444,19 @@ def _get_available_providers() -> List[str]:
                 if provider == "local":
                     has_credentials = True
                 elif provider == "gemini":
-                    has_credentials = bool(os.getenv("GOOGLE_API_KEY"))
+                    has_credentials = bool(_get_api_key_from_file_or_env("GOOGLE_API_KEY"))
                     if not has_credentials:
                         reason = 'missing GOOGLE_API_KEY'
                 elif provider == "claude":
-                    has_credentials = bool(os.getenv("ANTHROPIC_API_KEY"))
+                    has_credentials = bool(_get_api_key_from_file_or_env("ANTHROPIC_API_KEY"))
                     if not has_credentials:
                         reason = 'missing ANTHROPIC_API_KEY'
                 elif provider == "openai":
-                    has_credentials = bool(os.getenv("OPENAI_API_KEY"))
+                    has_credentials = bool(_get_api_key_from_file_or_env("OPENAI_API_KEY"))
                     if not has_credentials:
                         reason = 'missing OPENAI_API_KEY'
                 elif provider == "openrouter":
-                    has_credentials = bool(os.getenv("OPENROUTER_API_KEY"))
+                    has_credentials = bool(_get_api_key_from_file_or_env("OPENROUTER_API_KEY"))
                     if not has_credentials:
                         reason = 'missing OPENROUTER_API_KEY'
                 elif provider == "ollama":

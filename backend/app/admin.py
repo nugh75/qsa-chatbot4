@@ -493,7 +493,7 @@ async def get_provider_models(provider: str, refresh: bool = False):
     note = None
     try:
         if provider == 'openrouter':
-            api_key = os.getenv('OPENROUTER_API_KEY')
+            api_key = _get_api_key('OPENROUTER_API_KEY')
             if api_key:
                 try:
                     models = await _fetch_openrouter_models(api_key)
@@ -502,7 +502,7 @@ async def get_provider_models(provider: str, refresh: bool = False):
             else:
                 note = 'missing_api_key'
         elif provider == 'openai':
-            api_key = os.getenv('OPENAI_API_KEY')
+            api_key = _get_api_key('OPENAI_API_KEY')
             if api_key:
                 try:
                     models = await _fetch_openai_models(api_key)
@@ -517,7 +517,7 @@ async def get_provider_models(provider: str, refresh: bool = False):
             except Exception as e:
                 note = f"ollama_fetch_error:{e}"
         elif provider == 'gemini':
-            api_key = os.getenv('GOOGLE_API_KEY')
+            api_key = _get_api_key('GOOGLE_API_KEY')
             if api_key:
                 try:
                     models = await _fetch_gemini_models(api_key)
@@ -526,7 +526,7 @@ async def get_provider_models(provider: str, refresh: bool = False):
             if not models:
                 models = _static_models('gemini')
         elif provider == 'claude':
-            api_key = os.getenv('ANTHROPIC_API_KEY')
+            api_key = _get_api_key('ANTHROPIC_API_KEY')
             if api_key:
                 try:
                     models = await _fetch_anthropic_models(api_key)
@@ -1120,48 +1120,111 @@ async def save_admin_config(config: AdminConfig):
 
 # ==== API KEYS MANAGEMENT ====
 
+# Path per il file delle API keys (nella directory config che è scrivibile)
+API_KEYS_FILE = Path(__file__).parent.parent / 'config' / 'api_keys.json'
+
+def _load_api_keys_from_file() -> dict:
+    """Carica le API keys dal file JSON"""
+    if API_KEYS_FILE.exists():
+        try:
+            with open(API_KEYS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_api_keys_to_file(keys: dict):
+    """Salva le API keys nel file JSON"""
+    API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(API_KEYS_FILE, 'w') as f:
+        json.dump(keys, f, indent=2)
+
+def _get_api_key(env_var: str) -> str:
+    """Ottiene una API key prima dal file, poi dalle variabili d'ambiente"""
+    # Prima controlla il file delle chiavi salvate
+    saved_keys = _load_api_keys_from_file()
+    if env_var in saved_keys and saved_keys[env_var]:
+        return saved_keys[env_var]
+    # Fallback alle variabili d'ambiente
+    return os.getenv(env_var, "")
+
+def init_api_keys_from_file():
+    """Inizializza le variabili d'ambiente con le API keys salvate nel file"""
+    saved_keys = _load_api_keys_from_file()
+    for env_var, value in saved_keys.items():
+        if value and not os.getenv(env_var):
+            os.environ[env_var] = value
+
+# Inizializza le API keys al caricamento del modulo
+init_api_keys_from_file()
+
 class APIKeyUpdate(BaseModel):
     provider: str
     api_key: str
 
 @router.get("/admin/api-keys")
 async def get_api_keys():
-    """Restituisce lo status delle API keys (mascherate)"""
+    """Restituisce lo status delle API keys (mascherate) e lo stato enabled dei provider"""
     try:
+        # Carica la configurazione per lo stato enabled
+        config = load_config()
+        ai_providers = config.get("ai_providers", {})
+        
+        # Mapping da provider API a provider config
+        provider_config_map = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "elevenlabs": None  # TTS, non ha enabled in ai_providers
+        }
+        
+        def get_enabled(provider_key: str) -> bool:
+            config_key = provider_config_map.get(provider_key)
+            if config_key:
+                return ai_providers.get(config_key, {}).get("enabled", False)
+            return False
+        
         api_keys_status = {
             "google": {
-                "status": "configured" if os.getenv("GOOGLE_API_KEY", "") else "missing",
-                "masked": "••••••••••••••••" if os.getenv("GOOGLE_API_KEY", "") else "",
-                "env_var": "GOOGLE_API_KEY"
+                "status": "configured" if _get_api_key("GOOGLE_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("GOOGLE_API_KEY") else "",
+                "env_var": "GOOGLE_API_KEY",
+                "enabled": get_enabled("google")
             },
             "anthropic": {
-                "status": "configured" if os.getenv("ANTHROPIC_API_KEY", "") else "missing",
-                "masked": "••••••••••••••••" if os.getenv("ANTHROPIC_API_KEY", "") else "",
-                "env_var": "ANTHROPIC_API_KEY"
+                "status": "configured" if _get_api_key("ANTHROPIC_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("ANTHROPIC_API_KEY") else "",
+                "env_var": "ANTHROPIC_API_KEY",
+                "enabled": get_enabled("anthropic")
             },
             "openai": {
-                "status": "configured" if os.getenv("OPENAI_API_KEY", "") else "missing", 
-                "masked": "••••••••••••••••" if os.getenv("OPENAI_API_KEY", "") else "",
-                "env_var": "OPENAI_API_KEY"
+                "status": "configured" if _get_api_key("OPENAI_API_KEY") else "missing", 
+                "masked": "••••••••••••••••" if _get_api_key("OPENAI_API_KEY") else "",
+                "env_var": "OPENAI_API_KEY",
+                "enabled": get_enabled("openai")
             },
             "openrouter": {
-                "status": "configured" if os.getenv("OPENROUTER_API_KEY", "") else "missing",
-                "masked": "••••••••••••••••" if os.getenv("OPENROUTER_API_KEY", "") else "",
-                "env_var": "OPENROUTER_API_KEY"
+                "status": "configured" if _get_api_key("OPENROUTER_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("OPENROUTER_API_KEY") else "",
+                "env_var": "OPENROUTER_API_KEY",
+                "enabled": get_enabled("openrouter")
             },
             "elevenlabs": {
-                "status": "configured" if os.getenv("ELEVENLABS_API_KEY", "") else "missing",
-                "masked": "••••••••••••••••" if os.getenv("ELEVENLABS_API_KEY", "") else "",
-                "env_var": "ELEVENLABS_API_KEY"
+                "status": "configured" if _get_api_key("ELEVENLABS_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("ELEVENLABS_API_KEY") else "",
+                "env_var": "ELEVENLABS_API_KEY",
+                "enabled": True  # ElevenLabs è TTS, sempre considerato enabled se ha la chiave
             }
         }
         return {"success": True, "api_keys": api_keys_status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento API keys: {str(e)}")
 
+
 @router.post("/admin/api-keys")
 async def update_api_key(payload: APIKeyUpdate):
-    """Aggiorna una API key specifica"""
+    """Aggiorna una API key specifica - salva in file JSON nella directory config"""
     try:
         provider_mapping = {
             "google": "GOOGLE_API_KEY",
@@ -1169,6 +1232,15 @@ async def update_api_key(payload: APIKeyUpdate):
             "openai": "OPENAI_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
             "elevenlabs": "ELEVENLABS_API_KEY"
+        }
+        
+        # Mapping da provider frontend a provider config
+        provider_to_config = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "elevenlabs": None  # TTS, non AI provider
         }
         
         if payload.provider not in provider_mapping:
@@ -1179,33 +1251,67 @@ async def update_api_key(payload: APIKeyUpdate):
         # Aggiorna la variabile d'ambiente per la sessione corrente
         os.environ[env_var] = payload.api_key
         
-        # Cerca di aggiornare il file .env se esiste
-        env_file_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-        if os.path.exists(env_file_path):
-            # Leggi il file .env esistente
-            with open(env_file_path, 'r') as f:
-                lines = f.readlines()
-            
-            # Cerca se la variabile esiste già
-            updated = False
-            for i, line in enumerate(lines):
-                if line.startswith(f"{env_var}="):
-                    lines[i] = f"{env_var}={payload.api_key}\n"
-                    updated = True
-                    break
-            
-            # Se non esiste, aggiungila
-            if not updated:
-                lines.append(f"{env_var}={payload.api_key}\n")
-            
-            # Salva il file
-            with open(env_file_path, 'w') as f:
-                f.writelines(lines)
+        # Salva nel file JSON (persistente)
+        saved_keys = _load_api_keys_from_file()
+        saved_keys[env_var] = payload.api_key
+        _save_api_keys_to_file(saved_keys)
+        
+        # Abilita automaticamente il provider AI se la chiave è valida
+        config_provider = provider_to_config.get(payload.provider)
+        if config_provider and payload.api_key:
+            try:
+                config = load_config()
+                if config_provider in config.get("ai_providers", {}):
+                    config["ai_providers"][config_provider]["enabled"] = True
+                    save_config(config)
+            except Exception as e:
+                # Non fallire se non riesci ad abilitare il provider
+                print(f"[API Keys] Warning: could not auto-enable provider {config_provider}: {e}")
         
         return {"success": True, "message": f"API key per {payload.provider} aggiornata con successo"}
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nell'aggiornamento API key: {str(e)}")
+
+
+class ProviderToggle(BaseModel):
+    provider: str
+    enabled: bool
+
+@router.post("/admin/api-keys/toggle")
+async def toggle_provider(payload: ProviderToggle):
+    """Abilita o disabilita un provider AI"""
+    try:
+        # Mapping da provider API a provider config
+        provider_to_config = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter"
+        }
+        
+        if payload.provider not in provider_to_config:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {payload.provider}")
+        
+        config_provider = provider_to_config[payload.provider]
+        config = load_config()
+        
+        if config_provider not in config.get("ai_providers", {}):
+            raise HTTPException(status_code=400, detail=f"Provider {config_provider} non trovato nella configurazione")
+        
+        config["ai_providers"][config_provider]["enabled"] = payload.enabled
+        save_config(config)
+        
+        status = "abilitato" if payload.enabled else "disabilitato"
+        return {"success": True, "message": f"Provider {payload.provider} {status}"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel toggle provider: {str(e)}")
+
 
 @router.post("/admin/api-keys/test/{provider}")
 async def test_api_key(provider: str):
@@ -4340,6 +4446,140 @@ async def admin_upload_rag_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/admin/rag/documents/{document_id}/replace/init")
+async def admin_rag_replace_init(document_id: int):
+    """Inizializza una sessione di upload chunked."""
+    import uuid
+    try:
+        upload_id = str(uuid.uuid4())
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "upload_id": upload_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace/append")
+async def admin_rag_replace_append(
+    document_id: int,
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...)
+):
+    """Carica un chunk del file."""
+    try:
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        if not upload_dir.exists():
+            raise HTTPException(status_code=404, detail="Sessione upload non trovata")
+        
+        chunk_path = upload_dir / f"{chunk_index:05d}.part"
+        content = await file.read()
+        with open(chunk_path, "wb") as f:
+            f.write(content)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace/commit")
+async def admin_rag_replace_commit(
+    document_id: int,
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    chunk_size: Optional[int] = Form(None),
+    chunk_overlap: Optional[int] = Form(None)
+):
+    """Finalizza l'upload chunked e processa il file."""
+    import shutil
+    import time
+    import re
+    import logging
+    from .file_processing import extract_text_from_pdf_with_diagnostics
+
+    logger = logging.getLogger(__name__)
+    try:
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        if not upload_dir.exists():
+            raise HTTPException(status_code=404, detail="Sessione upload non trovata")
+
+        # Ricostruisci il file completo
+        parts = sorted([p for p in upload_dir.glob("*.part")], key=lambda x: x.name)
+        if not parts:
+            raise HTTPException(status_code=400, detail="Nessun chunk trovato")
+            
+        originals_dir = rag_engine.originals_dir
+        originals_dir.mkdir(parents=True, exist_ok=True)
+        
+        safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", filename.rsplit('/', 1)[-1]) or 'document.pdf'
+        if not safe_base.lower().endswith('.pdf'):
+            safe_base += '.pdf'
+            
+        stored_name = f"{int(time.time())}_{safe_base}"
+        stored_path = originals_dir / stored_name
+        
+        with open(stored_path, "wb") as outfile:
+            for part in parts:
+                with open(part, "rb") as infile:
+                    shutil.copyfileobj(infile, outfile)
+                    
+        # Clean up chunks
+        try:
+            shutil.rmtree(upload_dir)
+        except Exception:
+            pass
+            
+        logger.info(f"[RAG-REPLACE-CHUNKED] File ricostruito in {stored_path}")
+        
+        # Estrazione e Replace (logica duplicata da replace standard)
+        logger.info(f"[RAG-REPLACE-CHUNKED] Estrazione testo da {stored_path}")
+        diagnostics = extract_text_from_pdf_with_diagnostics(str(stored_path))
+        text_content = diagnostics.get("text", "")
+        
+        if not text_content.strip():
+            logger.warning(f"[RAG-REPLACE-CHUNKED] Nessun testo estratto")
+            try: stored_path.unlink(missing_ok=True) 
+            except: pass
+            raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
+            
+        try:
+            result = rag_engine.replace_document_file(
+                document_id,
+                new_text=text_content,
+                original_filename=filename,
+                stored_filename=stored_name,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        except Exception as e:
+            logger.error(f"[RAG-REPLACE-CHUNKED] Errore replace: {e}")
+            try: stored_path.unlink(missing_ok=True) 
+            except: pass
+            raise HTTPException(status_code=400, detail=str(e))
+            
+        # Cleanup vecchio file
+        old_stored = result.get("old_stored_filename")
+        if old_stored and old_stored != stored_name:
+            try:
+                old_path = originals_dir / old_stored
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:
+                pass
+
+        updated_doc = rag_engine.get_document(document_id)
+        return {
+            "success": True,
+            "document": updated_doc,
+            "chunk_count": result.get("chunk_count"),
+            "stored_filename": stored_name,
+            "stored_path": str(stored_path)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/admin/rag/groups/{group_id}/documents")
 async def admin_get_rag_documents(group_id: int):
     """Get documents in RAG group for admin panel"""
@@ -4591,17 +4831,24 @@ async def admin_rag_replace_document(
     import tempfile
     import shutil
     import time
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"[RAG-REPLACE] Inizio replace per document_id={document_id}, file={file.filename}")
 
     if not file.filename.lower().endswith('.pdf'):
+        logger.warning(f"[RAG-REPLACE] File non PDF: {file.filename}")
         raise HTTPException(status_code=400, detail="Sono supportati solo file PDF")
 
     originals_dir = rag_engine.originals_dir
     originals_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"[RAG-REPLACE] originals_dir={originals_dir}, exists={originals_dir.exists()}")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
         content_bytes = await file.read()
         tmp.write(content_bytes)
         temp_path = Path(tmp.name)
+    logger.info(f"[RAG-REPLACE] File temporaneo creato: {temp_path}, size={len(content_bytes)}")
 
     safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", file.filename.rsplit('/', 1)[-1]) or 'document.pdf'
     stored_name = f"{int(time.time())}_{safe_base}"
@@ -4609,7 +4856,9 @@ async def admin_rag_replace_document(
 
     try:
         shutil.copy2(temp_path, stored_path)
+        logger.info(f"[RAG-REPLACE] File copiato in {stored_path}")
     except Exception as e:
+        logger.error(f"[RAG-REPLACE] Errore copia file: {e}")
         try:
             temp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
         except Exception:
@@ -4619,12 +4868,16 @@ async def admin_rag_replace_document(
     try:
         from .file_processing import extract_text_from_pdf_with_diagnostics
 
+        logger.info(f"[RAG-REPLACE] Estrazione testo da {temp_path}")
         diagnostics = extract_text_from_pdf_with_diagnostics(str(temp_path))
         text_content = diagnostics.get("text", "")
+        logger.info(f"[RAG-REPLACE] Testo estratto, lunghezza={len(text_content)}, metodo={diagnostics.get('method')}")
         if not text_content.strip():
+            logger.warning(f"[RAG-REPLACE] Nessun testo estratto dal PDF")
             raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
 
         try:
+            logger.info(f"[RAG-REPLACE] Chiamata replace_document_file per doc={document_id}")
             result = rag_engine.replace_document_file(
                 document_id,
                 new_text=text_content,
@@ -4633,7 +4886,9 @@ async def admin_rag_replace_document(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
             )
+            logger.info(f"[RAG-REPLACE] Replace completato: {result}")
         except Exception as e:
+            logger.error(f"[RAG-REPLACE] Errore replace_document_file: {e}", exc_info=True)
             try:
                 stored_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
             except Exception:

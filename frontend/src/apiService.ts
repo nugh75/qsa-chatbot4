@@ -701,6 +701,64 @@ class ApiService {
     }
   }
 
+  async replaceRagDocumentChunked(documentId: number, file: File, onProgress?: (percent: number) => void, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<any>> {
+    try {
+      // 1. Init
+      const initRes = await this.post(`/admin/rag/documents/${documentId}/replace/init`);
+      if (!initRes.success) return initRes;
+      const uploadId = initRes.data.upload_id;
+
+      // 2. Upload chunks
+      const CHUNK_SIZE = 1024 * 1024; // 1MB
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      const accessToken = CredentialManager.getAccessToken();
+      const headersAuth: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {};
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        const form = new FormData();
+        form.append('upload_id', uploadId);
+        form.append('chunk_index', String(i));
+        form.append('file', chunk);
+        
+        const res = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace/append`, {
+            method: 'POST',
+            headers: headersAuth,
+            body: form
+        });
+        
+        if (!res.ok) throw new Error(`Chunk ${i+1}/${totalChunks} upload failed`);
+        
+        if (onProgress) {
+            onProgress(Math.round(((i + 1) / totalChunks) * 100));
+        }
+      }
+
+      // 3. Commit
+      const commitForm = new FormData();
+      commitForm.append('upload_id', uploadId);
+      commitForm.append('filename', file.name);
+      if (opts?.chunk_size) commitForm.append('chunk_size', String(opts.chunk_size));
+      if (opts?.chunk_overlap) commitForm.append('chunk_overlap', String(opts.chunk_overlap));
+      
+      const commitRes = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace/commit`, {
+          method: 'POST',
+          headers: headersAuth,
+          body: commitForm
+      });
+      
+      const commitData = await commitRes.json();
+      if (commitRes.ok) return { success: true, data: commitData };
+      return { success: false, error: commitData.detail || 'Commit failed' };
+
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Chunked upload error' };
+    }
+  }
+
   // === Whisper ASR ===
   async listWhisperModels(): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/whisper/models');

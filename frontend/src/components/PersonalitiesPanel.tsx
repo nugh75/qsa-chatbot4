@@ -69,6 +69,11 @@ const PersonalitiesPanel: React.FC = () => {
   const [testing, setTesting] = useState<boolean>(false)
   const [testResult, setTestResult] = useState<any>(null)
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState<string>('')
+  
+  // State per form starter prompts
+  const [selectedFormPrompt, setSelectedFormPrompt] = useState<string>('')
+  const [formPromptLabel, setFormPromptLabel] = useState<string>('')
+  const [formPromptMessage, setFormPromptMessage] = useState<string>('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -885,6 +890,58 @@ const PersonalitiesPanel: React.FC = () => {
                   }}
                 />
               </Stack>
+              
+              {/* Form Prompt Adder */}
+              <Stack direction="row" spacing={1} sx={{ mb: 1.5, p:1, bgcolor:'#f9f9f9', borderRadius:1 }} alignItems="center">
+                <FormControl size="small" sx={{ minWidth: 150, flex:1 }}>
+                  <InputLabel id="fp-select-label">Aggiungi Form</InputLabel>
+                  <Select 
+                    labelId="fp-select-label"
+                    label="Aggiungi Form"
+                    value={selectedFormPrompt} 
+                    onChange={e=> {
+                       setSelectedFormPrompt(e.target.value);
+                       // Auto-fill label with form name if empty
+                       const f = forms.find(x=>x.id===e.target.value);
+                       if(f) setFormPromptLabel(f.name);
+                    }}
+                  >
+                    <MenuItem value=""><em>Seleziona...</em></MenuItem>
+                    {forms.map(f => <MenuItem key={f.id} value={f.id}>{f.name}</MenuItem>)}
+                  </Select>
+                </FormControl>
+                <TextField 
+                  size="small" 
+                  label="Etichetta pulsante" 
+                  value={formPromptLabel} 
+                  onChange={e=> setFormPromptLabel(e.target.value)}
+                  sx={{ flex:1 }}
+                />
+                <TextField 
+                  size="small" 
+                  label="Messaggio (opzionale)" 
+                  placeholder="Es: Voglio compilare il form"
+                  value={formPromptMessage} 
+                  onChange={e=> setFormPromptMessage(e.target.value)}
+                  sx={{ flex:1 }}
+                />
+                <Button 
+                  size="small" 
+                  variant="outlined" 
+                  disabled={!selectedFormPrompt || !formPromptLabel.trim()}
+                  onClick={() => {
+                    const msgPart = formPromptMessage.trim() ? `|${formPromptMessage.trim()}` : '';
+                    const cmd = `CMD:OPEN_FORM|${formPromptLabel.trim()}|${selectedFormPrompt}${msgPart}`;
+                    setStarterPrompts([...starterPrompts, cmd]);
+                    setSelectedFormPrompt('');
+                    setFormPromptLabel('');
+                    setFormPromptMessage('');
+                  }}
+                >
+                  Agg.
+                </Button>
+              </Stack>
+              
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
                 {starterPrompts.map((sp, idx) => (
                   <Chip

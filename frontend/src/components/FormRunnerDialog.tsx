@@ -8,12 +8,13 @@ type Props = {
   enabledFormIds: string[]
   conversationId?: string | null
   personalityId?: string | null
+  initialFormId?: string
   onPostSummary?: (summary: string) => void
   // onPostStructured removed to avoid duplicate UI bubble emission
   onConversationReady?: (conversationId: string) => void
 }
 
-const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, onPostSummary, onConversationReady }) => {
+const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conversationId, personalityId, initialFormId, onPostSummary, onConversationReady }) => {
   const [forms, setForms] = React.useState<{ id: string; name: string; description?: string }[]>([])
   const [selectedId, setSelectedId] = React.useState<string>('')
   const [items, setItems] = React.useState<any[]>([])
@@ -32,17 +33,23 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
         setForms(sorted as any)
         let nextId = selectedId
         if (sorted.length) {
-          const firstId = sorted[0].id
-          try {
-            const last = localStorage.getItem('last_form_id')
-            if (last && sorted.some(f=> f.id === last)) {
-              nextId = last
+           // Prioritize initialFormId if valid
+           if (initialFormId && sorted.some(f => f.id === initialFormId)) {
+             nextId = initialFormId
+           } else {
+            const firstId = sorted[0].id
+            try {
+              const last = localStorage.getItem('last_form_id')
+              // Only use last if no initialFormId was requested
+              if (!initialFormId && last && sorted.some(f=> f.id === last)) {
+                nextId = last
+              }
+            } catch {
+              // ignore storage errors
             }
-          } catch {
-            // ignore storage errors
-          }
-          if (!nextId || !sorted.some(f=> f.id === nextId)) {
-            nextId = firstId
+            if (!nextId || !sorted.some(f=> f.id === nextId)) {
+              nextId = firstId
+            }
           }
         } else {
           nextId = ''

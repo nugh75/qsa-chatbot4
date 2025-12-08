@@ -240,6 +240,8 @@ const AppContent: React.FC = () => {
   const [showQualitativeFeedback, setShowQualitativeFeedback] = useState(false)
   const [showAttachments, setShowAttachments] = useState(false)
   const [showFormDialog, setShowFormDialog] = useState(false)
+  const [targetFormId, setTargetFormId] = useState<string|null>(null)
+  const [showLoginBanner, setShowLoginBanner] = useState(true)
   // Traccia file già annunciati in chat per non duplicare il riepilogo
   const announcedUploadIdsRef = React.useRef<Set<string>>(new Set())
   const theme = useTheme()
@@ -1467,8 +1469,12 @@ const AppContent: React.FC = () => {
       
   {/* Removed legacy top bar (menu + avatar + duplicate title) now merged into HeaderBar */}
 
-      {!isAuthenticated && (
-        <Alert severity="info" sx={{ mb: 2 }}>
+      {!isAuthenticated && showLoginBanner && (
+        <Alert 
+          severity="info" 
+          sx={{ mb: 2 }}
+          onClose={() => setShowLoginBanner(false)}
+        >
           <Box display="flex" alignItems="center" sx={{ gap: 1 }}>
             <Typography sx={{ lineHeight: 1.4 }}>
               Accedi per salvare le conversazioni e riprenderle da altri dispositivi.
@@ -1479,13 +1485,14 @@ const AppContent: React.FC = () => {
 
   <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, maxHeight: isMobile ? 'calc(100vh - 200px)' : 700, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflowY:'auto' }}>
         {/* messages stack */}
-        <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 6 : 0 }}>
+        <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 22 : 0 }}>
           {messages.map((m,i)=>(
             <Box key={i} display="flex" flexDirection="column" gap={1} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
               {/* Messaggio principale */}
               <Box display="flex" gap={2} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
                 {/* Avatar per l'assistente a sinistra */}
-                {m.role === 'assistant' && (
+                {/* Avatar per l'assistente a sinistra - nascosto su mobile */}
+                {m.role === 'assistant' && !isMobile && (
                   <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
                     <ChatAvatar
                       // Forza aggiornamento avatar quando cambia personalità o url
@@ -1919,16 +1926,12 @@ const AppContent: React.FC = () => {
                 )}
               </Box>
               
-              {/* Avatar per l'utente a destra */}
-                {m.role === 'user' && (
-                <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                  {isAuthenticated && userAvatar ? (
-                    <Avatar alt="Tu" src={userAvatar} sx={{ width: 40, height: 40 }} />
-                  ) : (
-                    <Avatar sx={{ width: 40, height: 40, bgcolor: '#1976d2' }}>
-                      <PersonIcon sx={{ fontSize: 24 }} />
-                    </Avatar>
-                  )}
+              {/* Avatar utente a destra - nascosto su mobile */}
+              {m.role === 'user' && !isMobile && (
+                 <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.875rem' }}>
+                    {(isAuthenticated && user?.username) ? user.username.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 20 }} />}
+                  </Avatar>
                 </Box>
               )}
             </Box>
@@ -1956,47 +1959,81 @@ const AppContent: React.FC = () => {
               </Box>
             </Box>
           )}
+          
+          {/* Feedback conversazione - ora dentro lo scroll per visibilità mobile */}
+          <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
+            <Stack direction="row" spacing={1}>
+              <Tooltip title="Mi è piaciuta questa conversazione">
+                <IconButton 
+                  onClick={() => giveFeedback(-1, 'like')}
+                  size="small" 
+                  sx={{ 
+                    color: feedback[-1] === 'like' ? '#4caf50' : '#666',
+                    bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f5f5f5',
+                    '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#e0e0e0' }
+                  }}
+                >
+                  <LikeIcon size={16} />
+                </IconButton>
+              </Tooltip>
+
+              <Tooltip title="Non mi è piaciuta questa conversazione">
+                <IconButton 
+                  onClick={() => giveFeedback(-1, 'dislike')}
+                  size="small" 
+                  sx={{ 
+                    color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
+                    bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f5f5f5',
+                    '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#e0e0e0' }
+                  }}
+                >
+                  <DislikeIcon size={16} />
+                </IconButton>
+              </Tooltip>
+            </Stack>
+          </Box>
         </Stack>
       </Paper>
 
 
       {/* Feedback conversazione - in basso a destra */}
-      <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
-        <Stack direction="row" spacing={1}>
-          <Tooltip title="Mi è piaciuta questa conversazione">
-            <IconButton 
-              onClick={() => giveFeedback(-1, 'like')}
-              size="small" 
-              sx={{ 
-                color: feedback[-1] === 'like' ? '#4caf50' : '#666',
-                bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f5f5f5',
-                '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#e0e0e0' }
-              }}
-            >
-              <LikeIcon size={16} />
-            </IconButton>
-          </Tooltip>
 
-          <Tooltip title="Non mi è piaciuta questa conversazione">
-            <IconButton 
-              onClick={() => giveFeedback(-1, 'dislike')}
-              size="small" 
-              sx={{ 
-                color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
-                bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f5f5f5',
-                '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#e0e0e0' }
-              }}
-            >
-              <DislikeIcon size={16} />
-            </IconButton>
-          </Tooltip>
-        </Stack>
-      </Box>
 
       {/* Input Area */}
       {!isMobile && (
   <Paper elevation={2} sx={{ mt: 2, borderRadius: 2 }}>
           <Box sx={{ p: 2 }}>
+            {/* Starter Prompts Desktop - sopra l'input */}
+            {!messages.some(m => m.role === 'user') && !isMobile && !loading && selectedPersonality && selectedPersonality.starter_prompts && selectedPersonality.starter_prompts.length > 0 && (
+              <Box sx={{ mb: 2, display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-start' }}>
+                {selectedPersonality.starter_prompts.map((prompt: string, idx: number) => {
+                  const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
+                  const parts = isCmd ? prompt.split('|') : []
+                  const label = isCmd ? (parts[1] || 'Form') : prompt
+                  const formId = (isCmd && parts[2]) || null
+                  const messageToSend = (isCmd && parts[3]) || null
+                  
+                  return (
+                  <Chip 
+                    key={idx} 
+                    label={label} 
+                    onClick={() => {
+                        if (isCmd) {
+                          if (messageToSend) send(messageToSend)
+                          setTargetFormId(formId)
+                          setShowFormDialog(true)
+                        } else {
+                          send(prompt); 
+                        }
+                    }}  
+                    variant="outlined"
+                    clickable
+                    color="primary"
+                    sx={{ height: 'auto', py: 0.5 }}
+                  />
+                )})}
+              </Box>
+            )}
             <Stack direction="row" spacing={2} alignItems="flex-end">
               <Box position="relative" flex={1}>
                 <TextField 
@@ -2076,7 +2113,7 @@ const AppContent: React.FC = () => {
                 onToggleAttachments={()=> setShowAttachments(o=> !o)}
                 attachmentsCount={attachedFiles.length}
                 attachmentsOpen={showAttachments}
-                onOpenFormDialog={() => setShowFormDialog(true)}
+                onOpenFormDialog={() => { setTargetFormId(null); setShowFormDialog(true) }}
               />
             </Stack>
             {/* Inline attachments area (collapsed) */}
@@ -2091,30 +2128,7 @@ const AppContent: React.FC = () => {
               </Box>
             </Collapse>
             
-            {/* Starter Prompts Bubbles */}
-            {!messages.some(m => m.role === 'user') && !loading && selectedPersonality && selectedPersonality.starter_prompts && selectedPersonality.starter_prompts.length > 0 && (
-              <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'center' }}>
-                {selectedPersonality.starter_prompts.map((prompt: string, idx: number) => {
-                  const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
-                  const label = isCmd ? prompt.split('|')[1] : prompt
-                  return (
-                  <Chip 
-                    key={idx} 
-                    label={label} 
-                    onClick={() => {
-                        if (isCmd) {
-                          setShowFormDialog(true)
-                        } else {
-                          send(prompt); 
-                        }
-                    }} 
-                    variant="outlined"
-                    clickable
-                    sx={{ borderColor: 'primary.main', color: 'primary.main', '&:hover': { bgcolor: 'primary.light', color: 'white' } }}
-                  />
-                )})}
-              </Box>
-            )}
+
             {/* Optional: Add instructions if also empty */}
           </Box>
           {(isRecording || playingMessageIndex !== null) && (
@@ -2166,6 +2180,23 @@ const AppContent: React.FC = () => {
             onToggleAttachments={()=> setShowAttachments(o=> !o)}
             attachmentsCount={attachedFiles.length}
             attachmentsOpen={showAttachments}
+            onOpenFormDialog={() => { setTargetFormId(null); setShowFormDialog(true) }}
+            starterPrompts={(!messages.some(m => m.role === 'user') && selectedPersonality?.starter_prompts) ? selectedPersonality.starter_prompts : []}
+            onPromptClick={(prompt) => {
+               const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
+               const parts = isCmd ? prompt.split('|') : []
+               const formId = (isCmd && parts[2]) || null
+               const messageToSend = (isCmd && parts[3]) || null
+               if (isCmd) {
+                  if (messageToSend) send(messageToSend)
+                  setTargetFormId(formId)
+                  setShowFormDialog(true)
+               } else {
+                  send(prompt)
+               }
+            }}
+            onOpenFeedback={() => setShowQualitativeFeedback(true)}
+            onOpenSurvey={() => setShowSurvey(true)}
           />
         </>
       )}
@@ -2194,7 +2225,8 @@ const AppContent: React.FC = () => {
 
       <FormRunnerDialog
         open={showFormDialog}
-        onClose={()=> setShowFormDialog(false)}
+        onClose={()=> { setShowFormDialog(false); setTargetFormId(null); }}
+        initialFormId={targetFormId || undefined}
         enabledFormIds={(selectedPersonality as any)?.enabled_forms || []}
         conversationId={currentConversationId || undefined}
         personalityId={selectedPersonality?.id || undefined}

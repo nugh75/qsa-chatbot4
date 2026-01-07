@@ -74,7 +74,7 @@ const ChatToolbar: React.FC<ChatToolbarProps> = ({
         </Tooltip>
       )}
       <IconButton
-        onClick={onSend}
+        onClick={() => onSend()}
         disabled={!canSend || isLoading}
         color="primary"
         size="small"

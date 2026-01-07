@@ -1,36 +1,96 @@
 {
   "routes": [
     {
+      "pattern": "(?i)\\b(?:C1\\b|strategie\\s+elaborative|elaborazione\\s+(?:attiva|personale)|mettere\\s+in\\s+relazione|collegare?\\s+(?:i\\s+)?concetti|immagini\\s+mentali)\\b",
+      "topic": "C1 Strategie elaborative"
+    },
+    {
+      "pattern": "(?i)\\b(?:C2\\b|autoregolazione|gestire\\s+(?:lo\\s+)?studio|pianificare\\s+(?:lo\\s+)?studio|organizzare\\s+(?:il\\s+)?tempo|prendere\\s+appunti)\\b",
+      "topic": "C2 Autoregolazione"
+    },
+    {
+      "pattern": "(?i)\\b(?:C3\\b|disorientamento|(?:mi\\s+)?sento\\s+(?:perso|confuso)|non\\s+so\\s+(?:da\\s+)?dove\\s+iniziare|perdersi\\s+nei\\s+dettagli)\\b",
+      "topic": "C3 Disorientamento"
+    },
+    {
+      "pattern": "(?i)\\b(?:C4\\b|disponibilit[aà]\\s+(?:alla\\s+)?collaborazione|lavoro\\s+(?:di\\s+)?gruppo|studiare\\s+(?:con|insieme)\\s+(?:ad\\s+)?altri|apprendimento\\s+cooperativo)\\b",
+      "topic": "C4 Disponibilità alla collaborazione"
+    },
+    {
+      "pattern": "(?i)\\b(?:C5\\b|organizzatori\\s+semantici|schemi|mappe\\s+concettuali|tabelle\\s+riassuntive|grafici|diagrammi)\\b",
+      "topic": "C5 Organizzatori semantici"
+    },
+    {
+      "pattern": "(?i)\\b(?:C6\\b|difficolt[aà]\\s+(?:di\\s+)?concentrazione|(?:mi\\s+)?distraggo|non\\s+riesco\\s+a\\s+concentrarmi|sogni\\s+a\\s+occhi\\s+aperti)\\b",
+      "topic": "C6 Difficoltà di concentrazione"
+    },
+    {
+      "pattern": "(?i)\\b(?:C7\\b|autointerrogazione|(?:porsi|farsi)\\s+domande|prepararsi\\s+(?:per\\s+)?(?:l[ae]\\s+)?interrogazion[ei]|anticipare\\s+(?:le\\s+)?domande)\\b",
+      "topic": "C7 Autointerrogazione"
+    },
+    {
+      "pattern": "(?i)\\b(?:A1\\b|ansiet[aà]\\s+(?:di\\s+)?base|ansia\\s+(?:da\\s+)?(?:prestazione|esame|interrogazione)|nervoso\\s+(?:durante|prima)|panico|cuore\\s+(?:mi\\s+)?batte\\s+forte)\\b",
+      "topic": "A1 Ansietà di base"
+    },
+    {
+      "pattern": "(?i)\\b(?:A2\\b|volizione|forza\\s+(?:di\\s+)?volont[aà]|portare\\s+a\\s+termine|persistere|impegno\\s+(?:e\\s+)?costanza|determinazione)\\b",
+      "topic": "A2 Volizione"
+    },
+    {
+      "pattern": "(?i)\\b(?:A3\\b|attribuzione\\s+(?:a\\s+)?cause\\s+controllabili|dipende\\s+(?:dal(?:l[ao])?\\s+)?(?:mio\\s+)?impegno|se\\s+studio\\s+(?:ce\\s+la\\s+)?faccio)\\b",
+      "topic": "A3 Attribuzione a cause controllabili"
+    },
+    {
+      "pattern": "(?i)\\b(?:A4\\b|attribuzione\\s+(?:a\\s+)?cause\\s+incontrollabili|fortuna|sfortuna|(?:era\\s+)?(?:troppo\\s+)?(?:facile|difficile)|non\\s+dipende\\s+da\\s+me|dono\\s+(?:di\\s+)?natura)\\b",
+      "topic": "A4 Attribuzione a cause incontrollabili"
+    },
+    {
+      "pattern": "(?i)\\b(?:A5\\b|mancanza\\s+(?:di\\s+)?perseveranza|(?:mi\\s+)?arrendo|abbandono|(?:non\\s+)?porto\\s+a\\s+termine|(?:mi\\s+)?scoraggio)\\b",
+      "topic": "A5 Mancanza di perseveranza"
+    },
+    {
+      "pattern": "(?i)\\b(?:A6\\b|percezione\\s+(?:di\\s+)?competenza|(?:mi\\s+)?sento\\s+(?:in)?capace|autoefficacia|(?:non\\s+)?(?:mi\\s+)?sento\\s+all['']?altezza|fiducia\\s+(?:nelle\\s+)?(?:mie\\s+)?capacit[aà])\\b",
+      "topic": "A6 Percezione di competenza"
+    },
+    {
+      "pattern": "(?i)\\b(?:A7\\b|interferenze\\s+emotive|problemi\\s+(?:emotivi|personali|familiari)|cattivo\\s+umore|(?:non\\s+)?riesco\\s+a\\s+(?:studiare|concentrarmi)\\s+(?:per|quando|se)\\s+(?:ho\\s+)?problemi)\\b",
+      "topic": "A7 Interferenze emotive"
+    },
+    {
       "pattern": "(?i)\\b(?:analisi\\s*(?:di\\s*)?(?:2(?:º|°)?|ii|secondo)[-\\s]*livello|sintesi[-\\s]*trasversale|raggruppament[oi]|colleg(?:a(?:re)?|ament[oi])\\s+i\\s+fattori|metti\\s+in\\s+relazione\\s+i\\s+fattori)\\b",
       "topic": "Analisi di secondo livello"
     },
     {
-      "pattern": "\\b(C1 strategie elaborative|C2 autoregolazione|C3 disorientamento|C4 disponibilità alla collaborazione|C5 organizzatori semantici|C6 difficoltà di concentrazione|C7 autointerrogazione|C[1-7])\\b",
-      "topic": "Fattori cognitivi"
-    },
-    {
-      "pattern": "\\b(artefice di (me|te|se) stess[oa]| autodeterminazione|autoregolazione|mindset)\\b",
-      "topic": "artefice_di_se_stessi"
-    },
-    {
-      "pattern": "(?i)\\b(?:cosa\\s+(?:vuol(?:e| dire)|significa)|come\\s+(?:si|posso|faccio)\\s+(?:interpretare|leggere|capire)|perch[eé])\\b.*\\b(?:scheda|fattor[ei]|qsa|questionario)\\b",
+      "pattern": "(?i)\\b(?:cosa\\s+(?:vuol(?:e|\\s+dire)|significa)|come\\s+(?:si|posso|faccio)\\s+(?:interpretare|leggere|capire)|perch[eé])\\b[^\\n]{0,200}\\b(?:scheda|fattor[ei]|qsa|questionario)\\b",
       "topic": "Risposte a domande sul QSA"
     },
     {
-      "pattern": "\\b(Prendere appunti attivi|Spaced repetition|Mappe concettuali|Auto-spiegazione|Pomodoro|Elaborazione personale|Testing effect|Studio distribuito|Insegnare agli altri|Parole chiave|Uso di esempi|Multimodalità|Sintesi scritta|Uso di analogie|Studio collaborativo|Domande guida|Organizzazione del tempo|Uso della memoria visiva|Gestione delle pause|Riflessione metacognitiva)\\b",
-      "topic": "strategie di apprendimento"
+      "pattern": "(?i)\\b(?:artefice\\s+di\\s+(?:me|te|se)\\s+stess[oa]|autodeterminazione|mindset)\\b",
+      "topic": "artefice_di_se_stessi"
     },
     {
-      "pattern": "(?i)\\b(?:A1\\s*[:\\-]?\\s*(?:ansiet[aà]|ansia)\\s*di\\s*base|A2\\s*[:\\-]?\\s*volizione|A3\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*controllabili|A4\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*incontrollabili|A5\\s*[:\\-]?\\s*mancanza\\s*di\\s*perseveranza|A6\\s*[:\\-]?\\s*percezione\\s*di\\s*competenza|A7\\s*[:\\-]?\\s*interferenze\\s*emotive|(?:ansiet[aà]|ansia)\\s+di\\s+base|volizione|attribuzione\\s+a\\s+cause\\s+controllabili|attribuzione\\s+a\\s+cause\\s+incontrollabili|mancanza\\s+di\\s+perseveranza|percezione\\s+di\\s+competenza|interferenze\\s+emotive|A[1-7])\\b",
-      "topic": "Fattori affettivo motivazionali"
+      "pattern": "(?i)\\b(?:Prendere\\s+appunti\\s+attivi|Spaced\\s+repetition|Auto-spiegazione|Pomodoro|Elaborazione\\s+personale|Testing\\s+effect|Studio\\s+distribuito|Insegnare\\s+agli\\s+altri|Parole\\s+chiave|Uso\\s+di\\s+esempi|Multimodalit[aà]|Sintesi\\s+scritta|Uso\\s+di\\s+analogie|Studio\\s+collaborativo|Domande\\s+guida|Organizzazione\\s+del\\s+tempo|Uso\\s+della\\s+memoria\\s+visiva|Gestione\\s+delle\\s+pause|Riflessione\\s+metacognitiva)\\b",
+      "topic": "strategie di apprendimento"
     }
   ],
   "files": {
-    "Analisi di secondo livello": "analisi-di-secondo-livello.txt",
-    "Fattori cognitivi": "fattori-cognitivi.txt",
-    "artefice_di_se_stessi": "essere-architetto-di-sestessi.txt",
+    "C1 Strategie elaborative": "C1-strategie-elaborative.md",
+    "C2 Autoregolazione": "C2-autoregolazione.md",
+    "C3 Disorientamento": "C3-disorientamento.md",
+    "C4 Disponibilità alla collaborazione": "C4-disponibilita-collaborazione.md",
+    "C5 Organizzatori semantici": "C5-organizzatori-semantici.md",
+    "C6 Difficoltà di concentrazione": "C6-difficolta-concentrazione.md",
+    "C7 Autointerrogazione": "C7-autointerrogazione.md",
+    "A1 Ansietà di base": "A1-ansieta-base.md",
+    "A2 Volizione": "A2-volizione.md",
+    "A3 Attribuzione a cause controllabili": "A3-attribuzione-cause-controllabili.md",
+    "A4 Attribuzione a cause incontrollabili": "A4-attribuzione-cause-incontrollabili.md",
+    "A5 Mancanza di perseveranza": "A5-mancanza-perseveranza.md",
+    "A6 Percezione di competenza": "A6-percezione-competenza.md",
+    "A7 Interferenze emotive": "A7-interferenze-emotive.md",
+    "Analisi di secondo livello": "analisi-di-secondo-livello.md",
     "Risposte a domande sul QSA": "domande-e-risposte.txt",
-    "strategie di apprendimento": "strategie-apprendimento.txt",
-    "Fattori affettivo motivazionali": "fattori-affettivo-motivazionali.md"
+    "artefice_di_se_stessi": "essere-architetto-di-sestessi.txt",
+    "strategie di apprendimento": "strategie-apprendimento.txt"
   }
 }

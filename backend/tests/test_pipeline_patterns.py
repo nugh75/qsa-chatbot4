@@ -66,25 +66,39 @@ class TestPatternMatching:
     """Test di matching dei pattern contro frasi di esempio."""
 
     # Corpus di test: (frase, topic atteso)
+    # Aggiornato per riflettere la struttura granulare C1-C7 e A1-A7
     TEST_CORPUS = [
+        # Analisi di secondo livello
         ("analisi di secondo livello", "Analisi di secondo livello"),
         ("analisi secondo livello dei fattori", "Analisi di secondo livello"),
         ("sintesi trasversale", "Analisi di secondo livello"),
-        ("C1 strategie elaborative", "Fattori cognitivi"),
-        ("il fattore C3 disorientamento", "Fattori cognitivi"),
-        ("C7 autointerrogazione", "Fattori cognitivi"),
+        # Fattori Cognitivi (C1-C7 individuali)
+        ("C1 strategie elaborative", "C1 Strategie elaborative"),
+        ("il fattore C3 disorientamento", "C3 Disorientamento"),
+        ("C7 autointerrogazione", "C7 Autointerrogazione"),
+        ("elaborazione attiva dei concetti", "C1 Strategie elaborative"),
+        ("non so da dove iniziare", "C3 Disorientamento"),
+        ("mappe concettuali per studiare", "C5 Organizzatori semantici"),
+        ("mi distraggo facilmente", "C6 Difficoltà di concentrazione"),
+        # Artefice di se stessi
         ("artefice di se stesso", "artefice_di_se_stessi"),
         ("autodeterminazione", "artefice_di_se_stessi"),
         ("mindset positivo", "artefice_di_se_stessi"),
+        # Risposte a domande sul QSA
         ("cosa significa la scheda QSA", "Risposte a domande sul QSA"),
-        ("come interpretare i fattori", "Risposte a domande sul QSA"),
+        ("come posso interpretare i fattori del questionario", "Risposte a domande sul QSA"),
         ("perché il questionario", "Risposte a domande sul QSA"),
+        # Strategie di apprendimento
         ("Spaced repetition", "strategie di apprendimento"),
-        ("Mappe concettuali", "strategie di apprendimento"),
         ("Testing effect", "strategie di apprendimento"),
-        ("A1 ansia di base", "Fattori affettivo motivazionali"),
-        ("volizione e motivazione", "Fattori affettivo motivazionali"),
-        ("interferenze emotive", "Fattori affettivo motivazionali"),
+        ("Pomodoro technique", "strategie di apprendimento"),
+        # Fattori Affettivo-Motivazionali (A1-A7 individuali)
+        ("A1 ansietà di base", "A1 Ansietà di base"),
+        ("ansia da esame", "A1 Ansietà di base"),
+        ("volizione e forza di volontà", "A2 Volizione"),
+        ("mi sento incapace", "A6 Percezione di competenza"),
+        ("interferenze emotive", "A7 Interferenze emotive"),
+        ("problemi personali che impediscono lo studio", "A7 Interferenze emotive"),
     ]
 
     # Frasi che NON devono matchare alcun topic

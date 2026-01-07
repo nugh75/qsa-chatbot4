@@ -83,7 +83,7 @@ const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, 
           multiline
           maxRows={4}
           disabled={disabled}
-          onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); onSend() } }}
+          onKeyDown={e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); if(canSend) onSend(); } }}
           sx={{ 
             '& .MuiOutlinedInput-root': { 
               borderRadius: 3, 

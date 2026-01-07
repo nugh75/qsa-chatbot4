@@ -1,11 +1,11 @@
 {
   "routes": [
     {
-      "pattern": "(?i)\\b(?:analisi\\s*(?:di\\s*)?(?:2(?:º|°)?|ii|secondo)[-\\s]*livello|sintesi[-\\s]*trasversale|raggruppament[oi]|colleg(?:a(?:re)?|ament[oi])\\s+i\\s+fattori|metti\\s+in\\s+relazione\\s+i\\s+fattori)\\b\n",
+      "pattern": "(?i)\\b(?:analisi\\s*(?:di\\s*)?(?:2(?:º|°)?|ii|secondo)[-\\s]*livello|sintesi[-\\s]*trasversale|raggruppament[oi]|colleg(?:a(?:re)?|ament[oi])\\s+i\\s+fattori|metti\\s+in\\s+relazione\\s+i\\s+fattori)\\b",
       "topic": "Analisi di secondo livello"
     },
     {
-      "pattern": "\\b(C1 strategie elaborative|C2 autoregolazione|C3 disorientamento|C4 disponibilità alla collaborazione|C5 organizzatori semantici|C6 difficoltà di concentrazione|C7 autointerrogazione|C[1-7])\\b\n",
+      "pattern": "\\b(C1 strategie elaborative|C2 autoregolazione|C3 disorientamento|C4 disponibilità alla collaborazione|C5 organizzatori semantici|C6 difficoltà di concentrazione|C7 autointerrogazione|C[1-7])\\b",
       "topic": "Fattori cognitivi"
     },
     {
@@ -13,7 +13,7 @@
       "topic": "artefice_di_se_stessi"
     },
     {
-      "pattern": "(?i)\\b(?:cosa\\s+(?:vuol(?:e| dire)|significa)|come\\s+(?:si|posso|faccio)\\s+(?:interpretare|leggere|capire)|perch[eé])\\b.*\\b(?:scheda|fattor[ei]|qsa|questionario)\\b\n",
+      "pattern": "(?i)\\b(?:cosa\\s+(?:vuol(?:e| dire)|significa)|come\\s+(?:si|posso|faccio)\\s+(?:interpretare|leggere|capire)|perch[eé])\\b.*\\b(?:scheda|fattor[ei]|qsa|questionario)\\b",
       "topic": "Risposte a domande sul QSA"
     },
     {
@@ -21,20 +21,16 @@
       "topic": "strategie di apprendimento"
     },
     {
-      "pattern": "(?i)\\b(?:A1\\s*[:\\-]?\\s*(?:ansiet[aà]|ansia)\\s*di\\s*base|A2\\s*[:\\-]?\\s*volizione|A3\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*controllabili|A4\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*incontrollabili|A5\\s*[:\\-]?\\s*mancanza\\s*di\\s*perseveranza|A6\\s*[:\\-]?\\s*percezione\\s*di\\s*competenza|A7\\s*[:\\-]?\\s*interferenze\\s*emotive|(?:ansiet[aà]|ansia)\\s+di\\s+base|volizione|attribuzione\\s+a\\s+cause\\s+controllabili|attribuzione\\s+a\\s+cause\\s+incontrollabili|mancanza\\s+di\\s+perseveranza|percezione\\s+di\\s+competenza|interferenze\\s+emotive|A[1-7])\\b\n\n",
+      "pattern": "(?i)\\b(?:A1\\s*[:\\-]?\\s*(?:ansiet[aà]|ansia)\\s*di\\s*base|A2\\s*[:\\-]?\\s*volizione|A3\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*controllabili|A4\\s*[:\\-]?\\s*attribuzione\\s*a\\s*cause\\s*incontrollabili|A5\\s*[:\\-]?\\s*mancanza\\s*di\\s*perseveranza|A6\\s*[:\\-]?\\s*percezione\\s*di\\s*competenza|A7\\s*[:\\-]?\\s*interferenze\\s*emotive|(?:ansiet[aà]|ansia)\\s+di\\s+base|volizione|attribuzione\\s+a\\s+cause\\s+controllabili|attribuzione\\s+a\\s+cause\\s+incontrollabili|mancanza\\s+di\\s+perseveranza|percezione\\s+di\\s+competenza|interferenze\\s+emotive|A[1-7])\\b",
       "topic": "Fattori affettivo motivazionali"
     }
   ],
   "files": {
-    "analisi_secondo_livello": "analisi-di-secondo-livello.txt",
-    "artefice_di_se_stessi": "essere-artchietto-di-sestessi.txt",
-    "faq_qsa": "domane-e-risposte.txt",
-    "fattori_cognitivi_motivazionali": "fattori-cognitivi.txt",
-    "prva": "strategie_apprendimento.txt",
-    "strategie di apprendimento": "strategie_apprendimento.txt",
-    "Fattori affettivo motivazionali": "Fattori affettivo-motivazionale.md",
-    "Fattori cognitivi": "fattori-cognitivi.txt",
     "Analisi di secondo livello": "analisi-di-secondo-livello.txt",
-    "Risposte a domande sul QSA": "domane-e-risposte.txt"
+    "Fattori cognitivi": "fattori-cognitivi.txt",
+    "artefice_di_se_stessi": "essere-architetto-di-sestessi.txt",
+    "Risposte a domande sul QSA": "domande-e-risposte.txt",
+    "strategie di apprendimento": "strategie-apprendimento.txt",
+    "Fattori affettivo motivazionali": "fattori-affettivo-motivazionali.md"
   }
 }

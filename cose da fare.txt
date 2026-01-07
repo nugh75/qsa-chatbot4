@@ -1,0 +1,13 @@
+Non posso dirlo da quell’output: rg non è installato, quindi il filtro non ha funzionato e non hai visto le righe pipeline_context_built/topic_files_loaded.
+
+Per verificare subito senza cambiare nulla, usa grep:
+
+docker logs --tail 200 qsa-chatbot4-backend-counselorbot-1 | grep -E "pipeline_context_built|topic_files_loaded"
+Se la sync è attiva, dovresti vedere qualcosa tipo topic_files_loaded con Analisi di secondo livello.
+
+Altra verifica semplice:
+
+ls -la /home/nugh75/qsa-chatbot4/runtime-data/counselorbot/storage/rag_data/analisi-di-secondo-livello.txt
+Se il file non c’è, non sta usando il tuo TXT.
+
+Hai già fatto rebuild/restart del backend dopo le modifiche? Se no, quello è il motivo.

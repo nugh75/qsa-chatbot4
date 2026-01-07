@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia il codice dell'applicazione
 COPY app ./app
+# Assicura permessi di lettura per l'utente non-root
+RUN chmod -R a+rX /app/app
 
 # Copia file di configurazione di default
 COPY config ./config

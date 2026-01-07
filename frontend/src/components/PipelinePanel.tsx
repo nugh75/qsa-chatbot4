@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Chip, LinearProgress, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert, Divider, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, List, ListItemButton, ListItemText, Tooltip } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon, HelpOutline as HelpOutlineIcon } from '@mui/icons-material';
+import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon, HelpOutline as HelpOutlineIcon, Download as DownloadIcon, Upload as UploadIcon, History as HistoryIcon } from '@mui/icons-material';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkSlugLocal from '../utils/remarkSlugLocal';
@@ -13,7 +13,46 @@ interface PipelineConfigData { routes: { pattern: string; topic: string }[]; fil
 
 interface EditingRoute { mode: 'add' | 'edit'; old_pattern?: string; old_topic?: string; pattern: string; topic: string; }
 
+interface MatchHighlight {
+  matched: boolean;
+  matchStart: number;
+  matchEnd: number;
+  matchedSubstring: string;
+}
+
 const emptyRoute: EditingRoute = { mode: 'add', pattern: '', topic: '' };
+
+// Cheatsheet rapido per regex
+const REGEX_CHEATSHEET = [
+  { syntax: '\\b', desc: 'Confine parola', example: '\\bmemoria\\b' },
+  { syntax: '(?i)', desc: 'Case insensitive', example: '(?i)memoria' },
+  { syntax: '(a|b)', desc: 'Alternativa', example: '(memoria|ricordo)' },
+  { syntax: '\\s+', desc: 'Uno o più spazi', example: 'memoria\\s+di\\s+lavoro' },
+  { syntax: '[aeiou]', desc: 'Classe caratteri', example: 'f[ao]ttor[ei]' },
+  { syntax: '.*', desc: 'Qualsiasi carattere', example: 'inizio.*fine' },
+  { syntax: '.+', desc: 'Almeno un carattere', example: 'C[1-7].+' },
+  { syntax: '[^\\n]{0,80}', desc: 'Max 80 char no newline', example: 'parola1[^\\n]{0,80}parola2' },
+];
+
+// Helper per ottenere dettagli sul match
+const getMatchHighlight = (pattern: string, text: string): MatchHighlight => {
+  if (!text || !pattern) return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  try {
+    const regex = new RegExp(pattern, 'i');
+    const match = regex.exec(text);
+    if (match) {
+      return {
+        matched: true,
+        matchStart: match.index,
+        matchEnd: match.index + match[0].length,
+        matchedSubstring: match[0]
+      };
+    }
+    return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  } catch {
+    return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  }
+};
 
 const PipelinePanel: React.FC = () => {
   const [tab, setTab] = useState(0); // 0: Routes, 1: File Editor
@@ -40,6 +79,7 @@ const PipelinePanel: React.FC = () => {
   // uploading logic removed with Files tab
   const [regexTestInput, setRegexTestInput] = useState('');
   const [regexMatches, setRegexMatches] = useState<string[]>([]);
+  const [regexMatchDetails, setRegexMatchDetails] = useState<Record<string, MatchHighlight>>({});
   const [regexError, setRegexError] = useState<string|null>(null);
   const [filter, setFilter] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
@@ -52,6 +92,17 @@ const PipelinePanel: React.FC = () => {
   const [activeGuideHeading, setActiveGuideHeading] = useState('');
   const guideContainerRef = React.useRef<HTMLDivElement|null>(null);
   const [revalidating, setRevalidating] = useState(false);
+  // Preview RAG context
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<{ exists: boolean; topic: string; filename?: string; message?: string; content_length?: number; preview?: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // History
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [historyData, setHistoryData] = useState<Array<{ timestamp: string; action: string; user: string; before?: any; after?: any }>>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // Import
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importMerge, setImportMerge] = useState(false);
   // Pipeline settings flags
   const [forceCaseInsensitive, setForceCaseInsensitive] = useState<boolean|undefined>(undefined);
   const [normalizeAccents, setNormalizeAccents] = useState<boolean|undefined>(undefined);
@@ -136,6 +187,74 @@ const PipelinePanel: React.FC = () => {
       if (res.success) setValidation(res.data as any);
     } finally {
       setRevalidating(false);
+    }
+  };
+
+  // Load history
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    setHistoryDialogOpen(true);
+    try {
+      const res = await apiService.getPipelineHistory(50, 0);
+      if (res.success && res.data) {
+        setHistoryData(res.data.history || []);
+      }
+    } catch (e) {
+      setError('Errore caricamento storico');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Export config
+  const handleExport = async () => {
+    try {
+      await apiService.exportPipelineConfig();
+    } catch (e) {
+      setError('Errore durante export');
+    }
+  };
+
+  // Import config
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.routes || !data.files) {
+        setError('File JSON non valido: mancano routes o files');
+        return;
+      }
+      const res = await apiService.importPipelineConfig(data, importMerge);
+      if (res.success) {
+        setImportDialogOpen(false);
+        loadAll();
+      } else {
+        setError(res.error || 'Errore import');
+      }
+    } catch (err: any) {
+      setError('Errore parsing JSON: ' + (err?.message || 'formato non valido'));
+    }
+    e.target.value = '';
+  };
+
+  // Preview RAG context for a topic
+  const openPreviewContext = async (topic: string) => {
+    setPreviewLoading(true);
+    setPreviewDialogOpen(true);
+    setPreviewData(null);
+    try {
+      const res = await apiService.getPipelinePreviewContext(topic);
+      if (res.success && res.data) {
+        setPreviewData(res.data);
+      } else {
+        setPreviewData({ exists: false, topic, message: res.error || 'Errore caricamento preview' });
+      }
+    } catch (e: any) {
+      setPreviewData({ exists: false, topic, message: e?.message || 'Errore' });
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -302,15 +421,22 @@ const PipelinePanel: React.FC = () => {
     openFileEditor(fname);
   };
 
-  // Regex live test: test all patterns over input, show topics matched
+  // Regex live test: test all patterns over input, show topics matched with details
   useEffect(() => {
-    if (!regexTestInput || !config) { setRegexMatches([]); setRegexError(null); return; }
+    if (!regexTestInput || !config) { setRegexMatches([]); setRegexMatchDetails({}); setRegexError(null); return; }
     const matches: string[] = [];
+    const details: Record<string, MatchHighlight> = {};
     for (const r of config.routes) {
-      try { if (new RegExp(r.pattern, 'i').test(regexTestInput)) matches.push(r.topic); }
+      try {
+        const highlight = getMatchHighlight(r.pattern, regexTestInput);
+        if (highlight.matched) {
+          matches.push(r.topic);
+          details[r.pattern] = highlight;
+        }
+      }
       catch (e:any) { setRegexError(`Errore pattern: ${r.pattern}`); }
     }
-    setRegexError(null); setRegexMatches(matches);
+    setRegexError(null); setRegexMatches(matches); setRegexMatchDetails(details);
   }, [regexTestInput, config]);
 
   const filteredRoutes = useMemo(() => !filter ? config?.routes||[] : (config?.routes||[]).filter(r => r.pattern.includes(filter) || r.topic.includes(filter)), [filter, config]);
@@ -354,6 +480,9 @@ const PipelinePanel: React.FC = () => {
                 <Chip size="small" color={validation.counts.ERROR>0? 'error': (validation.counts.WARN>0? 'warning':'default')} label={`Val: ${validation.counts.ERROR}E ${validation.counts.WARN}W ${validation.counts.INFO}I`} />
               )}
               <Button size="small" variant="outlined" onClick={revalidate} disabled={revalidating} startIcon={<RefreshIcon fontSize="inherit" />}>{revalidating? '...' : 'Rivalida'}</Button>
+              <Tooltip title="Esporta configurazione"><IconButton size="small" onClick={handleExport}><DownloadIcon fontSize="small" /></IconButton></Tooltip>
+              <Tooltip title="Importa configurazione"><IconButton size="small" onClick={() => setImportDialogOpen(true)}><UploadIcon fontSize="small" /></IconButton></Tooltip>
+              <Tooltip title="Storico modifiche"><IconButton size="small" onClick={loadHistory}><HistoryIcon fontSize="small" /></IconButton></Tooltip>
               <TextField size="small" label="Filtro" value={filter} onChange={e=> setFilter(e.target.value)} sx={{ width:160 }} />
               <TextField size="small" label="Test regex" value={regexTestInput} onChange={e=> setRegexTestInput(e.target.value)} sx={{ flex:1, minWidth:200 }} />
               <IconButton size="small" onClick={loadAll}><RefreshIcon fontSize="small" /></IconButton>
@@ -363,6 +492,34 @@ const PipelinePanel: React.FC = () => {
                   Elimina ({selectedRouteKeys.size})
                 </Button>
               )}
+            </Stack>
+            {/* Match Details Preview */}
+            {regexTestInput && regexMatches.length > 0 && (
+              <Alert severity="success" sx={{ my:1 }}>
+                <Typography variant="subtitle2" sx={{ mb:0.5 }}>Match trovati: {regexMatches.length}</Typography>
+                {Object.entries(regexMatchDetails).slice(0, 3).map(([pattern, detail]) => {
+                  const topic = config?.routes.find(r => r.pattern === pattern)?.topic || 'N/A';
+                  const before = regexTestInput.substring(0, detail.matchStart);
+                  const matched = detail.matchedSubstring;
+                  const after = regexTestInput.substring(detail.matchEnd);
+                  return (
+                    <Box key={pattern} sx={{ mb:0.5, fontSize:13 }}>
+                      <strong>{topic}:</strong>{' '}
+                      <span style={{ fontFamily:'monospace' }}>
+                        {before}<mark style={{ background:'#ffc107', padding:'0 2px' }}>{matched}</mark>{after}
+                      </span>
+                      <Typography variant="caption" color="text.secondary" sx={{ ml:1 }}>
+                        (pos {detail.matchStart}-{detail.matchEnd})
+                      </Typography>
+                    </Box>
+                  );
+                })}
+                {Object.keys(regexMatchDetails).length > 3 && (
+                  <Typography variant="caption" color="text.secondary">...e altri {Object.keys(regexMatchDetails).length - 3} match</Typography>
+                )}
+              </Alert>
+            )}
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb:1 }}>
               <Divider flexItem orientation="vertical" sx={{ mx:1 }} />
               <FormControlLabel sx={{ m:0 }} control={<Switch size="small" disabled={forceCaseInsensitive===undefined||savingSettings} checked={!!forceCaseInsensitive} onChange={async e=> {
                 const val = e.target.checked; setForceCaseInsensitive(val); setSavingSettings(true);
@@ -417,7 +574,11 @@ const PipelinePanel: React.FC = () => {
                             </Tooltip>
                           )}
                         </TableCell>
-                        <TableCell><Chip size="small" label={r.topic} /></TableCell>
+                        <TableCell>
+                          <Tooltip title="Clicca per preview contesto RAG">
+                            <Chip size="small" label={r.topic} onClick={() => openPreviewContext(r.topic)} sx={{ cursor:'pointer' }} />
+                          </Tooltip>
+                        </TableCell>
                         <TableCell>
                           {config?.files && config.files[r.topic] ? (
                             <Button size="small" onClick={(e)=> { e.stopPropagation(); openFileEditor(config!.files[r.topic]); }} startIcon={<FileOpenIcon fontSize="inherit" />}>{config!.files[r.topic]}</Button>
@@ -479,11 +640,30 @@ const PipelinePanel: React.FC = () => {
           <Stack spacing={2}>
             <TextField label="Pattern" value={editingRoute.pattern} onChange={e=> setEditingRoute(r=> ({...r, pattern:e.target.value}))} fullWidth multiline minRows={3} />
             <TextField label="Topic" value={editingRoute.topic} onChange={e=> setEditingRoute(r=> ({...r, topic:e.target.value}))} fullWidth />
-            {regexTestInput && editingRoute.pattern && (
-              <Alert severity={patternMatchesTest(editingRoute.pattern)? 'success':'warning'} variant="outlined">
-                {patternMatchesTest(editingRoute.pattern)? 'Il test input corrisponde a questo pattern':'Il test input non corrisponde a questo pattern'}
-              </Alert>
-            )}
+            {regexTestInput && editingRoute.pattern && (() => {
+              const matchDetail = getMatchHighlight(editingRoute.pattern, regexTestInput);
+              if (matchDetail.matched) {
+                const before = regexTestInput.substring(0, matchDetail.matchStart);
+                const matched = matchDetail.matchedSubstring;
+                const after = regexTestInput.substring(matchDetail.matchEnd);
+                return (
+                  <Alert severity="success" variant="outlined">
+                    <Typography variant="body2" sx={{ mb:0.5 }}>Il test input corrisponde a questo pattern</Typography>
+                    <Box sx={{ fontFamily:'monospace', fontSize:13, bgcolor:'rgba(0,0,0,0.04)', p:1, borderRadius:1 }}>
+                      {before}<mark style={{ background:'#ffc107', padding:'0 2px' }}>{matched}</mark>{after}
+                    </Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Match: "{matched}" (posizione {matchDetail.matchStart}-{matchDetail.matchEnd})
+                    </Typography>
+                  </Alert>
+                );
+              }
+              return (
+                <Alert severity="warning" variant="outlined">
+                  Il test input non corrisponde a questo pattern
+                </Alert>
+              );
+            })()}
             <Divider />
             <Typography variant="subtitle2">File associato</Typography>
             <FormControlLabel control={<Switch checked={createNewFileInRoute} onChange={e=> { setCreateNewFileInRoute(e.target.checked); if (e.target.checked) setSelectedExistingFile(''); }} />} label="Crea nuovo file" />
@@ -543,9 +723,26 @@ const PipelinePanel: React.FC = () => {
           )}
           {!guideLoading && !guideError && (
             <>
-              <Box sx={{ width:250, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', bgcolor: theme.palette.mode==='dark'? '#11171d':'#f1f3f5', p:1 }}>
+              <Box sx={{ width:280, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', bgcolor: theme.palette.mode==='dark'? '#11171d':'#f1f3f5', p:1, overflowY:'auto' }}>
                 <TextField size="small" label="Cerca" value={guideSearch} onChange={e=> setGuideSearch(e.target.value)} sx={{ mb:1 }} />
                 {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} sx={{ mb:1 }} />}
+                {/* Cheatsheet rapido */}
+                <Typography variant="caption" fontWeight="bold" sx={{ mb:0.5, mt:1 }}>Cheatsheet Rapido</Typography>
+                <Table size="small" sx={{ mb:1, '& td, & th': { py:0.25, px:0.5, fontSize:11 } }}>
+                  <TableBody>
+                    {REGEX_CHEATSHEET.map(item => (
+                      <TableRow key={item.syntax} hover sx={{ cursor:'pointer' }} onClick={() => navigator.clipboard.writeText(item.example)}>
+                        <TableCell sx={{ fontFamily:'monospace', fontWeight:'bold' }}>{item.syntax}</TableCell>
+                        <TableCell>
+                          <Tooltip title={`Copia: ${item.example}`}>
+                            <span>{item.desc}</span>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <Divider sx={{ my:1 }} />
                 <Button size="small" variant="outlined" startIcon={<FileOpenIcon />} sx={{ mb:1 }} onClick={()=> {
                   const fname = guideSource.split('/').slice(-1)[0];
                   if (fname) {
@@ -580,6 +777,132 @@ const PipelinePanel: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ bgcolor: theme.palette.mode==='dark'? '#101418':'#f5f5f5' }}>
           <Button startIcon={<CloseIcon />} onClick={()=> setGuideOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* History Dialog */}
+      <Dialog open={historyDialogOpen} onClose={() => setHistoryDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Storico Modifiche Pipeline</DialogTitle>
+        <DialogContent dividers>
+          {historyLoading && <LinearProgress sx={{ mb:2 }} />}
+          {!historyLoading && historyData.length === 0 && (
+            <Typography color="text.secondary">Nessuna modifica registrata</Typography>
+          )}
+          {!historyLoading && historyData.length > 0 && (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Data</TableCell>
+                  <TableCell>Azione</TableCell>
+                  <TableCell>Dettagli</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {historyData.map((entry, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell sx={{ whiteSpace:'nowrap', fontSize:12 }}>
+                      {new Date(entry.timestamp).toLocaleString('it-IT')}
+                    </TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.action} color={
+                        entry.action.includes('add') ? 'success' :
+                        entry.action.includes('delete') ? 'error' :
+                        entry.action.includes('update') ? 'warning' : 'default'
+                      } />
+                    </TableCell>
+                    <TableCell sx={{ fontSize:12 }}>
+                      {entry.before?.topic && <span>Topic: {entry.before.topic}</span>}
+                      {entry.after?.topic && !entry.before?.topic && <span>Topic: {entry.after.topic}</span>}
+                      {entry.before?.pattern && (
+                        <Typography variant="caption" sx={{ display:'block', fontFamily:'monospace', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {entry.before.pattern.substring(0, 50)}...
+                        </Typography>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button startIcon={<CloseIcon />} onClick={() => setHistoryDialogOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Import Dialog */}
+      <Dialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Importa Configurazione Pipeline</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Alert severity="info">
+              Seleziona un file JSON con la struttura: {`{ "routes": [...], "files": {...} }`}
+            </Alert>
+            <FormControlLabel
+              control={<Switch checked={importMerge} onChange={e => setImportMerge(e.target.checked)} />}
+              label="Unisci con configurazione esistente (invece di sostituire)"
+            />
+            <Button variant="outlined" component="label" startIcon={<UploadIcon />}>
+              Seleziona File JSON
+              <input type="file" accept=".json" hidden onChange={handleImportFile} />
+            </Button>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setImportDialogOpen(false)}>Annulla</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Preview RAG Context Dialog */}
+      <Dialog open={previewDialogOpen} onClose={() => setPreviewDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Preview Contesto RAG</DialogTitle>
+        <DialogContent dividers>
+          {previewLoading && <LinearProgress sx={{ mb:2 }} />}
+          {!previewLoading && previewData && (
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">Topic:</Typography>
+                <Chip label={previewData.topic} />
+              </Box>
+              {previewData.exists ? (
+                <>
+                  <Box>
+                    <Typography variant="subtitle2" color="text.secondary">File associato:</Typography>
+                    <Typography variant="body2" sx={{ fontFamily:'monospace' }}>{previewData.filename}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Lunghezza contenuto: {previewData.content_length} caratteri
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle2" color="text.secondary">Anteprima contenuto:</Typography>
+                    <Box sx={{ bgcolor: theme.palette.mode==='dark' ? '#1e2530' : '#f5f5f5', p:2, borderRadius:1, fontFamily:'monospace', fontSize:13, whiteSpace:'pre-wrap', maxHeight:300, overflow:'auto' }}>
+                      {previewData.preview}
+                    </Box>
+                  </Box>
+                  <Alert severity="info">
+                    Questo contenuto verrà inviato al LLM quando un utente pone una domanda che matcha questo topic.
+                  </Alert>
+                </>
+              ) : (
+                <Alert severity="warning">
+                  {previewData.message || 'File non trovato'}
+                  {previewData.filename && (
+                    <Typography variant="body2" sx={{ mt:1 }}>
+                      File previsto: <code>{previewData.filename}</code>
+                    </Typography>
+                  )}
+                </Alert>
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          {previewData?.exists && previewData.filename && (
+            <Button onClick={() => { openFileEditor(previewData.filename!); setPreviewDialogOpen(false); }} startIcon={<FileOpenIcon />}>
+              Apri nel File Editor
+            </Button>
+          )}
+          <Button startIcon={<CloseIcon />} onClick={() => setPreviewDialogOpen(false)}>Chiudi</Button>
         </DialogActions>
       </Dialog>
     </Stack>

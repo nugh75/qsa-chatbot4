@@ -946,6 +946,44 @@ class ApiService {
   async getPipelineRegexGuide(): Promise<ApiResponse<{ content: string }>> {
     return this.makeRequest('/admin/pipeline/regex-guide');
   }
+  async getPipelinePreviewContext(topic: string): Promise<ApiResponse<{
+    exists: boolean;
+    topic: string;
+    filename?: string;
+    message?: string;
+    content_length?: number;
+    preview?: string;
+    full_content?: string;
+  }>> {
+    return this.makeRequest(`/admin/pipeline/preview-context?topic=${encodeURIComponent(topic)}`);
+  }
+  async getPipelineHistory(limit: number = 50, offset: number = 0): Promise<ApiResponse<{
+    history: Array<{ timestamp: string; action: string; user: string; before?: any; after?: any; metadata?: any }>;
+    total: number;
+  }>> {
+    return this.makeRequest(`/admin/pipeline/history?limit=${limit}&offset=${offset}`);
+  }
+  async exportPipelineConfig(): Promise<void> {
+    // Download diretto come file
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string, string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    const response = await fetch(`${API_BASE_URL}/admin/pipeline/export`, { headers });
+    if (!response.ok) throw new Error('Export fallito');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pipeline_config_export.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  async importPipelineConfig(config: { routes: { pattern: string; topic: string }[]; files: Record<string, string> }, merge: boolean = false): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/import', {
+      method: 'POST',
+      body: JSON.stringify({ routes: config.routes, files: config.files, merge })
+    });
+  }
   async getAdminGuide(): Promise<ApiResponse<{ content: string }>> {
     return this.makeRequest('/admin/admin-guide');
   }

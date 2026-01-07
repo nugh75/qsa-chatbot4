@@ -112,6 +112,56 @@ Implementare (futuro) semplice file `PIPELINE_CHANGES.md` con righe: data, autor
 Questa guida (estesa) copre principi, casi avanzati, errori da evitare, performance, manutenzione e debugging dell'instradamento tramite espressioni regolari (regex) per i topic. Include una sezione di sintesi bilingue (IT/EN) e una FAQ operativa.
 
 ---
+
+## 🚀 Quick Reference (Cheatsheet)
+
+| Sintassi | Significato | Esempio |
+|----------|-------------|---------|
+| `\b` | Confine parola (word boundary) | `\bmemoria\b` matcha "memoria" ma non "memoria-lunga" |
+| `(?i)` | Case insensitive | `(?i)Memoria` matcha "memoria", "MEMORIA" |
+| `(a\|b)` | Alternativa (OR) | `(memoria\|ricordo)` matcha entrambi |
+| `\s+` | Uno o più spazi | `memoria\s+di\s+lavoro` |
+| `\s*` | Zero o più spazi | `C1\s*strategie` |
+| `[aeiou]` | Classe di caratteri | `f[ao]ttor[ei]` matcha "fattori", "fattore" |
+| `[^x]` | Qualsiasi tranne x | `[^\n]` qualsiasi tranne newline |
+| `.*` | Qualsiasi carattere (greedy) | `inizio.*fine` |
+| `.+` | Almeno un carattere | `C[1-7].+` |
+| `{n,m}` | Da n a m ripetizioni | `[^\n]{0,80}` max 80 char |
+| `[àèéìòù]` | Caratteri accentati | `perch[eé]` matcha "perche" e "perché" |
+
+### Pattern Template Comuni
+
+```regex
+# Parola singola con confini
+\bmemoria\b
+
+# Frase esatta case-insensitive
+(?i)\bmemoria di lavoro\b
+
+# Alternativa di parole
+\b(autoregolazione|autodeterminazione|mindset)\b
+
+# Codice con nome (es. C1, A7)
+\b(C[1-7]|A[1-7])\s*[:\-]?\s*\w+
+
+# Frase con parole variabili nel mezzo
+\banalisi\s+di\s+(?:secondo\s+)?livello\b
+
+# Domanda generica su un topic
+(?i)\b(?:cosa|come|perché)\b.*\b(?:QSA|questionario)\b
+```
+
+### Errori da Evitare
+
+| Errore | Problema | Soluzione |
+|--------|----------|-----------|
+| `pattern\|` | Alternativa vuota finale | Rimuovi `\|` finale |
+| `\|\|` | Doppia pipe | Usa singola `\|` |
+| `.*` senza limiti | Match troppo greedy | Usa `[^\n]{0,80}` |
+| Manca `\b` | Match parziali | Aggiungi `\b` ai confini |
+| `\n` nel pattern | Newline letterale | Rimuovi i newline |
+
+---
 ## 📌 Indice
 1. [Obiettivi](#-obiettivi)
 2. [Concetto di Routing Regex](#-concetto-di-routing-regex)

@@ -32,6 +32,7 @@ from fastapi.staticfiles import StaticFiles
 # (topic_router imports load_config from this module). We'll lazy-import refresh_routes_cache
 # where needed via the _refresh_routes_cache() helper below.
 from .rag import refresh_files_cache
+from .pipeline_history import log_change as log_pipeline_change, get_history as get_pipeline_history, get_history_count as get_pipeline_history_count
 from .usage import read_usage, usage_stats, reset_usage, query_usage
 from .memory import get_memory
 from .transcribe import whisper_service
@@ -3075,8 +3076,8 @@ async def list_avatars():
 # ---------------- Pipeline (routing + files) -----------------
 PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 # Prefer storage copy (editable/persisted) for regex guide; fallback to root project file.
-PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "pipeline_regex_guide.json"
-PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / "pipeline_regex_guide.json"
+PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "PIPELINE_REGEX_GUIDE.md"
+PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent.parent / "PIPELINE_REGEX_GUIDE.md"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -3115,6 +3116,9 @@ def _analyze_pattern(raw: str) -> List[PatternIssue]:
     if not p:
         issues.append(PatternIssue(pattern=raw, severity="ERROR", code="EMPTY", message="Pattern vuoto"))
         return issues
+    # Check for newline characters
+    if '\n' in raw or '\r' in raw:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="CONTAINS_NEWLINE", message="Il pattern contiene caratteri newline che devono essere rimossi"))
     # Compile validity
     try:
         re.compile(p)
@@ -3164,7 +3168,56 @@ def validate_pipeline_patterns(cfg: dict) -> List[PatternIssue]:
             out.append(PatternIssue(pattern=pat, topic=t, severity="WARN", code="DUPLICATE_PATTERN", message=f"Pattern duplicato usato anche per topic '{seen[pat]}'"))
         else:
             seen[pat] = t
+    # Detect pattern conflicts (different patterns matching same test phrases)
+    conflict_issues = _detect_pattern_conflicts(cfg.get('routes', []))
+    out.extend(conflict_issues)
     return out
+
+# Corpus di test per rilevare conflitti tra pattern
+_CONFLICT_TEST_CORPUS = [
+    "analisi di secondo livello",
+    "analisi secondo livello fattori",
+    "C1 strategie elaborative",
+    "fattore C3 disorientamento",
+    "autoregolazione e mindset",
+    "artefice di se stesso",
+    "cosa significa la scheda QSA",
+    "come interpretare i fattori",
+    "spaced repetition e mappe concettuali",
+    "A1 ansia di base",
+    "volizione e perseveranza",
+    "interferenze emotive A7",
+]
+
+def _detect_pattern_conflicts(routes: List[dict]) -> List[PatternIssue]:
+    """Rileva pattern che matchano gli stessi testi nel corpus di test."""
+    issues: List[PatternIssue] = []
+    patterns = [(r.get('pattern',''), r.get('topic','')) for r in routes]
+
+    # Per ogni coppia di pattern diversi
+    for i, (pat1, topic1) in enumerate(patterns):
+        for j, (pat2, topic2) in enumerate(patterns[i+1:], i+1):
+            if topic1 == topic2:
+                continue
+            # Testa su corpus
+            conflicts = []
+            for text in _CONFLICT_TEST_CORPUS:
+                try:
+                    match1 = re.search(pat1, text, re.IGNORECASE)
+                    match2 = re.search(pat2, text, re.IGNORECASE)
+                    if match1 and match2:
+                        conflicts.append(text[:40])
+                except re.error:
+                    continue
+            if conflicts:
+                issues.append(PatternIssue(
+                    pattern=pat1,
+                    topic=topic1,
+                    severity="INFO",
+                    code="PATTERN_CONFLICT",
+                    message=f"Possibile conflitto con '{topic2}' su {len(conflicts)} testi: {', '.join(conflicts[:2])}"
+                ))
+    return issues
 
 @router.get("/admin/pipeline")
 async def get_pipeline_config():
@@ -3211,6 +3264,68 @@ async def get_pipeline_regex_guide():
         return {"success": True, "content": text, "source": str(path)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore lettura guida: {e}")
+
+# Directory per i file di contenuto pipeline
+PIPELINE_FILES_DIR = Path(__file__).resolve().parent.parent / "storage" / "pipeline_files"
+RAG_PIPELINE_MIRROR_DIR = Path(__file__).resolve().parent.parent / "storage" / "rag_data"
+
+def _sync_pipeline_file_to_rag(filename: str, source_path: Path) -> None:
+    try:
+        RAG_PIPELINE_MIRROR_DIR.mkdir(parents=True, exist_ok=True)
+        target = (RAG_PIPELINE_MIRROR_DIR / filename).resolve()
+        if RAG_PIPELINE_MIRROR_DIR not in target.parents and RAG_PIPELINE_MIRROR_DIR != target:
+            raise ValueError("Target path outside rag_data")
+        if (not target.exists()) or source_path.stat().st_mtime > target.stat().st_mtime:
+            target.write_bytes(source_path.read_bytes())
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Sync pipeline file to rag_data failed: {e}")
+
+@router.get('/admin/pipeline/preview-context')
+async def preview_pipeline_context(topic: str):
+    """Restituisce anteprima del contenuto file associato al topic per il RAG."""
+    try:
+        # Carica configurazione per trovare il file associato
+        if not PIPELINE_CONFIG_PATH.exists():
+            return {"success": False, "error": "Configurazione pipeline non trovata"}
+
+        cfg = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding='utf-8'))
+        files_mapping = cfg.get('files', {})
+
+        if topic not in files_mapping:
+            return {
+                "success": True,
+                "exists": False,
+                "topic": topic,
+                "message": f"Nessun file associato al topic '{topic}'"
+            }
+
+        filename = files_mapping[topic]
+        filepath = PIPELINE_FILES_DIR / filename
+
+        if not filepath.exists():
+            return {
+                "success": True,
+                "exists": False,
+                "topic": topic,
+                "filename": filename,
+                "message": f"File '{filename}' non trovato in storage/pipeline_files/"
+            }
+
+        content = filepath.read_text(encoding='utf-8')
+        preview_length = 500
+        preview = content[:preview_length] + ('...' if len(content) > preview_length else '')
+
+        return {
+            "success": True,
+            "exists": True,
+            "topic": topic,
+            "filename": filename,
+            "content_length": len(content),
+            "preview": preview,
+            "full_content": content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore preview contesto: {e}")
 
 @router.get('/admin/admin-guide')
 async def get_admin_general_guide():
@@ -3334,11 +3449,16 @@ async def add_pipeline_route(route: PipelineRoute):
                 raise HTTPException(status_code=400, detail="Pattern già esistente")
         
         # Aggiungi la nuova route
-        data["routes"].append({"pattern": route.pattern, "topic": route.topic})
-        
+        new_route = {"pattern": route.pattern, "topic": route.topic}
+        data["routes"].append(new_route)
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         _refresh_routes_cache()
+
+        # Log storico
+        log_pipeline_change("add_route", after=new_route)
+
         return {"success": True, "message": "Route aggiunta con successo"}
     except HTTPException:
         raise
@@ -3367,13 +3487,18 @@ async def update_pipeline_route(update: RouteUpdate):
                     if j != i and existing_route["pattern"] == update.new_pattern:
                         raise HTTPException(status_code=400, detail="Il nuovo pattern è già in uso")
                 
-                data["routes"][i] = {"pattern": update.new_pattern, "topic": update.new_topic}
+                old_route = {"pattern": update.old_pattern, "topic": update.old_topic}
+                new_route = {"pattern": update.new_pattern, "topic": update.new_topic}
+                data["routes"][i] = new_route
                 route_found = True
+
+                # Log storico
+                log_pipeline_change("update_route", before=old_route, after=new_route)
                 break
-        
+
         if not route_found:
             raise HTTPException(status_code=404, detail="Route non trovata")
-        
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         _refresh_routes_cache()
@@ -3392,18 +3517,23 @@ async def delete_pipeline_route(pattern: str, topic: str):
         
         # Trova e rimuovi la route
         route_found = False
+        deleted_route = None
         for i, route in enumerate(data["routes"]):
             if route["pattern"] == pattern and route["topic"] == topic:
-                data["routes"].pop(i)
+                deleted_route = data["routes"].pop(i)
                 route_found = True
                 break
-        
+
         if not route_found:
             raise HTTPException(status_code=404, detail="Route non trovata")
-        
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         _refresh_routes_cache()
+
+        # Log storico
+        log_pipeline_change("delete_route", before=deleted_route)
+
         return {"success": True, "message": "Route eliminata con successo"}
     except HTTPException:
         raise
@@ -3511,6 +3641,7 @@ async def get_available_files():
         available_files = []
         for file_path in data_dir.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
+                _sync_pipeline_file_to_rag(file_path.name, file_path)
                 available_files.append(file_path.name)
         
         return {"files": sorted(available_files)}
@@ -3544,6 +3675,7 @@ async def get_pipeline_file_content(filename: str):
         path = _safe_pipeline_file(filename)
         if not path.exists():
             raise HTTPException(status_code=404, detail="File non trovato")
+        _sync_pipeline_file_to_rag(filename, path)
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -3563,6 +3695,7 @@ async def save_pipeline_file_content(payload: PipelineFileContentIn):
     try:
         path = _safe_pipeline_file(payload.filename)
         path.write_text(payload.content, encoding="utf-8")
+        _sync_pipeline_file_to_rag(payload.filename, path)
         return {"success": True}
     except HTTPException:
         raise
@@ -3582,11 +3715,105 @@ async def upload_pipeline_file(file: UploadFile = FastFile(...)):
             target = target.with_name(f"{target.stem}-{int(time.time())}{target.suffix}")
         with open(target, "wb") as out:
             out.write(await file.read())
+        _sync_pipeline_file_to_rag(target.name, target)
         return {"success": True, "filename": target.name}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore upload file: {str(e)}")
+
+# --------------- Pipeline History & Export endpoints ---------------
+@router.get("/admin/pipeline/history")
+async def get_pipeline_change_history(limit: int = 50, offset: int = 0):
+    """Restituisce lo storico delle modifiche alla configurazione pipeline."""
+    try:
+        history = get_pipeline_history(limit=limit, offset=offset)
+        total = get_pipeline_history_count()
+        return {
+            "success": True,
+            "history": history,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura storico: {str(e)}")
+
+@router.get("/admin/pipeline/export")
+async def export_pipeline_config():
+    """Esporta la configurazione pipeline completa come JSON."""
+    try:
+        if not PIPELINE_CONFIG_PATH.exists():
+            raise HTTPException(status_code=404, detail="Configurazione non trovata")
+        config = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        from fastapi.responses import Response
+        return Response(
+            content=json.dumps(config, indent=2, ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=pipeline_config_export.json"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore export: {str(e)}")
+
+class PipelineImportData(BaseModel):
+    routes: List[Dict[str, str]]
+    files: Dict[str, str]
+    merge: bool = False  # Se True, unisce con configurazione esistente
+
+@router.post("/admin/pipeline/import")
+async def import_pipeline_config(data: PipelineImportData):
+    """Importa configurazione pipeline da JSON."""
+    try:
+        # Validazione pattern
+        invalid = []
+        for route in data.routes:
+            pat = route.get("pattern", "")
+            try:
+                re.compile(pat)
+            except re.error as e:
+                invalid.append({"pattern": pat, "error": str(e)})
+        if invalid:
+            raise HTTPException(status_code=400, detail={"message": "Pattern regex non validi", "invalid": invalid})
+
+        # Carica configurazione esistente per merge o backup
+        existing = {"routes": [], "files": {}}
+        if PIPELINE_CONFIG_PATH.exists():
+            existing = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+
+        if data.merge:
+            # Merge: aggiungi solo route/file non esistenti
+            existing_patterns = {r["pattern"] for r in existing.get("routes", [])}
+            for route in data.routes:
+                if route["pattern"] not in existing_patterns:
+                    existing["routes"].append(route)
+            for topic, filename in data.files.items():
+                if topic not in existing.get("files", {}):
+                    existing["files"][topic] = filename
+            new_config = existing
+        else:
+            # Replace: sostituisci completamente
+            new_config = {"routes": data.routes, "files": data.files}
+
+        # Log storico
+        log_pipeline_change("import_config", before=existing, after=new_config, metadata={"merge": data.merge})
+
+        # Salva
+        PIPELINE_CONFIG_PATH.write_text(json.dumps(new_config, indent=2, ensure_ascii=False), encoding="utf-8")
+        _refresh_routes_cache()
+        refresh_files_cache()
+
+        return {
+            "success": True,
+            "message": "Configurazione importata con successo",
+            "routes_count": len(new_config["routes"]),
+            "files_count": len(new_config["files"])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore import: {str(e)}")
 
 # --------------- Usage logging endpoints ---------------
 @router.get("/admin/usage")

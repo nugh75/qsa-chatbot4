@@ -7,6 +7,7 @@ from .rag_engine import rag_engine
 from .rag_routes import get_user_context
 
 RAG_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "rag_data"
+PIPELINE_FILES_DIR = Path(__file__).resolve().parent.parent / "storage" / "pipeline_files"
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 @lru_cache(maxsize=1)
@@ -22,8 +23,19 @@ def refresh_files_cache():
 
 def load_text(name: str) -> str:
     file_map = load_files_mapping()
-    fp = RAG_STORAGE_DIR / file_map[name]
-    return fp.read_text(encoding="utf-8")
+    filename = file_map[name]
+    pipeline_path = PIPELINE_FILES_DIR / filename
+    rag_path = RAG_STORAGE_DIR / filename
+    if pipeline_path.exists():
+        # Best-effort mirror to rag_data for legacy path usage.
+        try:
+            RAG_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            if (not rag_path.exists()) or pipeline_path.stat().st_mtime > rag_path.stat().st_mtime:
+                rag_path.write_bytes(pipeline_path.read_bytes())
+        except Exception:
+            pass
+        return pipeline_path.read_text(encoding="utf-8")
+    return rag_path.read_text(encoding="utf-8")
 
 def get_context(topic: Optional[str], query: str = "", personality_enabled_groups: Optional[List[int]] = None) -> str:
     """

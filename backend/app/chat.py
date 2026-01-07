@@ -49,11 +49,13 @@ def _safe_log_system(level: int, msg: str):
         pass
 
 def _resolve_personality(personality_id: Optional[str]):
-    """Ritorna (system_prompt, provider_override, model_override, personality_meta)."""
+    """Ritorna (system_prompt, provider_override, model_override, personality_meta, webhook_config)."""
+    from .webhook_handler import WebhookConfig
     system = load_system_prompt()
     provider_override = None
     model_override = None
     personality_meta = None
+    webhook_config = None
     if personality_id:
         try:
             p = get_personality(personality_id)
@@ -67,9 +69,17 @@ def _resolve_personality(personality_id: Optional[str]):
                     provider_override = p["provider"].lower()
                 if p.get("model"):
                     model_override = p["model"]
+                # Configura webhook se abilitato
+                if p.get("webhook_enabled") and p.get("webhook_url"):
+                    webhook_config = WebhookConfig(
+                        url=p["webhook_url"],
+                        timeout=p.get("webhook_timeout") or 60,
+                        auth_header=p.get("webhook_auth_header"),
+                        include_history=p.get("webhook_include_history", True),
+                    )
         except Exception as e:
             print(f"Personality load failed: {e}")
-    return system, provider_override, model_override, personality_meta
+    return system, provider_override, model_override, personality_meta, webhook_config
 
 def _resolve_temperature(header_temp: Optional[float], personality_id: Optional[str]) -> float:
     temp_value = 0.3
@@ -593,7 +603,7 @@ async def chat(
         
     # Personality override
     effective_provider = (x_llm_provider or "local").lower()
-    system, provider_override, model_override, _pmeta = _resolve_personality(x_personality_id)
+    system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
     if provider_override:
         effective_provider = provider_override
     # Log risoluzione provider/modello
@@ -670,14 +680,39 @@ async def chat(
     temp_value = _resolve_temperature(x_llm_temperature, x_personality_id)
     # Se header X-LLM-Model è presente, ha priorità rispetto a personality (solo per test)
     effective_model_override = x_llm_model or model_override
-    answer = await chat_with_provider(
-        messages,
-        provider=effective_provider,
-        context_hint=topic or 'generale',
-        model=effective_model_override,
-        temperature=temp_value,
-        ollama_base_url=x_ollama_base_url
-    )
+
+    # Se webhook attivo, inoltra al webhook invece di usare il provider LLM
+    if webhook_config:
+        from .webhook_handler import WebhookRequest, call_webhook
+        webhook_request = WebhookRequest(
+            message=full_user_message,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            history=conversation_history if webhook_config.include_history else None,
+            personality_id=x_personality_id,
+            personality_name=_pmeta.get("name") if _pmeta else None,
+            user_id=(current_user or {}).get("id") if isinstance(current_user, dict) else None,
+            attachments=[{
+                "id": att.id,
+                "filename": att.filename,
+                "file_type": att.file_type,
+                "content": att.content
+            } for att in attachments] if attachments else None
+        )
+        try:
+            answer = await call_webhook(webhook_config, webhook_request)
+        except Exception as webhook_err:
+            answer = f"Errore nella comunicazione con il webhook: {str(webhook_err)}"
+    else:
+        # Comportamento normale: usa provider LLM
+        answer = await chat_with_provider(
+            messages,
+            provider=effective_provider,
+            context_hint=topic or 'generale',
+            model=effective_model_override,
+            temperature=temp_value,
+            ollama_base_url=x_ollama_base_url
+        )
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -1192,23 +1227,9 @@ async def chat_stream(
                 print(f"[data-tables-agent][stream] errore run: {_ae}")
     except Exception as _dte:
         print(f"[data-tables][stream] errore nel build contesto: {_dte}")
-    # Personality override
-    effective_provider = provider
-    model_override: Optional[str] = None
-    system = load_system_prompt()
-    if x_personality_id:
-        try:
-            from .prompts import get_system_prompt_by_id
-            p = get_personality(x_personality_id)
-            if p:
-                if p.get("system_prompt_id"):
-                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
-                if p.get("provider"):
-                    effective_provider = p["provider"].lower()
-                if p.get("model"):
-                    model_override = p["model"]
-        except Exception as e:
-            print(f"Personality load failed (stream): {e}")
+    # Personality override (usa la funzione centralizzata per ottenere anche webhook_config)
+    system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
+    effective_provider = provider_override or provider
     # Log risoluzione stream
     try:
         log_interaction({
@@ -1279,7 +1300,29 @@ async def chat_stream(
     async def event_generator():
         nonlocal answer_accum, rag_results, topic
         try:
-            if provider == 'ollama':
+            # Se webhook attivo, inoltra allo streaming webhook
+            if webhook_config:
+                from .webhook_handler import WebhookRequest, call_webhook_streaming
+                import json as _json_wh
+                webhook_request = WebhookRequest(
+                    message=full_user_message,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    history=conversation_history if webhook_config.include_history else None,
+                    personality_id=x_personality_id,
+                    personality_name=_pmeta.get("name") if _pmeta else None,
+                    user_id=(current_user or {}).get("id") if isinstance(current_user, dict) else None,
+                    attachments=[{
+                        "id": att.id,
+                        "filename": att.filename,
+                        "file_type": att.file_type,
+                        "content": att.content
+                    } for att in attachments] if attachments else None
+                )
+                async for chunk in call_webhook_streaming(webhook_config, webhook_request):
+                    answer_accum.append(chunk)
+                    yield f"data: {{\"delta\":{_json_wh.dumps(chunk)}}}\n\n"
+            elif provider == 'ollama':
                 # Streaming reale da Ollama
                 import json as _json, os as _os, importlib
                 try:

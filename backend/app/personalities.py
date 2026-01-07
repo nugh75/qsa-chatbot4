@@ -137,6 +137,37 @@ def _ensure_personality_schema():
             exists5 = cur.fetchone()
             if not exists5:
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN starter_prompts JSONB DEFAULT '[]'::jsonb")
+            # Webhook support columns
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_url'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_url TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_enabled'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_enabled BOOLEAN DEFAULT FALSE")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_timeout'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_timeout INTEGER DEFAULT 60")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_auth_header'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_auth_header TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_include_history'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_include_history BOOLEAN DEFAULT TRUE")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -247,6 +278,11 @@ def load_personalities() -> Dict:
                 'starter_prompts': d.get('starter_prompts') or [],
                 'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
                 'show_source_docs': bool(d.get('show_source_docs', True)),
+                'webhook_url': d.get('webhook_url'),
+                'webhook_enabled': bool(d.get('webhook_enabled', False)),
+                'webhook_timeout': d.get('webhook_timeout') or 60,
+                'webhook_auth_header': d.get('webhook_auth_header'),
+                'webhook_include_history': bool(d.get('webhook_include_history', True)),
             })
         return {'default_id': default_id, 'personalities': items}
 
@@ -280,6 +316,11 @@ def upsert_personality(
     show_source_docs: Optional[bool] = None,
     hide_rag_links: Optional[bool] = None,
     starter_prompts: Optional[List[str]] = None,
+    webhook_url: Optional[str] = None,
+    webhook_enabled: Optional[bool] = None,
+    webhook_timeout: Optional[int] = None,
+    webhook_auth_header: Optional[str] = None,
+    webhook_include_history: Optional[bool] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -300,8 +341,9 @@ def upsert_personality(
                 welcome_message, guide_id, context_window, temperature, max_tokens, active,
                 enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
                 show_pipeline_topics, show_source_docs, hide_rag_links, starter_prompts,
+                webhook_url, webhook_enabled, webhook_timeout, webhook_auth_header, webhook_include_history,
                 is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -325,6 +367,11 @@ def upsert_personality(
                 show_source_docs = EXCLUDED.show_source_docs,
                 hide_rag_links = EXCLUDED.hide_rag_links,
                 starter_prompts = EXCLUDED.starter_prompts,
+                webhook_url = EXCLUDED.webhook_url,
+                webhook_enabled = EXCLUDED.webhook_enabled,
+                webhook_timeout = EXCLUDED.webhook_timeout,
+                webhook_auth_header = EXCLUDED.webhook_auth_header,
+                webhook_include_history = EXCLUDED.webhook_include_history,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
@@ -334,6 +381,11 @@ def upsert_personality(
             True if show_source_docs is None else bool(show_source_docs),
             False if hide_rag_links is None else bool(hide_rag_links),
             s_prompts,
+            webhook_url or None,
+            False if webhook_enabled is None else bool(webhook_enabled),
+            webhook_timeout or 60,
+            webhook_auth_header or None,
+            True if webhook_include_history is None else bool(webhook_include_history),
             bool(False)
         ))
         if set_default:
@@ -412,6 +464,11 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
             'show_source_docs': bool(d.get('show_source_docs', True)),
             'starter_prompts': d.get('starter_prompts') or [],
+            'webhook_url': d.get('webhook_url'),
+            'webhook_enabled': bool(d.get('webhook_enabled', False)),
+            'webhook_timeout': d.get('webhook_timeout') or 60,
+            'webhook_auth_header': d.get('webhook_auth_header'),
+            'webhook_include_history': bool(d.get('webhook_include_history', True)),
         }
 
 
@@ -466,6 +523,11 @@ def duplicate_personality(
         show_pipeline_topics=existing.get('show_pipeline_topics'),
         show_source_docs=existing.get('show_source_docs'),
         starter_prompts=existing.get('starter_prompts'),
+        webhook_url=existing.get('webhook_url'),
+        webhook_enabled=existing.get('webhook_enabled'),
+        webhook_timeout=existing.get('webhook_timeout'),
+        webhook_auth_header=existing.get('webhook_auth_header'),
+        webhook_include_history=existing.get('webhook_include_history'),
     )
     res['name'] = name
     return res

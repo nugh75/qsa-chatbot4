@@ -63,6 +63,12 @@ export interface PersonalityEntry {
   show_source_docs?: boolean;
   hide_rag_links?: boolean;
   starter_prompts?: string[];
+  // Webhook configuration
+  webhook_url?: string | null;
+  webhook_enabled?: boolean;
+  webhook_timeout?: number;
+  webhook_auth_header?: string | null;
+  webhook_include_history?: boolean;
 }
 
 export interface PipelineOption {

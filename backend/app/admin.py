@@ -1700,13 +1700,18 @@ class PersonalityIn(BaseModel):
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
     enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
-    enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
     enabled_forms: Optional[List[str]] = None  # questionari abilitati
     starter_prompts: Optional[List[str]] = None  # starter prompts specifici per personalità
     # UI visibility flags
     show_pipeline_topics: Optional[bool] = True
     show_source_docs: Optional[bool] = True
     hide_rag_links: Optional[bool] = False  # nasconde i link ai documenti RAG
+    # Webhook configuration
+    webhook_url: Optional[str] = None  # URL del webhook esterno (es. n8n)
+    webhook_enabled: Optional[bool] = False  # se abilitato, inoltra al webhook invece di usare LLM
+    webhook_timeout: Optional[int] = 60  # timeout in secondi per la chiamata webhook
+    webhook_auth_header: Optional[str] = None  # header Authorization opzionale
+    webhook_include_history: Optional[bool] = True  # se includere la cronologia nella richiesta
 
 
 class PersonalityDuplicateIn(BaseModel):
@@ -1768,7 +1773,12 @@ async def upsert_personality_admin(p: PersonalityIn):
             hide_rag_links=p.hide_rag_links,
             show_pipeline_topics=p.show_pipeline_topics,
             show_source_docs=p.show_source_docs,
-            starter_prompts=p.starter_prompts
+            starter_prompts=p.starter_prompts,
+            webhook_url=p.webhook_url,
+            webhook_enabled=p.webhook_enabled,
+            webhook_timeout=p.webhook_timeout,
+            webhook_auth_header=p.webhook_auth_header,
+            webhook_include_history=p.webhook_include_history,
         )
         return {"success": True, "id": res['id']}
     except Exception as e:

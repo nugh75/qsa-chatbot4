@@ -74,6 +74,12 @@ const PersonalitiesPanel: React.FC = () => {
   const [selectedFormPrompt, setSelectedFormPrompt] = useState<string>('')
   const [formPromptLabel, setFormPromptLabel] = useState<string>('')
   const [formPromptMessage, setFormPromptMessage] = useState<string>('')
+  // Webhook configuration
+  const [webhookUrl, setWebhookUrl] = useState<string>('')
+  const [webhookEnabled, setWebhookEnabled] = useState<boolean>(false)
+  const [webhookTimeout, setWebhookTimeout] = useState<number>(60)
+  const [webhookAuthHeader, setWebhookAuthHeader] = useState<string>('')
+  const [webhookIncludeHistory, setWebhookIncludeHistory] = useState<boolean>(true)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -226,6 +232,12 @@ const PersonalitiesPanel: React.FC = () => {
 
 
     setStarterPrompts([]);
+    // Reset webhook config
+    setWebhookUrl('');
+    setWebhookEnabled(false);
+    setWebhookTimeout(60);
+    setWebhookAuthHeader('');
+    setWebhookIncludeHistory(true);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -266,6 +278,12 @@ const PersonalitiesPanel: React.FC = () => {
     setShowSourceDocs((p as any).show_source_docs !== false)
     setHideRagLinks((p as any).hide_rag_links === true)
     setStarterPrompts(p.starter_prompts || [])
+    // Carica webhook config
+    setWebhookUrl(p.webhook_url || '')
+    setWebhookEnabled(p.webhook_enabled || false)
+    setWebhookTimeout(p.webhook_timeout || 60)
+    setWebhookAuthHeader(p.webhook_auth_header || '')
+    setWebhookIncludeHistory(p.webhook_include_history !== false)
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -339,7 +357,12 @@ const PersonalitiesPanel: React.FC = () => {
           show_source_docs: showSourceDocs,
 
           hide_rag_links: hideRagLinks,
-          starter_prompts: starterPrompts
+          starter_prompts: starterPrompts,
+          webhook_url: webhookUrl || null,
+          webhook_enabled: webhookEnabled,
+          webhook_timeout: webhookTimeout,
+          webhook_auth_header: webhookAuthHeader || null,
+          webhook_include_history: webhookIncludeHistory
         })
       })
       if (!res.ok) {
@@ -580,11 +603,18 @@ const PersonalitiesPanel: React.FC = () => {
                     <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>{p.name}</Typography>
                     {items.default_id === p.id && <Chip size="small" color="success" label="default" />}
                     {p.active === false && <Chip size="small" color="warning" label="inattiva" />}
+                    {p.webhook_enabled && p.webhook_url && <Chip size="small" color="info" label="webhook" />}
                   </Stack>
                   
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                    <strong>Provider:</strong> {p.provider} · <strong>Modello:</strong> {p.model}
-                  </Typography>
+                  {p.webhook_enabled && p.webhook_url ? (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                      <strong>Webhook:</strong> {(() => { try { return new URL(p.webhook_url).hostname } catch { return p.webhook_url } })()}
+                    </Typography>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                      <strong>Provider:</strong> {p.provider} · <strong>Modello:</strong> {p.model}
+                    </Typography>
+                  )}
                   
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                     <strong>System Prompt:</strong> {systemPromptName}
@@ -680,6 +710,70 @@ const PersonalitiesPanel: React.FC = () => {
         <DialogContent>
           <Stack spacing={2} sx={{ mt:1 }}>
             <TextField label="Nome" value={name} onChange={e=>setName(e.target.value)} fullWidth size="small" />
+
+            {/* Webhook Configuration */}
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Stack spacing={2}>
+                <Typography variant="subtitle2">Configurazione Webhook</Typography>
+                <TextField
+                  label="Webhook URL"
+                  value={webhookUrl}
+                  onChange={e => setWebhookUrl(e.target.value)}
+                  fullWidth
+                  size="small"
+                  placeholder="https://n8n.example.com/webhook/xxx"
+                  helperText="Se configurato e abilitato, i messaggi saranno inoltrati a questo URL invece di usare il provider AI"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={webhookEnabled}
+                      onChange={e => setWebhookEnabled(e.target.checked)}
+                      disabled={!webhookUrl.trim()}
+                    />
+                  }
+                  label="Abilita Webhook"
+                />
+                {webhookEnabled && webhookUrl && (
+                  <>
+                    <Alert severity="info" sx={{ py: 0.5 }}>
+                      Quando il webhook e abilitato, Provider, Modello e Temperatura non verranno utilizzati.
+                    </Alert>
+                    <TextField
+                      label="Timeout (secondi)"
+                      type="number"
+                      value={webhookTimeout}
+                      onChange={e => setWebhookTimeout(parseInt(e.target.value) || 60)}
+                      size="small"
+                      inputProps={{ min: 5, max: 300 }}
+                      sx={{ width: 150 }}
+                    />
+                    <TextField
+                      label="Header Autorizzazione"
+                      value={webhookAuthHeader}
+                      onChange={e => setWebhookAuthHeader(e.target.value)}
+                      fullWidth
+                      size="small"
+                      placeholder="Bearer your-secret-token"
+                      helperText="Opzionale: header Authorization da inviare al webhook"
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={webhookIncludeHistory}
+                          onChange={e => setWebhookIncludeHistory(e.target.checked)}
+                        />
+                      }
+                      label="Includi cronologia conversazione nella richiesta"
+                    />
+                  </>
+                )}
+              </Stack>
+            </Paper>
+
+            {/* Provider/Model section - hidden when webhook is active */}
+            {!(webhookEnabled && webhookUrl) && (
+            <>
             <FormControl size="small" fullWidth>
               <InputLabel id="prov-label">Provider</InputLabel>
               <Select labelId="prov-label" label="Provider" value={provider} onChange={e=>{ setProvider(e.target.value); setModel(''); }}>
@@ -747,6 +841,10 @@ const PersonalitiesPanel: React.FC = () => {
                 )}
               </Stack>
             </Paper>
+            </>
+            )}
+            {/* End of Provider/Model section hidden when webhook is active */}
+
             <Box>
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Avatar</Typography>
               <Stack direction="row" spacing={2} alignItems="center">
@@ -819,11 +917,14 @@ const PersonalitiesPanel: React.FC = () => {
             </FormControl>
             <TextField label="Context Window" value={contextWindow} onChange={e=>{ const v = e.target.value; if(v===''){ setContextWindow(''); } else { const n = Number(v); if(!isNaN(n) && n>=0 && n<=200){ setContextWindow(n)} } }} fullWidth size="small" placeholder="Es. 8 (numero scambi recenti)" />
             <TextField label="Max Tokens" value={maxTokens} onChange={e=>{ const v = e.target.value; if(v===''){ setMaxTokens(''); } else { const n = Number(v); if(!isNaN(n) && n>=1 && n<=50000){ setMaxTokens(n)} } }} fullWidth size="small" placeholder="Es. 2000 (massimo token per risposta)" />
+            {/* Temperature - hidden when webhook is active */}
+            {!(webhookEnabled && webhookUrl) && (
             <Box>
               <Typography variant="caption" sx={{ display:'block', mb:0.5 }}>Temperatura: {temperature.toFixed(2)}</Typography>
               <Slider size="small" min={0} max={1.2} step={0.05} value={temperature} onChange={(_,val)=> setTemperature(val as number)} />
             </Box>
-            
+            )}
+
             {/* Pipeline Topics */}
             <Box>
               <FormLabel component="legend" sx={{ mb: 1 }}>Topics Pipeline Abilitati</FormLabel>

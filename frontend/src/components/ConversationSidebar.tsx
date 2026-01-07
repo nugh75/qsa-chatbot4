@@ -47,6 +47,7 @@ interface ConversationSidebarProps {
   userAvatar?: string | null;
   onUserAvatarChange?: (dataUrl: string | null) => void;
   isAuthenticated?: boolean;
+  userEmail?: string;
 }
 
 interface DecryptedConversation {
@@ -71,6 +72,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   userAvatar = null,
   onUserAvatarChange,
   isAuthenticated = false,
+  userEmail,
 }) => {
   const theme = useTheme();
   const [conversations, setConversations] = useState<DecryptedConversation[]>([]);
@@ -286,7 +288,12 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
       {/* Avatar Utente (solo se loggato) */}
       {isAuthenticated && (
         <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Avatar Utente</Typography>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>Profilo</Typography>
+          {userEmail && (
+            <Typography variant="body2" sx={{ mb: 1, fontWeight: 500, wordBreak: 'break-all' }}>
+              {userEmail}
+            </Typography>
+          )}
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <Avatar src={userAvatar || undefined} alt="Tu" sx={{ width: 40, height: 40 }} />
             <Button

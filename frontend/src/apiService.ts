@@ -275,7 +275,7 @@ class ApiService {
   }
 
   async createConversation(titleEncrypted: string): Promise<ApiResponse<{ conversation_id: string }>> {
-    return this.makeRequest<{ conversation_id: string }>('/conversations', {
+    return this.makeRequest<{ conversation_id: string }>('/conversations/', {
       method: 'POST',
       body: JSON.stringify({
         title_encrypted: titleEncrypted

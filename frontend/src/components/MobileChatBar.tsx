@@ -131,26 +131,6 @@ const MobileChatBar: React.FC<MobileChatBarProps> = ({ value, onChange, onSend, 
               <AssignmentIcon fontSize="medium" />
             </IconButton>
           )}
-          {onOpenFeedback && (
-            <IconButton
-              size="medium"
-              onClick={onOpenFeedback}
-              color="default"
-              sx={{ width: 44, height: 44, bgcolor: '#f5f5f5' }}
-            >
-             <RateReviewIcon fontSize="medium" color="action" />
-            </IconButton>
-          )}
-          {onOpenSurvey && (
-            <IconButton
-              size="medium"
-              onClick={onOpenSurvey}
-              color="default"
-              sx={{ width: 44, height: 44, bgcolor: '#f5f5f5' }}
-            >
-             <PollIcon fontSize="medium" color="action" />
-            </IconButton>
-          )}
         </Box>
 
         {/* Right Actions */}

@@ -38,6 +38,7 @@ import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { CredentialManager } from './crypto'
 import { createApiService } from './types/api'
+import { apiService } from './apiService'
 import AdminPanel from './AdminPanel'
 import { ThemeProvider } from '@mui/material/styles'
 import { appTheme } from './theme'
@@ -879,7 +880,7 @@ const AppContent: React.FC = () => {
           // Title sent as plaintext (encryption disabled)
           titleToSend = title;
 
-          const convResponse = await authFetch(`${BACKEND}/api/conversations`, {
+          const convResponse = await authFetch(`${BACKEND}/api/conversations/`, {
             method: 'POST',
             headers,
             body: JSON.stringify({ 
@@ -1455,6 +1456,9 @@ const AppContent: React.FC = () => {
         selectedPersonalityId={selectedPersonalityId}
         onChangePersonality={(id)=> setSelectedPersonalityId(id)}
         adminPersonalityInfo={adminPersonalityInfo}
+        onOpenFeedback={() => setShowQualitativeFeedback(true)}
+        onOpenSurvey={() => setShowSurvey(true)}
+        userEmail={user?.email}
       />
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
@@ -2248,9 +2252,10 @@ const AppContent: React.FC = () => {
 
           try {
             // Carica i messaggi della conversazione selezionata (senza decriptazione client-side)
-            const apiService = await import('./apiService').then(m => m.apiService);
+            console.log('[App] Loading conversation messages for:', id);
             const response = await apiService.getConversationMessages(id, impersonatedUser?.id);
               if (response.success && response.data) {
+              console.log('[App] Loaded messages count:', response.data.length);
               let normalized: Msg[] = response.data.map((msg: any) => {
                 const ts = new Date(msg.timestamp).getTime();
                 const serverPlain = (typeof msg.content === 'string' ? msg.content : '').trim();
@@ -2352,6 +2357,7 @@ const AppContent: React.FC = () => {
         }}
         userAvatar={userAvatar}
         isAuthenticated={isAuthenticated}
+        userEmail={user?.email}
         onUserAvatarChange={(dataUrl)=> setUserAvatar(dataUrl)}
         drawerWidth={300}
         // Refresh sidebar quando viene creata una nuova conversazione

@@ -1,6 +1,6 @@
 from pathlib import Path
 import json
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple, Any
 from functools import lru_cache
 
 from .rag_engine import rag_engine
@@ -21,21 +21,56 @@ def load_files_mapping() -> Dict[str, str]:
 def refresh_files_cache():
     load_files_mapping.cache_clear()  # type: ignore[attr-defined]
 
-def load_text(name: str) -> str:
+def _resolve_topic_file(name: str) -> Dict[str, Any]:
     file_map = load_files_mapping()
+    if name not in file_map:
+        raise KeyError(f"Topic '{name}' non presente in pipeline_config.json")
     filename = file_map[name]
     pipeline_path = PIPELINE_FILES_DIR / filename
     rag_path = RAG_STORAGE_DIR / filename
+    return {
+        "topic": name,
+        "filename": filename,
+        "pipeline_path": str(pipeline_path),
+        "rag_path": str(rag_path),
+        "source": None,
+        "exists": None,
+    }
+
+def load_text_with_meta(name: str) -> Tuple[str, Dict[str, Any]]:
+    meta = _resolve_topic_file(name)
+    filename = meta["filename"]
+    pipeline_path = Path(meta["pipeline_path"])
+    rag_path = Path(meta["rag_path"])
     if pipeline_path.exists():
         # Best-effort mirror to rag_data for legacy path usage.
         try:
             RAG_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
             if (not rag_path.exists()) or pipeline_path.stat().st_mtime > rag_path.stat().st_mtime:
                 rag_path.write_bytes(pipeline_path.read_bytes())
+                meta["synced_to_rag"] = True
+            else:
+                meta["synced_to_rag"] = False
         except Exception:
-            pass
-        return pipeline_path.read_text(encoding="utf-8")
-    return rag_path.read_text(encoding="utf-8")
+            meta["synced_to_rag"] = None
+        meta["source"] = "pipeline_files"
+        meta["exists"] = True
+        text = pipeline_path.read_text(encoding="utf-8")
+        meta["chars"] = len(text)
+        return text, meta
+    if rag_path.exists():
+        meta["source"] = "rag_data"
+        meta["exists"] = True
+        text = rag_path.read_text(encoding="utf-8")
+        meta["chars"] = len(text)
+        return text, meta
+    meta["source"] = "missing"
+    meta["exists"] = False
+    raise FileNotFoundError(f"File topic '{filename}' non trovato in pipeline_files o rag_data")
+
+def load_text(name: str) -> str:
+    text, _meta = load_text_with_meta(name)
+    return text
 
 def get_context(topic: Optional[str], query: str = "", personality_enabled_groups: Optional[List[int]] = None) -> str:
     """

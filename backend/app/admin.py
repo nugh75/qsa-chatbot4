@@ -512,7 +512,8 @@ async def get_provider_models(provider: str, refresh: bool = False):
             else:
                 note = 'missing_api_key'
         elif provider == 'ollama':
-            base_url = load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+            # ENV ha precedenza sul config file
+            base_url = os.getenv('OLLAMA_BASE_URL') or load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or 'http://localhost:11434'
             try:
                 models = await _fetch_ollama_models(base_url)
             except Exception as e:

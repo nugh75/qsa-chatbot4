@@ -474,7 +474,8 @@ def _get_available_providers() -> List[str]:
                 if provider == 'ollama' and allow_autodetect:
                     try:
                         import httpx
-                        base_url = provider_config.get('base_url') or os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+                        # ENV ha precedenza sul config file
+                        base_url = os.getenv('OLLAMA_BASE_URL') or provider_config.get('base_url') or 'http://localhost:11434'
                         url = f"{base_url.rstrip('/')}/api/tags"
                         with httpx.Client(timeout=autodetect_timeout) as cx:
                             r = cx.get(url)

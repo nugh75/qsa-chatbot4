@@ -276,7 +276,7 @@ async def chat(
     topics_multi = _filter_topics_jaccard(detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None))
     # --- Dynamic context assembly (topics priority + RAG by similarity) ---
     import os as _os
-    from .rag import load_files_mapping, load_text
+    from .rag import load_files_mapping, load_text_with_meta
     # Budgets configurabili (token-approx). Fallback a caratteri.
     TOTAL_BUDGET = int(_os.getenv("CONTEXT_TOTAL_BUDGET", "9000"))
     MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_CHARS", "3000"))
@@ -306,6 +306,9 @@ async def chat(
     # Collect topic raw snippets
     file_map = load_files_mapping()
     topic_snippets: list[tuple[str,str]] = []  # (topic, snippet)
+    topic_files_meta: list[dict] = []
+    topic_files_missing: list[dict] = []
+    debug_pipeline = _os.getenv("PIPELINE_DEBUG_LOG", "0") in ("1", "true", "True")
     seen_topics = set()
     for tinfo in (topics_multi or []):
         tname = tinfo.get('topic')
@@ -314,17 +317,54 @@ async def chat(
         seen_topics.add(tname)
         if tname in file_map:
             try:
-                raw_txt = load_text(tname)
+                raw_txt, meta = load_text_with_meta(tname)
                 topic_snippets.append((tname, raw_txt))
-            except Exception:
+                entry = {
+                    "topic": tname,
+                    "filename": meta.get("filename"),
+                    "source": meta.get("source"),
+                    "chars": meta.get("chars"),
+                }
+                if debug_pipeline:
+                    entry.update({
+                        "pipeline_path": meta.get("pipeline_path"),
+                        "rag_path": meta.get("rag_path"),
+                        "synced_to_rag": meta.get("synced_to_rag"),
+                        "exists": meta.get("exists"),
+                    })
+                topic_files_meta.append(entry)
+            except Exception as e:
+                topic_files_missing.append({
+                    "topic": tname,
+                    "filename": file_map.get(tname),
+                    "error": str(e) if debug_pipeline else "load_failed",
+                })
                 continue
     # Fallback single-topic context if none collected
     if not topic_snippets and topic:
         try:
-            raw_txt = load_text(topic)
+            raw_txt, meta = load_text_with_meta(topic)
             topic_snippets.append((topic, raw_txt))
-        except Exception:
-            pass
+            entry = {
+                "topic": topic,
+                "filename": meta.get("filename"),
+                "source": meta.get("source"),
+                "chars": meta.get("chars"),
+            }
+            if debug_pipeline:
+                entry.update({
+                    "pipeline_path": meta.get("pipeline_path"),
+                    "rag_path": meta.get("rag_path"),
+                    "synced_to_rag": meta.get("synced_to_rag"),
+                    "exists": meta.get("exists"),
+                })
+            topic_files_meta.append(entry)
+        except Exception as e:
+            topic_files_missing.append({
+                "topic": topic,
+                "filename": file_map.get(topic),
+                "error": str(e) if debug_pipeline else "load_failed",
+            })
 
     # We also pre-fetch RAG search results (ordered by similarity) for granular budgeting
     rag_search_results = []
@@ -420,9 +460,10 @@ async def chat(
         # try extend each existing rag section a bit if original content longer (skipped for simplicity)
         rag_context_combined = (rag_context_combined + '\n')[:(rag_budget + rag_extra_allow)]
 
-    sections = []
+    pipeline_context = ""
     if topic_context_combined:
-        sections.append(f"[SEZIONE TOPICS]\n{topic_context_combined.strip()}")
+        pipeline_context = f"[SEZIONE PIPELINE]\n{topic_context_combined.strip()}"
+    sections = []
     if rag_context_combined:
         sections.append(f"[SEZIONE RAG]\n{rag_context_combined.strip()}")
     # Optional: search in data tables (enabled by personality, or auto-detected)
@@ -536,6 +577,9 @@ async def chat(
             "topics_detected": topics_multi,
             "topic_primary": topic,
             "topic_files_loaded": [t for t,_ in topic_snippets],
+            "topic_files_meta": topic_files_meta,
+            "topic_files_missing": topic_files_missing,
+            "file_map_count": len(file_map),
             "topic_budget_chars": topic_budget,
             "rag_budget_chars": rag_budget,
             "total_budget_chars": TOTAL_BUDGET,
@@ -585,10 +629,17 @@ async def chat(
     else:
         topic_label = f"topic: {topic or 'generale'} (dinamico)"
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"}
-    ]
+    messages = [{"role": "system", "content": system}]
+    if pipeline_context:
+        messages.append({
+            "role": "system",
+            "content": "Istruzioni specifiche aggiuntive per la richiesta dell'utente.\n\n" + pipeline_context
+        })
+    if context:
+        messages.append({
+            "role": "system",
+            "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"
+        })
     
     # Aggiungi la cronologia della conversazione
     messages.extend(conversation_history)
@@ -937,8 +988,124 @@ async def chat_stream(
     topics_multi = detect_topics(full_user_message, enabled_topics=personality_enabled_topics, max_topics=None)
     if not topic:
         topic = 'generale'
+    import os as _os
+    from .rag import load_files_mapping, load_text_with_meta
+    file_map = load_files_mapping()
+    topic_snippets: list[tuple[str, str]] = []
+    topic_files_meta: list[dict] = []
+    topic_files_missing: list[dict] = []
+    debug_pipeline = _os.getenv("PIPELINE_DEBUG_LOG", "0") in ("1", "true", "True")
+    seen_topics = set()
+    for tinfo in (topics_multi or []):
+        tname = tinfo.get('topic') if isinstance(tinfo, dict) else None
+        if not tname or tname in seen_topics:
+            continue
+        seen_topics.add(tname)
+        if tname in file_map:
+            try:
+                raw_txt, meta = load_text_with_meta(tname)
+                topic_snippets.append((tname, raw_txt))
+                entry = {
+                    "topic": tname,
+                    "filename": meta.get("filename"),
+                    "source": meta.get("source"),
+                    "chars": meta.get("chars"),
+                }
+                if debug_pipeline:
+                    entry.update({
+                        "pipeline_path": meta.get("pipeline_path"),
+                        "rag_path": meta.get("rag_path"),
+                        "synced_to_rag": meta.get("synced_to_rag"),
+                        "exists": meta.get("exists"),
+                    })
+                topic_files_meta.append(entry)
+            except Exception as e:
+                topic_files_missing.append({
+                    "topic": tname,
+                    "filename": file_map.get(tname),
+                    "error": str(e) if debug_pipeline else "load_failed",
+                })
+    if not topic_snippets and topic:
+        try:
+            raw_txt, meta = load_text_with_meta(topic)
+            topic_snippets.append((topic, raw_txt))
+            entry = {
+                "topic": topic,
+                "filename": meta.get("filename"),
+                "source": meta.get("source"),
+                "chars": meta.get("chars"),
+            }
+            if debug_pipeline:
+                entry.update({
+                    "pipeline_path": meta.get("pipeline_path"),
+                    "rag_path": meta.get("rag_path"),
+                    "synced_to_rag": meta.get("synced_to_rag"),
+                    "exists": meta.get("exists"),
+                })
+            topic_files_meta.append(entry)
+        except Exception as e:
+            topic_files_missing.append({
+                "topic": topic,
+                "filename": file_map.get(topic),
+                "error": str(e) if debug_pipeline else "load_failed",
+            })
+    TOTAL_BUDGET = int(_os.getenv("CONTEXT_TOTAL_BUDGET", "9000"))
+    MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_CHARS", "3000"))
+    TOKENS_TOTAL = int(_os.getenv("CONTEXT_TOTAL_TOKENS", str(max(1000, TOTAL_BUDGET//4))))
+    TOKENS_MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_TOKENS", str(max(500, MIN_TOPICS//4))))
+    TOTAL_BUDGET = TOKENS_TOTAL * 4
+    MIN_TOPICS = TOKENS_MIN_TOPICS * 4
+    if TOTAL_BUDGET < 3000:
+        TOTAL_BUDGET = 3000
+    topic_budget = min(max(MIN_TOPICS, 0), TOTAL_BUDGET)
+    def _truncate_sentence_boundary(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        cut = text[:limit]
+        for sep in ['.\n', '. ', '\n', '! ', '? ']:
+            idx = cut.rfind(sep)
+            if idx > limit * 0.5:
+                return cut[:idx+len(sep)].strip()
+        return cut.strip()
+    topic_weights = []
+    for name, txt in topic_snippets:
+        weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        topic_weights.append((name, txt, weight))
+    total_w = sum(w for _, _, w in topic_weights) or 1
+    topic_sections = []
+    for name, txt, w in topic_weights:
+        share = int(topic_budget * (w / total_w))
+        share = max(300, min(4000, share))
+        snippet = _truncate_sentence_boundary(txt, share)
+        topic_sections.append(f"[TOPIC: {name}]\n{snippet}")
+    topic_context_combined = "\n\n".join(topic_sections)
+    if len(topic_context_combined) > topic_budget:
+        topic_context_combined = topic_context_combined[:topic_budget]
+    pipeline_context = ""
+    if topic_context_combined:
+        pipeline_context = f"[SEZIONE PIPELINE]\n{topic_context_combined.strip()}"
     rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
-    context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
+    context = rag_context or ""
+    if not context and not pipeline_context:
+        context = get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
+    # Log pipeline context for stream
+    try:
+        _safe_log_interaction({
+            "event": "pipeline_context_built_stream",
+            "request_id": request_id,
+            "topics_detected": topics_multi,
+            "topic_primary": topic,
+            "topic_files_loaded": [t for t, _ in topic_snippets],
+            "topic_files_meta": topic_files_meta,
+            "topic_files_missing": topic_files_missing,
+            "file_map_count": len(file_map),
+            "topic_budget_chars": topic_budget,
+            "total_budget_chars": TOTAL_BUDGET,
+            "rag_used": bool(rag_context),
+            "user_message_sample": (user_msg or "")[:180],
+        })
+    except Exception:
+        pass
     # Optional: cerca nelle tabelle dati abilitate o auto-rilevate e aggiungi una sezione al contesto
     data_tables_search_results = None
     try:
@@ -1064,10 +1231,18 @@ async def chat_stream(
     else:
         conversation_history = frontend_history
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"}
-    ] + conversation_history
+    messages = [{"role": "system", "content": system}]
+    if pipeline_context:
+        messages.append({
+            "role": "system",
+            "content": "Istruzioni specifiche aggiuntive per la richiesta dell'utente.\n\n" + pipeline_context
+        })
+    if context:
+        messages.append({
+            "role": "system",
+            "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"
+        })
+    messages += conversation_history
     # Aggiungi il messaggio utente corrente (con allegati) se non già presente in cronologia
     if not any(m.get('role') == 'user' and m.get('content') == full_user_message for m in conversation_history):
         user_message_for_llm = {"role": "user", "content": full_user_message}

@@ -91,13 +91,24 @@ def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, ma
     norm_acc = os.getenv("PIPELINE_NORMALIZE_ACCENTS", "0") in ("1", "true", "True")
   if norm_acc:
     t = _normalize_accents(t)
-  matches: List[Tuple[int,str,str]] = []  # (start_index, topic, pattern)
+  debug_log = os.getenv("PIPELINE_DEBUG_LOG", "0") in ("1", "true", "True")
+  matches: List[Tuple[int,Dict[str,str],str]] = []  # (start_index, info, pattern)
   for pat, topic in load_routes():
     if enabled_topics is not None and topic not in enabled_topics:
       continue
     try:
       for m in re.finditer(pat, t):
-        matches.append((m.start(), topic, pat))
+        info: Dict[str, str] = {"topic": topic, "pattern": pat}
+        if debug_log:
+          snippet = m.group(0)
+          if len(snippet) > 80:
+            snippet = snippet[:80]
+          info.update({
+            "match_start": str(m.start()),
+            "match_end": str(m.end()),
+            "match_text": snippet.replace("\n", "\\n"),
+          })
+        matches.append((m.start(), info, pat))
         break  # una singola occorrenza sufficiente per quel pattern
     except re.error:
       continue
@@ -105,11 +116,12 @@ def detect_topics(user_text: str, enabled_topics: Optional[List[str]] = None, ma
   matches.sort(key=lambda x: (x[0], -len(x[2])))
   seen = set()
   out: List[Dict[str,str]] = []
-  for _, topic, pat in matches:
-    if topic in seen:
+  for _, info, pat in matches:
+    topic = info.get("topic")
+    if not topic or topic in seen:
       continue
     seen.add(topic)
-    out.append({"topic": topic, "pattern": pat})
+    out.append(info)
     if max_topics is not None and max_topics > 0 and len(out) >= max_topics:
       break
   return out

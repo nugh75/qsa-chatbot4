@@ -26,7 +26,7 @@ import {
   Email as EmailIcon,
 } from '@mui/icons-material';
 import { apiService, handleApiError } from '../apiService';
-import { CredentialManager } from '../crypto';
+import { CredentialManager, PasswordValidator } from '../crypto';
 
 interface LoginDialogProps {
   open: boolean;
@@ -56,6 +56,7 @@ interface RegisterForm {
 }
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
+const PASSWORD_REQUIREMENTS = 'Minimo 8 caratteri, 1 maiuscola, 1 minuscola, 1 numero, 1 speciale';
 
 const LoginDialog: React.FC<LoginDialogProps> = ({
   open,
@@ -158,6 +159,11 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       setError('Le nuove password non corrispondono');
       return;
     }
+    const passwordValidation = PasswordValidator.validatePassword(newPassword);
+    if (!passwordValidation.isValid) {
+      setError(`Password non valida: ${passwordValidation.errors.join(', ')}`);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -193,8 +199,9 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       return;
     }
 
-    if (registerForm.password.length < 8) {
-      setError('La password deve essere di almeno 8 caratteri');
+    const passwordValidation = PasswordValidator.validatePassword(registerForm.password);
+    if (!passwordValidation.isValid) {
+      setError(`Password non valida: ${passwordValidation.errors.join(', ')}`);
       return;
     }
 
@@ -396,7 +403,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                     </InputAdornment>
                   ),
                 }}
-                helperText="Minimo 8 caratteri"
+                helperText={PASSWORD_REQUIREMENTS}
                 required
               />
 
@@ -453,6 +460,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                   </InputAdornment>
                 ),
               }}
+              helperText={PASSWORD_REQUIREMENTS}
             />
             <TextField
               fullWidth

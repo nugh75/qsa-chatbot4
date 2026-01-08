@@ -650,7 +650,7 @@ class SurveyModel:
                 values.append(data.get('q_riflessioni'))
                 values.append(data.get('q_commenti'))
                 values.append(data.get('session_id'))
-                cursor.execute(f"INSERT INTO survey_responses ({','.join(cols)}) VALUES ({placeholders})", values)
+                db_manager.exec(cursor, f"INSERT INTO survey_responses ({','.join(cols)}) VALUES ({placeholders})", values)
                 conn.commit()
                 return True
         except Exception:
@@ -662,14 +662,15 @@ class SurveyModel:
             cursor = conn.cursor()
             summary = {}
             for f in SurveyModel.FIELDS:
-                cursor.execute(
+                db_manager.exec(
+                    cursor,
                     f"SELECT COUNT({f}) as n, AVG({f}) as avg, MIN({f}) as min, MAX({f}) as max, SUM({f}) as sum, SUM({f}*{f}) as sumsq FROM survey_responses WHERE {f} IS NOT NULL"
                 )
                 row = cursor.fetchone()
                 n = row['n'] or 0
                 avg = row['avg']
                 # distribuzione valori 1-5
-                cursor.execute(f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
+                db_manager.exec(cursor, f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
                 dist_rows = cursor.fetchall()
                 dist = {i:0 for i in range(1,6)}
                 for dr in dist_rows:
@@ -681,7 +682,7 @@ class SurveyModel:
                     std = math.sqrt(var) if var is not None and var > 0 else 0.0
                 # mediana
                 median = None
-                cursor.execute(f"SELECT {f} as val FROM survey_responses WHERE {f} IS NOT NULL ORDER BY {f}")
+                db_manager.exec(cursor, f"SELECT {f} as val FROM survey_responses WHERE {f} IS NOT NULL ORDER BY {f}")
                 vals = [r['val'] for r in cursor.fetchall()]
                 if vals:
                     m = len(vals)
@@ -698,14 +699,14 @@ class SurveyModel:
                     'median': median,
                     'distribution': dist
                 }
-            cursor.execute("SELECT COUNT(*) as total FROM survey_responses")
+            db_manager.exec(cursor, "SELECT COUNT(*) as total FROM survey_responses")
             total = cursor.fetchone()['total']
 
             # Demografia
             # Età: min, max, avg e distribuzione per fasce
-            cursor.execute("SELECT MIN(demo_eta) as min, MAX(demo_eta) as max, AVG(demo_eta) as avg FROM survey_responses WHERE demo_eta IS NOT NULL")
+            db_manager.exec(cursor, "SELECT MIN(demo_eta) as min, MAX(demo_eta) as max, AVG(demo_eta) as avg FROM survey_responses WHERE demo_eta IS NOT NULL")
             eta_row = cursor.fetchone()
-            cursor.execute("SELECT demo_eta as eta FROM survey_responses WHERE demo_eta IS NOT NULL")
+            db_manager.exec(cursor, "SELECT demo_eta as eta FROM survey_responses WHERE demo_eta IS NOT NULL")
             bins = {'<=17':0,'18-24':0,'25-34':0,'35-44':0,'45-54':0,'55+':0}
             for r in cursor.fetchall():
                 e = r['eta']
@@ -718,15 +719,15 @@ class SurveyModel:
                 else: bins['55+'] += 1
 
             # Sesso e istruzione
-            cursor.execute("SELECT demo_sesso as k, COUNT(*) as c FROM survey_responses WHERE demo_sesso IS NOT NULL AND demo_sesso!='' GROUP BY demo_sesso")
+            db_manager.exec(cursor, "SELECT demo_sesso as k, COUNT(*) as c FROM survey_responses WHERE demo_sesso IS NOT NULL AND demo_sesso!='' GROUP BY demo_sesso")
             sesso = {row['k']: row['c'] for row in cursor.fetchall()}
-            cursor.execute("SELECT demo_istruzione as k, COUNT(*) as c FROM survey_responses WHERE demo_istruzione IS NOT NULL AND demo_istruzione!='' GROUP BY demo_istruzione")
+            db_manager.exec(cursor, "SELECT demo_istruzione as k, COUNT(*) as c FROM survey_responses WHERE demo_istruzione IS NOT NULL AND demo_istruzione!='' GROUP BY demo_istruzione")
             istruzione = {row['k']: row['c'] for row in cursor.fetchall()}
 
             # Top categorie per tipo istituto e provenienza
-            cursor.execute("SELECT demo_tipo_istituto as k, COUNT(*) as c FROM survey_responses WHERE demo_tipo_istituto IS NOT NULL AND demo_tipo_istituto!='' GROUP BY demo_tipo_istituto ORDER BY c DESC LIMIT 20")
+            db_manager.exec(cursor, "SELECT demo_tipo_istituto as k, COUNT(*) as c FROM survey_responses WHERE demo_tipo_istituto IS NOT NULL AND demo_tipo_istituto!='' GROUP BY demo_tipo_istituto ORDER BY c DESC LIMIT 20")
             tipo_istituto = {row['k']: row['c'] for row in cursor.fetchall()}
-            cursor.execute("SELECT demo_provenienza as k, COUNT(*) as c FROM survey_responses WHERE demo_provenienza IS NOT NULL AND demo_provenienza!='' GROUP BY demo_provenienza ORDER BY c DESC LIMIT 20")
+            db_manager.exec(cursor, "SELECT demo_provenienza as k, COUNT(*) as c FROM survey_responses WHERE demo_provenienza IS NOT NULL AND demo_provenienza!='' GROUP BY demo_provenienza ORDER BY c DESC LIMIT 20")
             provenienza = {row['k']: row['c'] for row in cursor.fetchall()}
 
             demographics = {
@@ -742,7 +743,7 @@ class SurveyModel:
             for area in ['STEM','Umanistiche']:
                 area_avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_area = ? AND {f} IS NOT NULL", (area,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_area = ? AND {f} IS NOT NULL", (area,))
                     row = cursor.fetchone()
                     area_avgs[f] = row['avg']
                 by_area[area] = area_avgs
@@ -763,7 +764,7 @@ class SurveyModel:
             for label, cond in age_bins_def:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE {cond} AND {f} IS NOT NULL")
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE {cond} AND {f} IS NOT NULL")
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_age_bins[label] = avgs
@@ -774,7 +775,7 @@ class SurveyModel:
             for s in ['F','M','Altro','ND']:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_sesso = ? AND {f} IS NOT NULL", (s,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_sesso = ? AND {f} IS NOT NULL", (s,))
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_sesso[s] = avgs
@@ -785,7 +786,7 @@ class SurveyModel:
             for istr in ['Scuola','Università','Dottorato','Altro']:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_istruzione = ? AND {f} IS NOT NULL", (istr,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_istruzione = ? AND {f} IS NOT NULL", (istr,))
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_istruzione[istr] = avgs
@@ -797,7 +798,7 @@ class SurveyModel:
     def get_open_answers(limit: int = 500):
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT q_riflessioni, q_commenti, submitted_at FROM survey_responses ORDER BY submitted_at DESC LIMIT ?", (limit,))
+            db_manager.exec(cursor, "SELECT q_riflessioni, q_commenti, submitted_at FROM survey_responses ORDER BY submitted_at DESC LIMIT ?", (limit,))
             rows = cursor.fetchall()
             results = []
             for r in rows:

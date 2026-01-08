@@ -403,6 +403,7 @@ async def get_public_config():
             "default_asr": config.get('default_asr', 'openai'),
             "ui_settings": {
                 "arena_public": ui_cfg.get('arena_public', False),
+                "survey_results_public": ui_cfg.get('survey_results_public', False),
                 "contact_email": ui_cfg.get('contact_email'),
                 "research_project": ui_cfg.get('research_project'),
                 "repository_url": ui_cfg.get('repository_url'),

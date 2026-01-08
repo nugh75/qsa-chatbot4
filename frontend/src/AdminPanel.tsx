@@ -7,7 +7,8 @@ import {
   Tooltip, Slider, Tabs, Tab, Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon, Dns as DnsIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon, Dns as DnsIcon, ArrowBack as ArrowBackIcon } from '@mui/icons-material'
+import { useNavigate } from 'react-router-dom'
 
 import UserManagement from './components/UserManagement'
 // Rimosso ModelProvidersPanel (tab provider) — test LLM spostato sotto Personalità
@@ -42,11 +43,14 @@ import DatabaseInfoPanel from './components/DatabaseInfoPanel'
 import ConversationsAdminTab from './components/ConversationsAdminTab'
 
 const AdminPanel: React.FC = () => {
+  const navigate = useNavigate()
+
   // Stato principale
   const [config, setConfig] = useState<AdminConfig | null>(null)
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
   const [arenaPublic, setArenaPublic] = useState<boolean>(false)
+  const [surveyResultsPublic, setSurveyResultsPublic] = useState<boolean>(false)
   const [contactEmail, setContactEmail] = useState<string>('')
   const [researchProject, setResearchProject] = useState<string>('')
   const [repositoryUrl, setRepositoryUrl] = useState<string>('')
@@ -177,6 +181,7 @@ const AdminPanel: React.FC = () => {
       if (res.ok) {
         const data = await res.json()
   setArenaPublic(Boolean(data?.settings?.arena_public))
+  setSurveyResultsPublic(Boolean(data?.settings?.survey_results_public))
   if (data?.settings?.contact_email) setContactEmail(data.settings.contact_email)
   if (data?.settings?.research_project) setResearchProject(data.settings.research_project)
   if (data?.settings?.repository_url) setRepositoryUrl(data.settings.repository_url)
@@ -267,7 +272,7 @@ const AdminPanel: React.FC = () => {
     }
   }), [])
 
-  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean;}>) => {
+  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean; survey_results_public:boolean;}>) => {
     setSavingArena(true)
     try {
       const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
@@ -275,6 +280,7 @@ const AdminPanel: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           arena_public: nextArena ?? arenaPublic,
+          survey_results_public: extra?.survey_results_public ?? surveyResultsPublic,
           contact_email: (nextEmail ?? contactEmail) || null,
           research_project: (extra?.research_project ?? researchProject) || null,
           repository_url: (extra?.repository_url ?? repositoryUrl) || null,
@@ -292,6 +298,7 @@ const AdminPanel: React.FC = () => {
       })
       if (res.ok) {
         if (nextArena !== undefined) setArenaPublic(!!nextArena)
+        if (extra?.survey_results_public !== undefined) setSurveyResultsPublic(extra.survey_results_public)
         if (nextEmail !== undefined) setContactEmail(nextEmail)
         if (extra?.research_project !== undefined) setResearchProject(extra.research_project)
         if (extra?.repository_url !== undefined) setRepositoryUrl(extra.repository_url)
@@ -412,10 +419,35 @@ const AdminPanel: React.FC = () => {
     <>
     <Container maxWidth="lg" sx={{ py: 3 }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => navigate('/')}
+        >
+          Torna alla chat
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ArenaIcon />}
+          onClick={() => navigate('/arena')}
+        >
+          Arena
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<StatsIcon />}
+          onClick={() => navigate('/survey-results')}
+        >
+          Risultati
+        </Button>
         <SettingsIcon />
         <Typography variant="h5" sx={{ mr: 2 }}>Pannello di amministrazione</Typography>
   <Tooltip title="Guida Admin"><IconButton size="small" color="secondary" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton></Tooltip>
   <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> saveUiSettings(e.target.checked, undefined)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
+  <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={surveyResultsPublic} onChange={(e)=> saveUiSettings(undefined, undefined, { survey_results_public: e.target.checked })} />} label={savingArena ? 'Risultati…' : 'Risultati pubblici'} />
         {loading && <LinearProgress sx={{ flexBasis: '100%', mt: 1 }} />}
       </Stack>
 

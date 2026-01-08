@@ -678,7 +678,9 @@ class SurveyModel:
                 # deviazione standard (popolazione)
                 std = None
                 if n and avg is not None and row['sumsq'] is not None:
-                    var = (row['sumsq'] / n) - (avg * avg)
+                    avg_f = float(avg)
+                    sumsq_f = float(row['sumsq'])
+                    var = (sumsq_f / n) - (avg_f * avg_f)
                     std = math.sqrt(var) if var is not None and var > 0 else 0.0
                 # mediana
                 median = None

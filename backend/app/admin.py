@@ -919,6 +919,7 @@ async def preload_tts_models(req: TTSPreloadRequest):
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
     arena_public: bool
+    survey_results_public: bool | None = None
     contact_email: str | None = None
     research_project: str | None = None
     repository_url: str | None = None
@@ -937,9 +938,11 @@ class UiSettingsIn(BaseModel):
 async def get_ui_settings():
     try:
         config = load_config()
-        ui = config.get("ui_settings", {"arena_public": False, "contact_email": None})
+        ui = config.get("ui_settings", {"arena_public": False, "survey_results_public": False, "contact_email": None})
         if "arena_public" not in ui:
             ui["arena_public"] = False
+        if "survey_results_public" not in ui:
+            ui["survey_results_public"] = False
         if "contact_email" not in ui:
             ui["contact_email"] = None
         # Ensure new research fields exist (even if None)
@@ -960,6 +963,8 @@ async def update_ui_settings(payload: UiSettingsIn):
         config = load_config()
         config.setdefault("ui_settings", {})
         config["ui_settings"]["arena_public"] = bool(payload.arena_public)
+        if payload.survey_results_public is not None:
+            config["ui_settings"]["survey_results_public"] = bool(payload.survey_results_public)
         def _norm(v: Optional[str]):
             if v is None:
                 return None

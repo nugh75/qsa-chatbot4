@@ -403,9 +403,14 @@ async def chat(
 
     # Compose topic section with dynamic allocation
     # Weight topics by (snippet length truncated + length of topic name)
+    # Priority topics get higher weight when detected
+    PRIORITY_TOPICS = {"Analisi di secondo livello"}
     topic_weights = []
     for name, txt in topic_snippets:
         weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        # Boost priority topics by 3x when detected
+        if name in PRIORITY_TOPICS:
+            weight *= 3.0
         topic_weights.append((name, txt, weight))
     total_w = sum(w for _,_,w in topic_weights) or 1
     remaining_budget = TOTAL_BUDGET
@@ -643,14 +648,14 @@ async def chat(
     if pipeline_context:
         messages.append({
             "role": "system",
-            "content": "Istruzioni specifiche aggiuntive per la richiesta dell'utente.\n\n" + pipeline_context
+            "content": "ISTRUZIONI PRIORITARIE - Segui queste indicazioni specifiche per rispondere alla richiesta dell'utente. Questi contenuti hanno precedenza sulle istruzioni generali.\n\n" + pipeline_context
         })
     if context:
         messages.append({
             "role": "system",
             "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"
         })
-    
+
     # Aggiungi la cronologia della conversazione
     messages.extend(conversation_history)
     
@@ -1102,9 +1107,14 @@ async def chat_stream(
             if idx > limit * 0.5:
                 return cut[:idx+len(sep)].strip()
         return cut.strip()
+    # Priority topics get higher weight when detected
+    PRIORITY_TOPICS = {"Analisi di secondo livello"}
     topic_weights = []
     for name, txt in topic_snippets:
         weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        # Boost priority topics by 3x when detected
+        if name in PRIORITY_TOPICS:
+            weight *= 3.0
         topic_weights.append((name, txt, weight))
     total_w = sum(w for _, _, w in topic_weights) or 1
     topic_sections = []
@@ -1256,7 +1266,7 @@ async def chat_stream(
     if pipeline_context:
         messages.append({
             "role": "system",
-            "content": "Istruzioni specifiche aggiuntive per la richiesta dell'utente.\n\n" + pipeline_context
+            "content": "ISTRUZIONI PRIORITARIE - Segui queste indicazioni specifiche per rispondere alla richiesta dell'utente. Questi contenuti hanno precedenza sulle istruzioni generali.\n\n" + pipeline_context
         })
     if context:
         messages.append({

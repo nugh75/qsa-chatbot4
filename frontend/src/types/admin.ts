@@ -69,6 +69,14 @@ export interface PersonalityEntry {
   webhook_timeout?: number;
   webhook_auth_header?: string | null;
   webhook_include_history?: boolean;
+  // Delegation rules
+  delegate_rules?: DelegateRule[];
+}
+
+export interface DelegateRule {
+  pattern: string;
+  target_personality_id: string;
+  mode: 'full' | 'partial';
 }
 
 export interface PipelineOption {

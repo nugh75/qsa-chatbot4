@@ -1717,6 +1717,8 @@ class PersonalityIn(BaseModel):
     webhook_timeout: Optional[int] = 60  # timeout in secondi per la chiamata webhook
     webhook_auth_header: Optional[str] = None  # header Authorization opzionale
     webhook_include_history: Optional[bool] = True  # se includere la cronologia nella richiesta
+    # Delegation rules
+    delegate_rules: Optional[List[Dict]] = None  # regole di delega a altre personalità
 
 
 class PersonalityDuplicateIn(BaseModel):
@@ -1784,6 +1786,7 @@ async def upsert_personality_admin(p: PersonalityIn):
             webhook_timeout=p.webhook_timeout,
             webhook_auth_header=p.webhook_auth_header,
             webhook_include_history=p.webhook_include_history,
+            delegate_rules=p.delegate_rules,
         )
         return {"success": True, "id": res['id']}
     except Exception as e:

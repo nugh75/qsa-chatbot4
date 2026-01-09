@@ -168,6 +168,13 @@ def _ensure_personality_schema():
             """)
             if not cur.fetchone():
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_include_history BOOLEAN DEFAULT TRUE")
+            # Delegation rules column
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegate_rules'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegate_rules JSONB DEFAULT '[]'::jsonb")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -246,7 +253,7 @@ def load_personalities() -> Dict:
         items: List[Dict] = []
         for r in rows:
             d = dict(r)
-            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts']:
+            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules']:
                 v = d.get(k)
                 if isinstance(v, (bytes, str)):
                     try:
@@ -283,6 +290,7 @@ def load_personalities() -> Dict:
                 'webhook_timeout': d.get('webhook_timeout') or 60,
                 'webhook_auth_header': d.get('webhook_auth_header'),
                 'webhook_include_history': bool(d.get('webhook_include_history', True)),
+                'delegate_rules': d.get('delegate_rules') or [],
             })
         return {'default_id': default_id, 'personalities': items}
 
@@ -321,6 +329,7 @@ def upsert_personality(
     webhook_timeout: Optional[int] = None,
     webhook_auth_header: Optional[str] = None,
     webhook_include_history: Optional[bool] = None,
+    delegate_rules: Optional[List[Dict]] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -333,6 +342,7 @@ def upsert_personality(
     e_tables = json.dumps(enabled_data_tables or [])
     e_forms = json.dumps(enabled_forms or [])
     s_prompts = json.dumps(starter_prompts or [])
+    d_rules = json.dumps(delegate_rules or [])
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
         db_manager.exec(cur, """
@@ -342,8 +352,8 @@ def upsert_personality(
                 enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
                 show_pipeline_topics, show_source_docs, hide_rag_links, starter_prompts,
                 webhook_url, webhook_enabled, webhook_timeout, webhook_auth_header, webhook_include_history,
-                is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                delegate_rules, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -372,6 +382,7 @@ def upsert_personality(
                 webhook_timeout = EXCLUDED.webhook_timeout,
                 webhook_auth_header = EXCLUDED.webhook_auth_header,
                 webhook_include_history = EXCLUDED.webhook_include_history,
+                delegate_rules = EXCLUDED.delegate_rules,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
@@ -386,7 +397,8 @@ def upsert_personality(
             webhook_timeout or 60,
             webhook_auth_header or None,
             True if webhook_include_history is None else bool(webhook_include_history),
-            bool(False)
+            d_rules,
+            False
         ))
         if set_default:
             db_manager.exec(cur, "UPDATE personalities SET is_default = FALSE WHERE is_default = TRUE")
@@ -435,7 +447,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
         if not row:
             return None
         d = dict(row)
-        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts']:
+        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules']:
             if k in d and isinstance(d[k], (bytes, str)):
                 try:
                     d[k] = json.loads(d[k]) if d[k] else []
@@ -469,6 +481,7 @@ def get_personality(personality_id: str) -> Optional[Dict]:
             'webhook_timeout': d.get('webhook_timeout') or 60,
             'webhook_auth_header': d.get('webhook_auth_header'),
             'webhook_include_history': bool(d.get('webhook_include_history', True)),
+            'delegate_rules': d.get('delegate_rules') or [],
         }
 
 
@@ -528,6 +541,7 @@ def duplicate_personality(
         webhook_timeout=existing.get('webhook_timeout'),
         webhook_auth_header=existing.get('webhook_auth_header'),
         webhook_include_history=existing.get('webhook_include_history'),
+        delegate_rules=existing.get('delegate_rules'),
     )
     res['name'] = name
     return res

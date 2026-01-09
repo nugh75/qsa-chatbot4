@@ -81,6 +81,41 @@ def _resolve_personality(personality_id: Optional[str]):
             print(f"Personality load failed: {e}")
     return system, provider_override, model_override, personality_meta, webhook_config
 
+def _check_delegation(message: str, personality_meta: Optional[Dict]) -> Optional[Dict]:
+    """Verifica se il messaggio attiva una regola di delega.
+
+    Ritorna None se non c'è delega, altrimenti:
+    {
+        "target_personality_id": str,
+        "mode": "full" | "partial",
+        "matched_pattern": str
+    }
+    """
+    if not personality_meta:
+        return None
+    delegate_rules = personality_meta.get("delegate_rules") or []
+    if not delegate_rules:
+        return None
+
+    msg_lower = message.lower()
+    for rule in delegate_rules:
+        pattern = rule.get("pattern", "")
+        target_id = rule.get("target_personality_id")
+        mode = rule.get("mode", "full")
+        if not pattern or not target_id:
+            continue
+        try:
+            if re.search(pattern, msg_lower, re.IGNORECASE):
+                return {
+                    "target_personality_id": target_id,
+                    "mode": mode,
+                    "matched_pattern": pattern
+                }
+        except re.error:
+            continue
+    return None
+
+
 def _resolve_temperature(header_temp: Optional[float], personality_id: Optional[str]) -> float:
     temp_value = 0.3
     if header_temp is not None:
@@ -630,6 +665,21 @@ async def chat(
     system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
     if provider_override:
         effective_provider = provider_override
+
+    # --- Delegation check ---
+    delegation_info = _check_delegation(full_user_message, _pmeta)
+    delegate_system = None
+    delegate_provider = None
+    delegate_model = None
+    if delegation_info:
+        target_id = delegation_info["target_personality_id"]
+        d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
+        if d_meta:
+            delegate_system = d_sys
+            delegate_provider = d_prov
+            delegate_model = d_model
+            print(f"[DELEGATION] Activated: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+
     # Log risoluzione provider/modello
     try:
         log_interaction({
@@ -663,7 +713,9 @@ async def chat(
     else:
         topic_label = f"topic: {topic or 'generale'} (dinamico)"
 
-    messages = [{"role": "system", "content": system}]
+    # Usa system prompt delegato se delega full, altrimenti quello originale
+    active_system = delegate_system if (delegation_info and delegation_info.get("mode") == "full" and delegate_system) else system
+    messages = [{"role": "system", "content": active_system}]
     if pipeline_context:
         messages.append({
             "role": "system",
@@ -705,6 +757,13 @@ async def chat(
     # Se header X-LLM-Model è presente, ha priorità rispetto a personality (solo per test)
     effective_model_override = x_llm_model or model_override
 
+    # Applica override da delega (full mode usa provider/model della personalità delegata)
+    if delegation_info and delegation_info.get("mode") == "full":
+        if delegate_provider:
+            effective_provider = delegate_provider
+        if delegate_model:
+            effective_model_override = delegate_model
+
     # Se webhook attivo, inoltra al webhook invece di usare il provider LLM
     if webhook_config:
         from .webhook_handler import WebhookRequest, call_webhook
@@ -737,6 +796,27 @@ async def chat(
             temperature=temp_value,
             ollama_base_url=x_ollama_base_url
         )
+
+    # --- Delegation partial mode: ottieni risposta aggiuntiva dalla personalità delegata ---
+    if delegation_info and delegation_info.get("mode") == "partial" and delegate_system:
+        try:
+            delegate_messages = [{"role": "system", "content": delegate_system}]
+            delegate_messages.extend(conversation_history)
+            delegate_messages.append({"role": "user", "content": full_user_message})
+            delegate_answer = await chat_with_provider(
+                delegate_messages,
+                provider=delegate_provider or effective_provider,
+                context_hint=topic or 'generale',
+                model=delegate_model or effective_model_override,
+                temperature=temp_value,
+                ollama_base_url=x_ollama_base_url
+            )
+            # Combina le risposte
+            answer = f"{answer}\n\n---\n\n{delegate_answer}"
+            print(f"[DELEGATION] Partial mode: combined responses")
+        except Exception as del_err:
+            print(f"[DELEGATION] Partial mode error: {del_err}")
+
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -826,7 +906,7 @@ async def chat(
     resp = {"reply": answer, "topic": topic, "topics": [t["topic"] for t in topics_multi] if topics_multi else ([topic] if topic else [])}
     # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
-        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
+        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": [], "delegation": None}
         if rag_results:
             sources["rag_chunks"] = [
                 {
@@ -885,7 +965,23 @@ async def chat(
                     })
         except Exception:
             pass
-        if any(sources.values()):
+        # Add delegation info if delegation was triggered
+        if delegation_info:
+            target_id = delegation_info.get("target_personality_id")
+            target_name = None
+            if target_id:
+                try:
+                    target_p = get_personality(target_id)
+                    target_name = target_p.get("name") if target_p else target_id
+                except Exception:
+                    target_name = target_id
+            sources["delegation"] = {
+                "target_personality_id": target_id,
+                "target_personality_name": target_name,
+                "mode": delegation_info.get("mode"),
+                "matched_pattern": delegation_info.get("matched_pattern")
+            }
+        if any(v for v in sources.values() if v):
             resp['source_docs'] = sources
     except Exception:
         pass
@@ -1280,6 +1376,21 @@ async def chat_stream(
     # Personality override (usa la funzione centralizzata per ottenere anche webhook_config)
     system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
     effective_provider = provider_override or provider
+
+    # --- Delegation check (stream) ---
+    delegation_info = _check_delegation(full_user_message, _pmeta)
+    delegate_system = None
+    delegate_provider = None
+    delegate_model = None
+    if delegation_info:
+        target_id = delegation_info["target_personality_id"]
+        d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
+        if d_meta:
+            delegate_system = d_sys
+            delegate_provider = d_prov
+            delegate_model = d_model
+            print(f"[DELEGATION][stream] Activated: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+
     # Log risoluzione stream
     try:
         log_interaction({
@@ -1302,7 +1413,9 @@ async def chat_stream(
     else:
         conversation_history = frontend_history
 
-    messages = [{"role": "system", "content": system}]
+    # Usa system prompt delegato se delega full, altrimenti quello originale
+    active_system = delegate_system if (delegation_info and delegation_info.get("mode") == "full" and delegate_system) else system
+    messages = [{"role": "system", "content": active_system}]
     if pipeline_context:
         messages.append({
             "role": "system",
@@ -1330,6 +1443,13 @@ async def chat_stream(
     start_time = asyncio.get_event_loop().time()
     answer_accum = []  # parti accumulate
     rag_results = []
+
+    # Applica override da delega (full mode usa provider/model della personalità delegata)
+    if delegation_info and delegation_info.get("mode") == "full":
+        if delegate_provider:
+            effective_provider = delegate_provider
+        if delegate_model:
+            model_override = delegate_model
 
     # Pre-calcola temperatura effettiva
     temp_value = 0.3
@@ -1694,7 +1814,23 @@ async def chat_stream(
                             })
                 except Exception:
                     pass
-                meta = {"done": True, "reply": full_answer, "topic": topic, "topics": [t['topic'] for t in topics_multi] if topics_multi else ([topic] if topic else []), "source_docs": sources_final if any(sources_final.values()) else None}
+                # Add delegation info if delegation was triggered
+                if delegation_info:
+                    target_id = delegation_info.get("target_personality_id")
+                    target_name = None
+                    if target_id:
+                        try:
+                            target_p = get_personality(target_id)
+                            target_name = target_p.get("name") if target_p else target_id
+                        except Exception:
+                            target_name = target_id
+                    sources_final["delegation"] = {
+                        "target_personality_id": target_id,
+                        "target_personality_name": target_name,
+                        "mode": delegation_info.get("mode"),
+                        "matched_pattern": delegation_info.get("matched_pattern")
+                    }
+                meta = {"done": True, "reply": full_answer, "topic": topic, "topics": [t['topic'] for t in topics_multi] if topics_multi else ([topic] if topic else []), "source_docs": sources_final if any(v for v in sources_final.values() if v) else None}
                 yield f"data: {_json_final.dumps(meta)}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"

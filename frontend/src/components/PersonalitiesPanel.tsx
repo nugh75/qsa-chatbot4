@@ -7,7 +7,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import { authFetch, BACKEND } from '../utils/authFetch'
-import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer } from '../types/admin'
+import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer, DelegateRule } from '../types/admin'
 
 interface PersonalitiesResponse { default_id: string | null; personalities: PersonalityEntry[] }
 
@@ -80,6 +80,8 @@ const PersonalitiesPanel: React.FC = () => {
   const [webhookTimeout, setWebhookTimeout] = useState<number>(60)
   const [webhookAuthHeader, setWebhookAuthHeader] = useState<string>('')
   const [webhookIncludeHistory, setWebhookIncludeHistory] = useState<boolean>(true)
+  // Delegation rules
+  const [delegateRules, setDelegateRules] = useState<DelegateRule[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -238,6 +240,8 @@ const PersonalitiesPanel: React.FC = () => {
     setWebhookTimeout(60);
     setWebhookAuthHeader('');
     setWebhookIncludeHistory(true);
+    // Reset delegation rules
+    setDelegateRules([]);
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -284,6 +288,8 @@ const PersonalitiesPanel: React.FC = () => {
     setWebhookTimeout(p.webhook_timeout || 60)
     setWebhookAuthHeader(p.webhook_auth_header || '')
     setWebhookIncludeHistory(p.webhook_include_history !== false)
+    // Carica delegation rules
+    setDelegateRules((p as any).delegate_rules || [])
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -362,7 +368,8 @@ const PersonalitiesPanel: React.FC = () => {
           webhook_enabled: webhookEnabled,
           webhook_timeout: webhookTimeout,
           webhook_auth_header: webhookAuthHeader || null,
-          webhook_include_history: webhookIncludeHistory
+          webhook_include_history: webhookIncludeHistory,
+          delegate_rules: delegateRules
         })
       })
       if (!res.ok) {
@@ -1190,7 +1197,100 @@ const PersonalitiesPanel: React.FC = () => {
                 </FormGroup>
               </Paper>
             </Box>
-            
+
+            {/* Delegation Rules */}
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Stack spacing={2}>
+                <Typography variant="subtitle2">Regole di Delega</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Configura quando delegare la risposta ad un'altra personalità in base al contenuto del messaggio
+                </Typography>
+
+                {/* Lista regole esistenti */}
+                {delegateRules.map((rule, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 1.5, bgcolor: 'action.hover' }}>
+                    <Stack spacing={1}>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <TextField
+                          size="small"
+                          label="Pattern (regex)"
+                          value={rule.pattern}
+                          onChange={e => {
+                            const updated = [...delegateRules]
+                            updated[idx] = { ...rule, pattern: e.target.value }
+                            setDelegateRules(updated)
+                          }}
+                          sx={{ flex: 2 }}
+                          placeholder="traduci|translate"
+                        />
+                        <FormControl size="small" sx={{ minWidth: 160 }}>
+                          <InputLabel>Personalità</InputLabel>
+                          <Select
+                            label="Personalità"
+                            value={rule.target_personality_id}
+                            onChange={e => {
+                              const updated = [...delegateRules]
+                              updated[idx] = { ...rule, target_personality_id: e.target.value }
+                              setDelegateRules(updated)
+                            }}
+                          >
+                            {items.personalities
+                              .filter(p => p.id !== editing?.id)
+                              .map(p => (
+                                <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+                              ))
+                            }
+                          </Select>
+                        </FormControl>
+                        <FormControl size="small" sx={{ minWidth: 100 }}>
+                          <InputLabel>Modalità</InputLabel>
+                          <Select
+                            label="Modalità"
+                            value={rule.mode}
+                            onChange={e => {
+                              const updated = [...delegateRules]
+                              updated[idx] = { ...rule, mode: e.target.value as 'full' | 'partial' }
+                              setDelegateRules(updated)
+                            }}
+                          >
+                            <MenuItem value="full">Totale</MenuItem>
+                            <MenuItem value="partial">Parziale</MenuItem>
+                          </Select>
+                        </FormControl>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDelegateRules(prev => prev.filter((_, i) => i !== idx))}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
+                      <Typography variant="caption" color="text.secondary">
+                        {rule.mode === 'full'
+                          ? 'Totale: la risposta viene generata interamente dalla personalità delegata'
+                          : 'Parziale: entrambe le personalità rispondono, le risposte vengono combinate'}
+                      </Typography>
+                    </Stack>
+                  </Paper>
+                ))}
+
+                {/* Pulsante per aggiungere nuova regola */}
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setDelegateRules(prev => [...prev, { pattern: '', target_personality_id: '', mode: 'full' }])}
+                  disabled={items.personalities.filter(p => p.id !== editing?.id).length === 0}
+                >
+                  Aggiungi regola
+                </Button>
+                {items.personalities.filter(p => p.id !== editing?.id).length === 0 && (
+                  <Typography variant="caption" color="text.secondary">
+                    Crea altre personalità per poter configurare le deleghe
+                  </Typography>
+                )}
+              </Stack>
+            </Paper>
+
             {err && <Alert severity="error" onClose={()=>setErr(null)}>{err}</Alert>}
           </Stack>
         </DialogContent>

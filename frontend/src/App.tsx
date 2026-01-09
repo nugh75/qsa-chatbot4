@@ -1813,7 +1813,8 @@ const AppContent: React.FC = () => {
                     {(() => {
                       const showTopics = (selectedPersonality as any)?.show_pipeline_topics !== false;
                       const showSources = (selectedPersonality as any)?.show_source_docs !== false;
-                      const hasSources = !!(m.source_docs && ((showSources && (m.source_docs?.rag_chunks?.length || m.source_docs?.rag_groups?.length || m.source_docs?.data_tables?.length)) || (showTopics && m.source_docs?.pipeline_topics?.length)));
+                      const hasDelegation = !!(m.source_docs as any)?.delegation;
+                      const hasSources = !!(m.source_docs && ((showSources && (m.source_docs?.rag_chunks?.length || m.source_docs?.rag_groups?.length || m.source_docs?.data_tables?.length)) || (showTopics && m.source_docs?.pipeline_topics?.length) || hasDelegation));
                       return m.role==='assistant' && hasSources;
                     })() && (
                       <Box sx={{ mt:1.5 }}>
@@ -1836,6 +1837,15 @@ const AppContent: React.FC = () => {
                                 </Box>
                               ) : null}
                               <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
+                                {/* Delegazione */}
+                                {(m.source_docs as any)?.delegation && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#9c27b0' }}>Delegato a:</strong> {(m.source_docs as any).delegation.target_personality_name || (m.source_docs as any).delegation.target_personality_id}
+                                    <span style={{ marginLeft: 8, color: '#666', fontSize: '0.65rem' }}>
+                                      ({(m.source_docs as any).delegation.mode === 'full' ? 'risposta completa' : 'risposta combinata'})
+                                    </span>
+                                  </Box>
+                                )}
                                 {/* Topic pipeline */}
                                 {(selectedPersonality as any)?.show_pipeline_topics !== false && m.source_docs?.pipeline_topics && m.source_docs?.pipeline_topics.map((pt,idx)=>(
                                   <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>

@@ -21,6 +21,7 @@ class WebhookConfig:
     timeout: int = 60
     auth_header: Optional[str] = None
     include_history: bool = True
+    use_get: bool = False  # Se True, usa GET invece di POST
 
 
 @dataclass
@@ -103,15 +104,38 @@ async def call_webhook(
     payload = _build_payload(config, request, stream=False)
     headers = _build_headers(config, accept_sse=False)
 
-    logger.info(f"[webhook] Calling {config.url} with timeout={config.timeout}s")
+    logger.info(f"[webhook] Calling {config.url} with timeout={config.timeout}s (method={'GET' if config.use_get else 'POST'})")
 
     async with httpx.AsyncClient(timeout=float(config.timeout)) as client:
         try:
-            response = await client.post(
-                config.url,
-                json=payload,
-                headers=headers
-            )
+            # Prova POST, se fallisce con 404 riprova con GET
+            try:
+                response = await client.post(
+                    config.url,
+                    json=payload,
+                    headers=headers
+                )
+                # Se riceve 404 con messaggio specifico di n8n, riprova con GET
+                if response.status_code == 404:
+                    try:
+                        err_data = response.json()
+                        if "not registered for POST" in err_data.get("message", ""):
+                            logger.info(f"[webhook] POST not supported, retrying with GET")
+                            response = await client.get(
+                                config.url,
+                                params=payload,
+                                headers={k: v for k, v in headers.items() if k != "Content-Type"}
+                            )
+                    except Exception:
+                        pass
+            except Exception as post_err:
+                # Se POST fallisce completamente, prova GET
+                logger.info(f"[webhook] POST failed ({post_err}), trying GET")
+                response = await client.get(
+                    config.url,
+                    params=payload,
+                    headers={k: v for k, v in headers.items() if k != "Content-Type"}
+                )
             response.raise_for_status()
 
             # Prova a parsare come JSON
@@ -157,12 +181,33 @@ async def call_webhook_streaming(
 
     async with httpx.AsyncClient(timeout=None) as client:
         try:
+            # Prima prova POST
+            method = "POST"
+            stream_kwargs = {"json": payload, "headers": headers, "timeout": float(config.timeout)}
+
+            # Test veloce per vedere se POST è supportato
+            try:
+                test_resp = await client.post(config.url, json={"test": True}, headers=headers, timeout=5.0)
+                if test_resp.status_code == 404:
+                    try:
+                        err_data = test_resp.json()
+                        if "not registered for POST" in err_data.get("message", ""):
+                            method = "GET"
+                            stream_kwargs = {
+                                "params": payload,
+                                "headers": {k: v for k, v in headers.items() if k != "Content-Type"},
+                                "timeout": float(config.timeout)
+                            }
+                            logger.info(f"[webhook-stream] POST not supported, using GET")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             async with client.stream(
-                "POST",
+                method,
                 config.url,
-                json=payload,
-                headers=headers,
-                timeout=float(config.timeout)
+                **stream_kwargs
             ) as response:
                 response.raise_for_status()
 

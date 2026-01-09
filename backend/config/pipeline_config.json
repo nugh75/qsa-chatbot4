@@ -69,9 +69,29 @@
       "topic": "artefice_di_se_stessi"
     },
     {
-      "pattern": "(?i)\\b(?:Prendere\\s+appunti\\s+attivi|Spaced\\s+repetition|Auto-spiegazione|Pomodoro|Elaborazione\\s+personale|Testing\\s+effect|Studio\\s+distribuito|Insegnare\\s+agli\\s+altri|Parole\\s+chiave|Uso\\s+di\\s+esempi|Multimodalit[aà]|Sintesi\\s+scritta|Uso\\s+di\\s+analogie|Studio\\s+collaborativo|Domande\\s+guida|Organizzazione\\s+del\\s+tempo|Uso\\s+della\\s+memoria\\s+visiva|Gestione\\s+delle\\s+pause|Riflessione\\s+metacognitiva)\\b",
-      "topic": "strategie di apprendimento"
-    }
+      "pattern": "(?i)\\b(?:strategie|metodi|tecniche|modi|consigli|migliorare)\\s+(?:di\\s+)?(?:studio|studiare|apprendere|apprendimento|imparare|memoria)\\b",
+      "topic": "Strategie Generali (Overview)"
+    },
+    { "pattern": "(?i)\\b(?:Prendere\\s+appunti|Appunti\\s+attivi|Metodo\\s+Cornell)\\b", "topic": "strat_appunti" },
+    { "pattern": "(?i)\\b(?:Spaced\\s+repetition|Ripetizione\\s+dilazionata|Intervalli|Curve?.*oblio)\\b", "topic": "strat_spaced_repetition" },
+    { "pattern": "(?i)\\b(?:Mappe\\s+concettuali|Schemi|Diagrammi)\\b", "topic": "strat_mappe" },
+    { "pattern": "(?i)\\b(?:Auto[-\\s]?spiegazione|Spiegare\\s+a\\s+voce|Highlighter\\s+effect)\\b", "topic": "strat_auto_spiegazione" },
+    { "pattern": "(?i)\\bPomodoro\\b", "topic": "strat_pomodoro" },
+    { "pattern": "(?i)\\bElaborazione\\s+personale\\b", "topic": "strat_elaborazione" },
+    { "pattern": "(?i)\\b(?:Testing\\s+effect|Effetto\\s+test|Quiz|Flashcards?)\\b", "topic": "strat_testing" },
+    { "pattern": "(?i)\\bStudio\\s+distribuito\\b", "topic": "strat_distribuito" },
+    { "pattern": "(?i)\\bInsegnare\\s+ag?li\\s+altri\\b", "topic": "strat_insegnare" },
+    { "pattern": "(?i)\\bParol[ae]\\s+chiav[ei]\\b", "topic": "strat_parole_chiave" },
+    { "pattern": "(?i)\\bUso.+esempi\\b", "topic": "strat_esempi" },
+    { "pattern": "(?i)\\bMultimodalit(?:[aà]|a')\\b", "topic": "strat_multimodalita" },
+    { "pattern": "(?i)\\bSintesi\\s+scritt[ae]\\b", "topic": "strat_sintesi" },
+    { "pattern": "(?i)\\bUso.+analogi[ae]\\b", "topic": "strat_analogie" },
+    { "pattern": "(?i)\\bStudio\\s+collaborativo\\b", "topic": "strat_collaborativo" },
+    { "pattern": "(?i)\\bDomand[ae]\\s+guida\\b", "topic": "strat_domande" },
+    { "pattern": "(?i)\\bOrganizzazione.+tempo\\b", "topic": "strat_tempo" },
+    { "pattern": "(?i)\\bMemoria\\s+visiva|Tecnica.+loci\\b", "topic": "strat_memoria_visiva" },
+    { "pattern": "(?i)\\bGestione.+pause\\b", "topic": "strat_pause" },
+    { "pattern": "(?i)\\bRiflessione\\s+metacognitiva\\b", "topic": "strat_metacognizione" }
   ],
   "files": {
     "C1 Strategie elaborative": "C1-strategie-elaborative.md",
@@ -91,6 +111,26 @@
     "Analisi di secondo livello": "analisi-di-secondo-livello.md",
     "Risposte a domande sul QSA": "domande-e-risposte.txt",
     "artefice_di_se_stessi": "essere-architetto-di-sestessi.txt",
-    "strategie di apprendimento": "strategie-apprendimento.txt"
+    "Strategie Generali (Overview)": "strat_general.md",
+    "strat_appunti": "strat_appunti.md",
+    "strat_spaced_repetition": "strat_spaced_repetition.md",
+    "strat_mappe": "strat_mappe.md",
+    "strat_auto_spiegazione": "strat_auto_spiegazione.md",
+    "strat_pomodoro": "strat_pomodoro.md",
+    "strat_elaborazione": "strat_elaborazione.md",
+    "strat_testing": "strat_testing.md",
+    "strat_distribuito": "strat_distribuito.md",
+    "strat_insegnare": "strat_insegnare.md",
+    "strat_parole_chiave": "strat_parole_chiave.md",
+    "strat_esempi": "strat_esempi.md",
+    "strat_multimodalita": "strat_multimodalita.md",
+    "strat_sintesi": "strat_sintesi.md",
+    "strat_analogie": "strat_analogie.md",
+    "strat_collaborativo": "strat_collaborativo.md",
+    "strat_domande": "strat_domande.md",
+    "strat_tempo": "strat_tempo.md",
+    "strat_memoria_visiva": "strat_memoria_visiva.md",
+    "strat_pause": "strat_pause.md",
+    "strat_metacognizione": "strat_metacognizione.md"
   }
 }

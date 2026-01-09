@@ -1,0 +1,6 @@
+Servizio,Tipo,Referente,Giorno,Orario,Sede,Contatto,Prenotazione,Note
+Sportello Ascolto Psicologico,Individuale,Dott.ssa Martini,Lunedì,10:00-13:00,Stanza 15 - Via Castro Pretorio 20,ascolto.psico@uniroma3.it,Sì,Colloqui individuali gratuiti
+Sportello Ascolto Psicologico,Individuale,Dott.ssa Martini,Giovedì,14:00-17:00,Online (Teams),ascolto.psico@uniroma3.it,Sì,Colloqui online
+Supporto Ansia Esami,Gruppo,Dott. Ferri,Martedì,15:00-17:00,Aula B3 - Via Castro Pretorio 20,ansia.esami@uniroma3.it,Sì,Gruppi di 6-8 studenti
+Gestione Stress Universitario,Workshop,Dott.ssa Conti,Mercoledì,11:00-13:00,Aula Magna,stress.workshop@uniroma3.it,Sì,Workshop mensile
+Counseling di Crisi,Urgenze,Dott. Bianchi,Tutti i giorni,9:00-18:00,Stanza 15 - Via Castro Pretorio 20,counseling.crisi@uniroma3.it,No,Accesso diretto senza appuntamento

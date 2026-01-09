@@ -229,7 +229,8 @@ def _execute_query_spec(table_id: str, spec: Dict[str, Any], limit_default: int 
                 rows_data.append(payload)
     else:
         # SQLite o nessuna condizione: filtra in Python
-        all_rows = get_rows(table_id, limit=1_000_000, offset=0)
+        # Bug #2 fix: limit rows to prevent memory exhaustion (was 1_000_000)
+        all_rows = get_rows(table_id, limit=10_000, offset=0)
         MONTHS = {
             'gennaio':'01','febbraio':'02','marzo':'03','aprile':'04','maggio':'05','giugno':'06',
             'luglio':'07','agosto':'08','settembre':'09','ottobre':'10','novembre':'11','dicembre':'12'

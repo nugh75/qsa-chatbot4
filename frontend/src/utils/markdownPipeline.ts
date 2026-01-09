@@ -106,10 +106,51 @@ function fixPipeTableBlock(block: string[]): string[] {
   return result
 }
 
+function normalizeSourceLinks(md: string): string {
+  if (!md) return md
+
+  // Protect code fences
+  const codeBlocks: string[] = []
+  let text = md.replace(/```[a-zA-Z0-9]*\n[\s\S]*?\n```/g, (m) => {
+    const i = codeBlocks.push(m) - 1
+    return `@@CODEBLOCK_${i}@@`
+  })
+
+  const normalizeUrl = (rawUrl: string) => {
+    const trimmed = (rawUrl || '').trim()
+    if (!trimmed) return null
+    const trailingMatch = trimmed.match(/([).,;:!?]+)$/)
+    const trailing = trailingMatch ? trailingMatch[1] : ''
+    const core = trailing ? trimmed.slice(0, -trailing.length) : trimmed
+    const cleanedCore = core.startsWith('.') ? core.slice(1) : core
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(cleanedCore)
+    const looksLikeDomain = /^[a-z0-9.-]+\.[a-z]{2,}(\/\S*)?$/i.test(cleanedCore)
+    if (!hasScheme && !looksLikeDomain) return null
+    const href = hasScheme ? cleanedCore : `https://${cleanedCore}`
+    return { display: cleanedCore, href, trailing }
+  }
+
+  text = text.replace(/\[(fonte)\s*:\s*([^\]\(]+?)\](?!\()/gi, (match, label, rawUrl) => {
+    const normalized = normalizeUrl(rawUrl)
+    if (!normalized) return match
+    return `[${label}: ${normalized.display}](${normalized.href})${normalized.trailing}`
+  })
+
+  text = text.replace(/(^|[\s(])((?:fonte|link)\s*:\s*)([^\s\]\)]+)(?=$|[\s\)])/gi, (match, lead, label, rawUrl) => {
+    const normalized = normalizeUrl(rawUrl)
+    if (!normalized) return match
+    return `${lead}[${label}${normalized.display}](${normalized.href})${normalized.trailing}`
+  })
+
+  text = text.replace(/@@CODEBLOCK_(\d+)@@/g, (_, n) => codeBlocks[Number(n)] || '')
+  return text
+}
+
 export function prepareChatMarkdown(raw: string, ragChunks?: RagChunk[]): string {
   let s = sanitizeChatMarkdown(raw)
   s = normalizeMarkdownForDisplay(s)
   s = sanitizeTables(s)
+  s = normalizeSourceLinks(s)
   s = injectDocLinks(s, ragChunks)
   return s
 }

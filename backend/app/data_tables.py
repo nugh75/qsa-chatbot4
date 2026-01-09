@@ -58,6 +58,7 @@ def init_tables_schema():
                   title TEXT NOT NULL,
                   description TEXT,
                   columns JSONB,
+                  keywords JSONB DEFAULT '[]'::jsonb,
                   original_filename TEXT,
                   file_format TEXT,
                   row_count INTEGER NOT NULL DEFAULT 0,
@@ -67,6 +68,11 @@ def init_tables_schema():
                   CONSTRAINT fk_dt_user FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
                 )
             """)
+            # Migration: add keywords column if missing (for existing databases)
+            try:
+                db_manager.exec(cur, "ALTER TABLE data_tables ADD COLUMN IF NOT EXISTS keywords JSONB DEFAULT '[]'::jsonb")
+            except Exception:
+                pass
             # Rows
             db_manager.exec(cur, """
                 CREATE TABLE IF NOT EXISTS data_table_rows (
@@ -78,6 +84,8 @@ def init_tables_schema():
                 )
             """)
             db_manager.exec(cur, "CREATE INDEX IF NOT EXISTS idx_dtr_table ON data_table_rows(table_id)")
+            # GIN index for JSONB search performance (Bug #4 fix)
+            db_manager.exec(cur, "CREATE INDEX IF NOT EXISTS idx_dtr_data_gin ON data_table_rows USING GIN (data)")
         else:
             # SQLite
             cur.execute("""
@@ -87,6 +95,7 @@ def init_tables_schema():
                     title TEXT NOT NULL,
                     description TEXT,
                     columns TEXT,
+                    keywords TEXT DEFAULT '[]',
                     original_filename TEXT,
                     file_format TEXT,
                     row_count INTEGER DEFAULT 0,
@@ -95,6 +104,11 @@ def init_tables_schema():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Migration: add keywords column if missing (for existing SQLite databases)
+            try:
+                cur.execute("ALTER TABLE data_tables ADD COLUMN keywords TEXT DEFAULT '[]'")
+            except Exception:
+                pass
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS data_table_rows (
                     id TEXT PRIMARY KEY,
@@ -324,11 +338,20 @@ def list_tables() -> List[Dict[str, Any]]:
     init_tables_schema()
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
-        db_manager.exec(cur, "SELECT id, name, title, description, original_filename, file_format, row_count, created_at, updated_at FROM data_tables ORDER BY title")
+        db_manager.exec(cur, "SELECT id, name, title, description, keywords, original_filename, file_format, row_count, created_at, updated_at FROM data_tables ORDER BY title")
         rows = cur.fetchall()
         out = []
         for r in rows:
             d = dict(r)
+            # Parse keywords from JSON
+            kw = d.get('keywords')
+            if isinstance(kw, (bytes, str)):
+                try:
+                    d['keywords'] = json.loads(kw)
+                except Exception:
+                    d['keywords'] = []
+            elif kw is None:
+                d['keywords'] = []
             out.append(d)
         return out
 
@@ -348,7 +371,32 @@ def get_table(table_id: str) -> Optional[Dict[str, Any]]:
                 d['columns'] = json.loads(cols)
             except Exception:
                 d['columns'] = []
+        # Parse keywords from JSON
+        kw = d.get('keywords')
+        if isinstance(kw, (bytes, str)):
+            try:
+                d['keywords'] = json.loads(kw)
+            except Exception:
+                d['keywords'] = []
+        elif kw is None:
+            d['keywords'] = []
         return d
+
+
+def recalculate_row_count(table_id: str) -> int:
+    """Recalculate and update row_count from actual data_table_rows count (Bug #3 fix)."""
+    init_tables_schema()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT COUNT(*) FROM data_table_rows WHERE table_id = ?", (table_id,))
+        row = cur.fetchone()
+        count = row[0] if row else 0
+        if USING_POSTGRES:
+            db_manager.exec(cur, "UPDATE data_tables SET row_count = ?, updated_at = NOW() WHERE id = ?", (count, table_id))
+        else:
+            db_manager.exec(cur, "UPDATE data_tables SET row_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (count, table_id))
+        conn.commit()
+    return count
 
 
 def get_rows(table_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
@@ -395,7 +443,7 @@ def delete_table(table_id: str) -> bool:
     return True
 
 
-def update_table_meta(table_id: str, *, title: Optional[str] = None, description: Optional[str] = None) -> None:
+def update_table_meta(table_id: str, *, title: Optional[str] = None, description: Optional[str] = None, keywords: Optional[List[str]] = None) -> None:
     init_tables_schema()
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
@@ -407,6 +455,13 @@ def update_table_meta(table_id: str, *, title: Optional[str] = None, description
         if description is not None:
             sets.append("description = ?")
             params.append(description)
+        if keywords is not None:
+            keywords_json = json.dumps(keywords, ensure_ascii=False)
+            if USING_POSTGRES:
+                sets.append("keywords = %s::jsonb")
+            else:
+                sets.append("keywords = ?")
+            params.append(keywords_json)
         if not sets:
             return
         if USING_POSTGRES:
@@ -557,7 +612,8 @@ def search_tables(query: str, table_ids: List[str], limit_per_table: int = 10) -
     results: List[Dict[str, Any]] = []
     for tid in table_ids:
         # Scan all rows of the table to ensure the agent can consider the full dataset
-        rows = get_rows(tid, limit=1_000_000, offset=0)
+        # Bug #2 fix: limit rows to prevent memory exhaustion (was 1_000_000)
+        rows = get_rows(tid, limit=10_000, offset=0)
         scored: List[Tuple[int, Dict[str, Any]]] = []
         for r in rows:
             payload = r.get('data') or {}

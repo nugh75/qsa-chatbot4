@@ -80,6 +80,13 @@ type RAGResult = {
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
 
+const createChatSessionId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
 // Componente per box dati estratti espandibile
 const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: number}> = ({extractedData, messageIndex}) => {
   const [expanded, setExpanded] = useState(false)
@@ -219,6 +226,7 @@ const AppContent: React.FC = () => {
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [chatSessionId, setChatSessionId] = useState<string>(() => createChatSessionId())
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
@@ -340,8 +348,21 @@ const AppContent: React.FC = () => {
     }
   }
 
+  const isExternalHref = (href: string) => {
+    try {
+      const url = new URL(href, window.location.origin)
+      return url.origin !== window.location.origin
+    } catch {
+      return false
+    }
+  }
+
   const handleDownloadOriginal = async () => {
     if (!previewSourceHref) return
+    if (isExternalHref(previewSourceHref)) {
+      window.open(previewSourceHref, '_blank', 'noopener')
+      return
+    }
     const targetHref = previewAllowDownload
       ? buildDispositionHref(previewSourceHref, 'attachment')
       : buildDispositionHref(previewSourceHref, 'inline')
@@ -395,6 +416,10 @@ const AppContent: React.FC = () => {
 
   const handleViewOriginal = async () => {
     if (!previewSourceHref) return
+    if (isExternalHref(previewSourceHref)) {
+      window.open(previewSourceHref, '_blank', 'noopener')
+      return
+    }
     if (!previewAllowPreview) {
       setPreviewError('Anteprima originale non consentita per questo documento')
       return
@@ -524,9 +549,14 @@ const AppContent: React.FC = () => {
             return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === normalizedTarget || cleaned.includes(normalizedTarget) || normalizedTarget.includes(cleaned)))
           })
           if (relatedChunk) {
+            const originalUrl = relatedChunk.original_filename
+            const fallbackUrl = relatedChunk.filename
+            const hasOriginalUrl = typeof originalUrl === 'string' && /^https?:\/\//i.test(originalUrl)
+            const hasFallbackUrl = typeof fallbackUrl === 'string' && /^https?:\/\//i.test(fallbackUrl)
             const candidateHref = relatedChunk.download_url || (relatedChunk.document_id ? `/api/rag/download/${relatedChunk.document_id}` : null)
-            if (candidateHref) {
-              setPreviewSourceHref(candidateHref)
+            const finalHref = hasOriginalUrl ? originalUrl : (hasFallbackUrl ? fallbackUrl : candidateHref)
+            if (finalHref) {
+              setPreviewSourceHref(finalHref)
               setPreviewAllowDownload(relatedChunk.allow_download !== false)
               setPreviewAllowPreview(relatedChunk.allow_preview !== false)
             }
@@ -752,20 +782,26 @@ const AppContent: React.FC = () => {
   useEffect(()=>{
     const handler = ()=>{
       localStorage.removeItem('chat_messages')
-      navigator.sendBeacon(`${BACKEND}/api/chat/end-session`)
+      // Invia sessionId per pulire la memoria del backend
+      navigator.sendBeacon(`${BACKEND}/api/chat/end-session?session_id=${encodeURIComponent(chatSessionId)}`)
     }
     window.addEventListener('beforeunload', handler)
     return ()=> window.removeEventListener('beforeunload', handler)
-  },[])
+  },[chatSessionId])
 
   // Funzione di logout personalizzata che azzera l'interfaccia
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Prima pulisci la sessione corrente nel backend
+    try {
+      await fetch(`${BACKEND}/api/chat/clear-session?session_id=${encodeURIComponent(chatSessionId)}`, { method: 'POST' })
+    } catch { /* ignore */ }
+
     // Chiama il logout del contesto auth
     logout();
-    
+
     // Azzera tutto lo stato dell'interfaccia
-  // Usa il placeholder di caricamento: verrà sostituito dal welcome pubblico o dalla personalità al caricamento
-  setMessages([{ role: 'assistant', content: 'Caricamento messaggio di benvenuto…', ts: Date.now() }]);
+    // Usa il placeholder di caricamento: verrà sostituito dal welcome pubblico o dalla personalità al caricamento
+    setMessages([{ role: 'assistant', content: 'Caricamento messaggio di benvenuto…', ts: Date.now() }]);
     setInput('');
     setError(undefined);
     setLoading(false);
@@ -779,9 +815,10 @@ const AppContent: React.FC = () => {
     setShowLoginDialog(false);
     setShowSearch(false);
     setAttachedFiles([]);
-    
+
     // Pulisci localStorage
     localStorage.removeItem('chat_messages');
+    setChatSessionId(createChatSessionId());
   };
 
   const handleFilesProcessed = (files: ProcessedFile[]) => {
@@ -911,7 +948,7 @@ const AppContent: React.FC = () => {
   let messageEncrypted = null;
       const requestBody: any = { 
         message: messageToSend,  // Messaggio in chiaro per LLM
-        sessionId: 'dev' 
+        sessionId: chatSessionId
       };
       
   // No client-side encryption: do not send message_encrypted
@@ -1417,6 +1454,18 @@ const AppContent: React.FC = () => {
           } catch(e){ console.error(e) }
         } : undefined}
         onNewChat={async ()=>{
+          // Prima pulisci la sessione corrente nel backend
+          try {
+            await fetch(`${BACKEND}/api/chat/clear-session?session_id=${encodeURIComponent(chatSessionId)}`, { method: 'POST' })
+          } catch { /* ignore */ }
+
+          // Pulisci localStorage
+          localStorage.removeItem('chat_messages');
+
+          // Genera nuovo sessionId
+          const newSessionId = createChatSessionId();
+          setChatSessionId(newSessionId);
+
           try {
             const { apiService } = await import('./apiService')
             const wg = await apiService.getPublicWelcomeGuide()
@@ -1842,9 +1891,10 @@ const AppContent: React.FC = () => {
                                           const shouldHideLinks = selectedPersonality?.hide_rag_links === true
                                           const primaryHref = !shouldHideLinks ? (d.chunks?.[0]?.download_url || (d.document_id ? `/api/rag/download/${d.document_id}` : null)) : null
 
-                                          // Check if this is a web source (original_filename is URL)
-                                          const isWebSource = d.original_filename && (d.original_filename.startsWith('http://') || d.original_filename.startsWith('https://'))
-                                          const displayName = isWebSource && d.original_filename ? (new URL(d.original_filename).hostname) : baseName
+                                          // Check if this is a web source (original_filename or filename is URL)
+                                          const sourceUrl = d.original_filename || d.filename
+                                          const isWebSource = !!(sourceUrl && (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')))
+                                          const displayName = isWebSource && sourceUrl ? (new URL(sourceUrl).hostname) : baseName
 
                                           return (
                                             <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
@@ -1853,7 +1903,7 @@ const AppContent: React.FC = () => {
                                                   <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', display:'flex', alignItems:'center', gap:0.6 }}>
                                                     {isWebSource ? (
                                                       <Link
-                                                        href={d.original_filename}
+                                                        href={sourceUrl}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
                                                         underline="hover"

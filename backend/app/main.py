@@ -570,6 +570,25 @@ async def get_feedback_stats():
         return {"error": f"Errore nel recupero statistiche: {str(e)}"}
 
 @app.post("/api/chat/end-session")
-async def end_session():
-    # in questa versione non manteniamo stato server-side
-    return {"ok": True}
+async def end_session(session_id: str | None = None):
+    """Cancella la memoria della sessione specificata"""
+    from .memory import get_memory
+    try:
+        memory = get_memory()
+        if session_id:
+            memory.clear_session(session_id)
+        return {"ok": True, "session_cleared": session_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/chat/clear-session")
+async def clear_session(session_id: str):
+    """Endpoint esplicito per resettare la cronologia di una sessione (nuova chat)"""
+    from .memory import get_memory
+    try:
+        memory = get_memory()
+        memory.clear_session(session_id)
+        return {"ok": True, "message": f"Session {session_id} cleared"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

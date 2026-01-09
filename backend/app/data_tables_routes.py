@@ -23,6 +23,9 @@ from .data_tables import (
 
 router = APIRouter(prefix="/data-tables", tags=["data-tables"])
 
+# Bug #1 fix: Maximum upload file size (10 MB)
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+
 
 @router.post("/upload")
 async def upload_table(
@@ -33,6 +36,12 @@ async def upload_table(
     current_user: dict = Depends(get_current_admin_user),
 ):
     data = await file.read()
+    # Bug #1 fix: validate file size
+    if len(data) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File troppo grande. Dimensione massima: {MAX_UPLOAD_SIZE // (1024 * 1024)} MB"
+        )
     if not title:
         title = file.filename
     table = create_table_from_upload(
@@ -82,7 +91,12 @@ async def download_table(table_id: str, fmt: str = Query("csv", regex="^(csv|xls
 async def update_table(table_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_admin_user)):
     title = payload.get('title')
     description = payload.get('description')
-    update_table_meta(table_id, title=title, description=description)
+    keywords = payload.get('keywords')
+    # Validate keywords is a list of strings if provided
+    if keywords is not None:
+        if not isinstance(keywords, list) or not all(isinstance(k, str) for k in keywords):
+            raise HTTPException(status_code=400, detail="'keywords' deve essere una lista di stringhe")
+    update_table_meta(table_id, title=title, description=description, keywords=keywords)
     return {"success": True}
 
 

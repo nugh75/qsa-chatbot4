@@ -499,19 +499,37 @@ async def chat(
             MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
             DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
             # Trigger più ampi per richieste tabellari
-            KEYWORDS = [
+            GLOBAL_KEYWORDS = [
                 'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
                 'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
             ]
-            has_trigger = any(k in ql for k in KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            has_global_trigger = any(k in ql for k in GLOBAL_KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
             # Header force flag
             _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
             try:
                 from .data_tables import list_tables as _list_dt
                 _all_dt = _list_dt() or []
-                # Allenta i trigger: se abilitato e ci sono tabelle, usa sempre; header può forzare
-                if auto_enabled and _all_dt and (_force_dt or True):
+
+                # NEW: Check per-table keywords first
+                def _match_table_keywords(query_lower: str, tables: list) -> list:
+                    """Return table IDs that match per-table keywords."""
+                    matched = []
+                    for t in tables:
+                        table_keywords = t.get('keywords') or []
+                        if table_keywords and any(kw.lower() in query_lower for kw in table_keywords):
+                            matched.append(t.get('id'))
+                    return matched
+
+                per_table_matches = _match_table_keywords(ql, _all_dt)
+                has_trigger = has_global_trigger or bool(per_table_matches)
+
+                # If per-table keywords matched, use only those tables
+                # Otherwise fallback to all tables if global trigger matched
+                if per_table_matches:
+                    candidate_dt_tables = per_table_matches
+                elif auto_enabled and _all_dt and (_force_dt or has_global_trigger):
                     candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+
                 # Log diagnostico
                 try:
                     _safe_log_interaction({
@@ -519,6 +537,7 @@ async def chat(
                         "request_id": request_id,
                         "forced": _force_dt,
                         "has_trigger": has_trigger,
+                        "per_table_matches": len(per_table_matches),
                         "count": len(candidate_dt_tables)
                     })
                 except Exception:
@@ -813,6 +832,7 @@ async def chat(
                 {
                     "chunk_index": r.get("chunk_index"),
                     "filename": r.get("filename"),
+                    "original_filename": r.get("original_filename"),
                     "document_id": r.get("document_id"),
                     "stored_filename": r.get("stored_filename"),
                     "similarity": r.get("similarity"),
@@ -1164,23 +1184,43 @@ async def chat_stream(
             MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
             DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
             # Trigger più ampi per richieste tabellari (stream)
-            KEYWORDS = [
+            GLOBAL_KEYWORDS = [
                 'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
                 'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
             ]
-            has_trigger = any(k in ql for k in KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            has_global_trigger = any(k in ql for k in GLOBAL_KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
             _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
             try:
                 from .data_tables import list_tables as _list_dt
                 _all_dt = _list_dt() or []
-                if auto_enabled and _all_dt and (_force_dt or True):
+
+                # NEW: Check per-table keywords first
+                def _match_table_keywords_stream(query_lower: str, tables: list) -> list:
+                    """Return table IDs that match per-table keywords."""
+                    matched = []
+                    for t in tables:
+                        table_keywords = t.get('keywords') or []
+                        if table_keywords and any(kw.lower() in query_lower for kw in table_keywords):
+                            matched.append(t.get('id'))
+                    return matched
+
+                per_table_matches = _match_table_keywords_stream(ql, _all_dt)
+                has_trigger = has_global_trigger or bool(per_table_matches)
+
+                # If per-table keywords matched, use only those tables
+                # Otherwise fallback to all tables if global trigger matched
+                if per_table_matches:
+                    candidate_dt_tables = per_table_matches
+                elif auto_enabled and _all_dt and (_force_dt or has_global_trigger):
                     candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+
                 try:
                     _safe_log_interaction({
                         "event": "data_tables_candidates_stream",
                         "request_id": request_id,
                         "forced": _force_dt,
                         "has_trigger": has_trigger,
+                        "per_table_matches": len(per_table_matches),
                         "count": len(candidate_dt_tables)
                     })
                 except Exception:
@@ -1440,6 +1480,7 @@ async def chat_stream(
                                 "document_id": r.get("document_id"),
                                 "chunk_index": r.get("chunk_index"),
                                 "filename": r.get("original_filename") or r.get("filename"),
+                                "original_filename": r.get("original_filename"),
                                 "stored_filename": r.get("stored_filename"),
                                 "similarity": r.get("similarity"),
                                 "preview": r.get("preview"),
@@ -1606,6 +1647,7 @@ async def chat_stream(
                             "document_id": r.get("document_id"),
                             "chunk_index": r.get("chunk_index"),
                             "filename": r.get("original_filename") or r.get("filename"),
+                            "original_filename": r.get("original_filename"),
                             "stored_filename": r.get("stored_filename"),
                             "similarity": r.get("similarity"),
                             "preview": r.get("preview"),

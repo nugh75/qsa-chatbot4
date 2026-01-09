@@ -13,6 +13,7 @@ type DataTableMeta = {
   name: string
   title: string
   description?: string
+  keywords?: string[]
   original_filename?: string
   file_format?: string
   row_count?: number
@@ -35,6 +36,10 @@ const DataTablesPanel: React.FC = () => {
   const [dtLoading, setDtLoading] = useState<boolean>(false)
   const [editingCell, setEditingCell] = useState<{ rowIndex: number; col: string }|null>(null)
   const [editValue, setEditValue] = useState<string>('')
+  // Keywords editing
+  const [editingKeywords, setEditingKeywords] = useState<string|null>(null) // table id being edited
+  const [keywordsValue, setKeywordsValue] = useState<string>('')
+  const [savingKeywords, setSavingKeywords] = useState<boolean>(false)
   // Agent settings
   const [providers, setProviders] = useState<string[]>([])
   const [agentEnabled, setAgentEnabled] = useState<boolean>(true)
@@ -125,6 +130,43 @@ const DataTablesPanel: React.FC = () => {
   }
 
   const cancelEditCell = () => { setEditingCell(null); setEditValue('') }
+
+  // Keywords management
+  const startEditKeywords = (tableId: string, currentKeywords: string[] = []) => {
+    setEditingKeywords(tableId)
+    setKeywordsValue(currentKeywords.join(', '))
+  }
+
+  const saveKeywords = async () => {
+    if (!editingKeywords) return
+    setSavingKeywords(true)
+    try {
+      // Parse comma-separated keywords, trim, filter empty
+      const keywords = keywordsValue.split(',').map(k => k.trim()).filter(k => k.length > 0)
+      const r = await authFetch(`${BACKEND}/api/data-tables/${editingKeywords}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords })
+      })
+      const j = await r.json()
+      if (j?.success) {
+        // Update local state
+        setTables(prev => prev.map(t => t.id === editingKeywords ? { ...t, keywords } : t))
+        setEditingKeywords(null)
+        setKeywordsValue('')
+      } else {
+        setError(j?.error || 'Errore salvataggio keywords')
+      }
+    } catch (e: any) {
+      setError(e?.message || 'Errore salvataggio keywords')
+    }
+    setSavingKeywords(false)
+  }
+
+  const cancelEditKeywords = () => {
+    setEditingKeywords(null)
+    setKeywordsValue('')
+  }
 
   // Load agent settings + provider list
   useEffect(()=>{
@@ -290,6 +332,7 @@ const DataTablesPanel: React.FC = () => {
             <TableRow>
               <TableCell>Titolo</TableCell>
               <TableCell>Nome</TableCell>
+              <TableCell>Keywords (trigger)</TableCell>
               <TableCell>Righe</TableCell>
               <TableCell>File</TableCell>
               <TableCell align="right">Azioni</TableCell>
@@ -297,11 +340,46 @@ const DataTablesPanel: React.FC = () => {
           </TableHead>
           <TableBody>
             {tables.map(t => (
-              <TableRow key={t.id} hover sx={{ cursor:'pointer' }} onClick={()=> loadTable(t.id)} selected={selectedId===t.id}>
-                <TableCell>{t.title}</TableCell>
-                <TableCell>{t.name}</TableCell>
-                <TableCell>{t.row_count || 0}</TableCell>
-                <TableCell>{t.original_filename}</TableCell>
+              <TableRow key={t.id} hover sx={{ cursor:'pointer' }} selected={selectedId===t.id}>
+                <TableCell onClick={()=> loadTable(t.id)}>{t.title}</TableCell>
+                <TableCell onClick={()=> loadTable(t.id)}>{t.name}</TableCell>
+                <TableCell sx={{ minWidth: 200 }}>
+                  {editingKeywords === t.id ? (
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <TextField
+                        size="small"
+                        fullWidth
+                        autoFocus
+                        value={keywordsValue}
+                        onChange={e => setKeywordsValue(e.target.value)}
+                        placeholder="tutor, sportello, orientamento"
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') { e.preventDefault(); saveKeywords() }
+                          if (e.key === 'Escape') { e.preventDefault(); cancelEditKeywords() }
+                        }}
+                        disabled={savingKeywords}
+                      />
+                      <Button size="small" onClick={saveKeywords} disabled={savingKeywords}>Salva</Button>
+                      <Button size="small" onClick={cancelEditKeywords} disabled={savingKeywords}>Annulla</Button>
+                    </Stack>
+                  ) : (
+                    <Box onClick={(e) => { e.stopPropagation(); startEditKeywords(t.id, t.keywords || []) }} sx={{ cursor: 'pointer', minHeight: 24 }}>
+                      {(t.keywords || []).length > 0 ? (
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          {t.keywords!.map((kw, i) => (
+                            <Chip key={i} size="small" label={kw} variant="outlined" />
+                          ))}
+                        </Stack>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                          Clicca per aggiungere...
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+                </TableCell>
+                <TableCell onClick={()=> loadTable(t.id)}>{t.row_count || 0}</TableCell>
+                <TableCell onClick={()=> loadTable(t.id)}>{t.original_filename}</TableCell>
                 <TableCell align="right">
                   <IconButton href={`${BACKEND}/api/data-tables/${t.id}/download?format=csv`} title="Scarica CSV"><DownloadIcon fontSize="small" /></IconButton>
                   <IconButton href={`${BACKEND}/api/data-tables/${t.id}/download?format=xlsx`} title="Scarica XLSX"><DownloadIcon fontSize="small" /></IconButton>
@@ -311,7 +389,7 @@ const DataTablesPanel: React.FC = () => {
             ))}
             {tables.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5}>
+                <TableCell colSpan={6}>
                   <Typography variant="body2" color="text.secondary">Nessuna tabella caricata</Typography>
                 </TableCell>
               </TableRow>

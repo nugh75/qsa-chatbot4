@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Any, Dict, List, Optional
 
-from .auth import get_current_admin_user, get_current_active_user
+from .auth import get_current_admin_user, get_current_active_user, get_optional_current_user
 from .forms import (
     init_forms_schema, list_forms, get_form, upsert_form, delete_form,
     submit_form_values, list_submissions
@@ -14,7 +14,8 @@ router = APIRouter(prefix="/forms", tags=["forms"])
 
 
 @router.get("")
-async def public_list_forms(current_user: dict = Depends(get_current_active_user)):
+async def public_list_forms(current_user: Optional[dict] = Depends(get_optional_current_user)):
+    """List forms - accessible without authentication"""
     items = list_forms()
     # Public endpoint returns minimal info
     out = [{ 'id': f['id'], 'name': f['name'], 'description': f.get('description',''), 'items_count': len(f.get('items') or []) } for f in items]
@@ -22,7 +23,8 @@ async def public_list_forms(current_user: dict = Depends(get_current_active_user
 
 
 @router.get("/{form_id}")
-async def public_get_form(form_id: str, current_user: dict = Depends(get_current_active_user)):
+async def public_get_form(form_id: str, current_user: Optional[dict] = Depends(get_optional_current_user)):
+    """Get form details - accessible without authentication"""
     f = get_form(form_id)
     if not f:
         raise HTTPException(status_code=404, detail="Form non trovato")
@@ -30,7 +32,8 @@ async def public_get_form(form_id: str, current_user: dict = Depends(get_current
 
 
 @router.post("/{form_id}/submit")
-async def public_submit_form(form_id: str, payload: Dict[str, Any], current_user: dict = Depends(get_current_active_user)):
+async def public_submit_form(form_id: str, payload: Dict[str, Any], current_user: Optional[dict] = Depends(get_optional_current_user)):
+    """Submit form - accessible without authentication"""
     values = payload.get('values') or {}
     conversation_id = payload.get('conversation_id') or None
     personality_id = payload.get('personality_id') or None

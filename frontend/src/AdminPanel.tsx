@@ -79,13 +79,13 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-  { id: 'conversation', label: 'LLM & Chat', panels: ['api_keys', 'prompts', 'personalities', 'memory', 'welcome_guides'] },
+    { id: 'conversation', label: 'LLM & Chat', panels: ['prompts', 'welcome_guides', 'personalities'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
     { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'conversations', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
-  { id: 'api', label: 'API & Tecnico', panels: ['apidocs','dbinfo'] },
+    { id: 'api', label: 'API & Tecnico', panels: ['api_keys', 'memory', 'apidocs', 'dbinfo'] },
     { id: 'backup', label: 'Backup', panels: ['backup_panel'] },
   ] as const
 
@@ -471,10 +471,64 @@ const AdminPanel: React.FC = () => {
         </Alert>
       )}
 
+      {/* Layout a due colonne per LLM & Chat */}
+      {selectedCategory === 'conversation' && (
+        <Grid container spacing={2}>
+          {/* Colonna sinistra: Prompts e Welcome & Guide Chat */}
+          <Grid item xs={12} md={6}>
+            {/* Prompts (System & Summary & Starter) */}
+            <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')} sx={{ mb: 2 }}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <DescriptionIcon fontSize="small" />
+                  <Typography variant="h6">Prompts (System, Summary, Starter)</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Stack spacing={2}>
+                  <SystemPromptsPanel />
+                  <SummaryPromptsPanel config={config as any} />
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+
+            {/* Welcome & Guides */}
+            <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+                  <DescriptionIcon fontSize="small" />
+                  <Typography variant="h6">Welcome & Guide chat</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <WelcomeGuidesPanel />
+              </AccordionDetails>
+            </Accordion>
+          </Grid>
+
+          {/* Colonna destra: Personalità */}
+          <Grid item xs={12} md={6}>
+            <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <AIIcon fontSize="small" />
+                  <Typography variant="h6">Personalità</Typography>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Stack spacing={3}>
+                  <PersonalitiesPanel />
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+          </Grid>
+        </Grid>
+      )}
+
       {/* Tab Provider rimosso */}
 
   {/* API Keys Management */}
-  {panelVisible('api_keys') && (
+  {panelVisible('api_keys') && selectedCategory !== 'conversation' && (
   <Accordion expanded={expandedPanels.api_keys} onChange={handlePanelExpansion('api_keys')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>

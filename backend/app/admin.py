@@ -39,7 +39,6 @@ from .transcribe import whisper_service
 from .auth import AuthManager, get_current_admin_user
 from pathlib import Path
 import re
-import sqlite3
 import bcrypt
 import secrets
 import string
@@ -53,7 +52,7 @@ from .personalities import (
     duplicate_personality,
 )
 from .logging_utils import LOG_DIR, get_system_logger
-from .database import db_manager, USING_POSTGRES
+from .database import db_manager
 import logging as _logging
 from fastapi.responses import FileResponse
 import glob
@@ -2548,12 +2547,8 @@ async def list_db_tables_api():
     try:
         with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            if USING_POSTGRES:
-                db_manager.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
-                tables = [r[0] for r in cur.fetchall()]
-            else:
-                cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-                tables = [r[0] for r in cur.fetchall()]
+            db_manager.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+            tables = [r[0] for r in cur.fetchall()]
         return {"tables": tables}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore lista tabelle: {e}")
@@ -2580,25 +2575,20 @@ async def get_table_columns_api(table: str):
         with db_manager.get_connection() as conn:
             cur = conn.cursor()
             out = []
-            if USING_POSTGRES:
-                db_manager.exec(cur, """
-                    SELECT c.column_name, c.data_type, (c.is_nullable='YES') AS is_nullable,
-                           EXISTS (
-                               SELECT 1 FROM information_schema.table_constraints tc
-                               JOIN information_schema.key_column_usage k
-                                 ON k.constraint_name=tc.constraint_name AND k.table_name=tc.table_name
-                               WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_name=c.table_name AND k.column_name=c.column_name
-                           ) AS is_primary
-                    FROM information_schema.columns c
-                    WHERE c.table_schema='public' AND c.table_name=%s
-                    ORDER BY c.ordinal_position
-                """, (t,))
-                for r in cur.fetchall():
-                    out.append({"name": r[0], "type": r[1], "is_nullable": bool(r[2]), "is_primary": bool(r[3])})
-            else:
-                cur.execute(f"PRAGMA table_info('{t}')")
-                for r in cur.fetchall():
-                    out.append({"name": r[1], "type": r[2], "is_nullable": not bool(r[3]), "is_primary": bool(r[5])})
+            db_manager.exec(cur, """
+                SELECT c.column_name, c.data_type, (c.is_nullable='YES') AS is_nullable,
+                       EXISTS (
+                           SELECT 1 FROM information_schema.table_constraints tc
+                           JOIN information_schema.key_column_usage k
+                             ON k.constraint_name=tc.constraint_name AND k.table_name=tc.table_name
+                           WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_name=c.table_name AND k.column_name=c.column_name
+                       ) AS is_primary
+                FROM information_schema.columns c
+                WHERE c.table_schema='public' AND c.table_name=%s
+                ORDER BY c.ordinal_position
+            """, (t,))
+            for r in cur.fetchall():
+                out.append({"name": r[0], "type": r[1], "is_nullable": bool(r[2]), "is_primary": bool(r[3])})
         return out
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore colonne tabella: {e}")
@@ -2630,21 +2620,18 @@ async def search_table_api(table: str, q: str, limit: int = 50):
     try:
         with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            if USING_POSTGRES:
-                db_manager.exec(cur, """
-                    SELECT column_name FROM information_schema.columns
-                    WHERE table_schema='public' AND table_name=%s AND data_type IN ('text','character varying','character')
-                """, (t,))
-                text_cols = [r[0] for r in cur.fetchall()] or []
-                if not text_cols:
-                    sql = f"SELECT * FROM \"{t}\" WHERE CAST(row_to_json(\"{t}\") AS text) ILIKE %s LIMIT %s"
-                    db_manager.exec(cur, sql, (like, limit))
-                else:
-                    where = ' OR '.join([f'"{c}" ILIKE %s' for c in text_cols])
-                    params = tuple([like]*len(text_cols) + [limit])
-                    db_manager.exec(cur, f'SELECT * FROM "{t}" WHERE {where} LIMIT %s', params)
+            db_manager.exec(cur, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=%s AND data_type IN ('text','character varying','character')
+            """, (t,))
+            text_cols = [r[0] for r in cur.fetchall()] or []
+            if not text_cols:
+                sql = f"SELECT * FROM \"{t}\" WHERE CAST(row_to_json(\"{t}\") AS text) ILIKE %s LIMIT %s"
+                db_manager.exec(cur, sql, (like, limit))
             else:
-                cur.execute(f"SELECT * FROM \"{t}\" LIMIT ?", (limit,))
+                where = ' OR '.join([f'"{c}" ILIKE %s' for c in text_cols])
+                params = tuple([like]*len(text_cols) + [limit])
+                db_manager.exec(cur, f'SELECT * FROM "{t}" WHERE {where} LIMIT %s', params)
             rows = cur.fetchall()
             cols = [d[0] for d in cur.description]
             data = [dict(zip(cols, r)) for r in rows]
@@ -2753,16 +2740,11 @@ def _safe_ident(name: str) -> str:
 
 def _list_columns_for_table(conn, table: str) -> list[str]:
     cur = conn.cursor()
-    if USING_POSTGRES:
-        db_manager.exec(cur, """
-            SELECT column_name FROM information_schema.columns
-            WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position
-        """, (table,))
-        return [r[0] for r in cur.fetchall()]
-    else:
-        cur.execute(f"PRAGMA table_info('{table}')")
-        return [r[1] for r in cur.fetchall()]
-
+    db_manager.exec(cur, """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position
+    """, (table,))
+    return [r[0] for r in cur.fetchall()]
 @router.post('/admin/db/query-builder')
 async def query_builder(req: QueryBuilderIn):
     """Esegue una SELECT costruita in modo sicuro a partire da un payload strutturato.
@@ -2875,15 +2857,15 @@ async def query_builder(req: QueryBuilderIn):
                     pattern = str(f.value or '')
                     if op == 'contains':
                         pattern = f"%{pattern}%"
-                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                        oper = 'ILIKE'
                     elif op == 'startswith':
                         pattern = f"{pattern}%"
-                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                        oper = 'ILIKE'
                     elif op == 'endswith':
                         pattern = f"%{pattern}"
-                        oper = 'ILIKE' if USING_POSTGRES else 'LIKE'
+                        oper = 'ILIKE'
                     else:
-                        oper = 'ILIKE' if (op=='ilike' and USING_POSTGRES) else 'LIKE'
+                        oper = 'ILIKE' if (op=='ilike' and True) else 'LIKE'
                     where_parts.append(f"{_safe_ident(f.column)} {oper} ?")
                     params.append(pattern)
                 else:
@@ -2910,14 +2892,9 @@ async def query_builder(req: QueryBuilderIn):
                 sql += ' GROUP BY ' + ', '.join(group_by_parts)
             sql += order_sql
             # LIMIT/OFFSET as params for safety
-            if USING_POSTGRES:
-                # use placeholders, adapted by db_manager
-                sql += ' LIMIT ? OFFSET ?'
-                params.extend([limit, offset])
-            else:
-                sql += ' LIMIT ? OFFSET ?'
-                params.extend([limit, offset])
-
+            # use placeholders, adapted by db_manager
+            sql += ' LIMIT ? OFFSET ?'
+            params.extend([limit, offset])
             cur = conn.cursor()
             db_manager.exec(cur, sql, tuple(params))
             rows = cur.fetchall()
@@ -4365,33 +4342,21 @@ async def admin_get_rag_stats():
 async def admin_rag_debug_env(document_id: int | None = None):
     """Diagnostica rapida backend RAG: tipo DB, path SQLite, presenza documento opzionale."""
     try:
-        from .database import USING_POSTGRES
         info: dict[str, Any] = {
-            "backend": "postgres" if USING_POSTGRES else "sqlite",
+            "backend": "postgres",
             "rag_db_path": str(rag_engine.db_path),
             "originals_dir": str(rag_engine.originals_dir),
         }
         if document_id is not None:
             try:
-                import sqlite3
-                if USING_POSTGRES:
-                    # Usa db_manager per interrogare Postgres
-                    from .database import db_manager as _db
-                    with _db.get_connection() as conn:
-                        cur = conn.cursor()
-                        _db.exec(cur, "SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
-                        row = cur.fetchone()
-                        if row:
-                            info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]}
-                        else:
-                            info["document"] = None
-                else:
-                    conn = sqlite3.connect(str(rag_engine.db_path))
+                with db_manager.get_connection() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
+                    db_manager.exec(cur, "SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
                     row = cur.fetchone()
-                    conn.close()
-                    info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]} if row else None
+                    if row:
+                        info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]}
+                    else:
+                        info["document"] = None
             except Exception as e:
                 info["error"] = f"lookup_error:{e}"
         return {"success": True, "env": info}
@@ -4465,25 +4430,11 @@ async def admin_upload_rag_document(
         
         try:
             # Verifica che il gruppo esista usando il backend attivo
-            if USING_POSTGRES:
-                with db_manager.get_connection() as conn:
-                    cur = conn.cursor()
-                    db_manager.exec(cur, "SELECT id FROM rag_groups WHERE id = ?", (group_id,))
-                    if not cur.fetchone():
-                        raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
-            else:
-                import sqlite3 as _sl
-                _c = _sl.connect(str(rag_engine.db_path))
-                try:
-                    curg = _c.cursor()
-                    curg.execute("SELECT id FROM rag_groups WHERE id = ?", (group_id,))
-                    if not curg.fetchone():
-                        raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
-                finally:
-                    try:
-                        _c.close()
-                    except Exception:
-                        pass
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, "SELECT id FROM rag_groups WHERE id = ?", (group_id,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
             # Salva copia persistente del PDF grezzo nella directory originals del rag_engine
             originals_dir = rag_engine.originals_dir
             originals_dir.mkdir(parents=True, exist_ok=True)
@@ -4511,136 +4462,61 @@ async def admin_upload_rag_document(
             document_id = None
             existing_filename = ""
             # Usa backend attivo per deduplica e aggiornamento timestamp
-            if USING_POSTGRES:
-                with db_manager.get_connection() as conn:
-                    cur_h = conn.cursor()
-                    db_manager.exec(cur_h, "SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
-                    row_h = cur_h.fetchone()
-                    if row_h:
-                        document_id, existing_filename = row_h
-                        duplicate = True
-                        get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
-                        try:
-                            db_manager.exec(cur_h, "UPDATE rag_documents SET updated_at = NOW() WHERE id = ?", (document_id,))
-                            conn.commit()
-                        except Exception:
-                            pass
-                    else:
-                        duplicate = False
-                        document_id = rag_engine.add_document(
-                            group_id=group_id,
-                            filename=file.filename,
-                            content=text_content,
-                            original_filename=file.filename,
-                            stored_filename=stored_name
-                        )
-                    if duplicate and document_id:
-                        try:
-                            db_manager.exec(cur_h, "SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
-                            rcc = cur_h.fetchone()
-                            if rcc:
-                                duplicate_existing_chunk_count = rcc[0] or 0
-                        except Exception:
-                            pass
-            else:
-                import sqlite3
-                conn_h = sqlite3.connect(str(rag_engine.db_path))
-                try:
-                    cur_h = conn_h.cursor()
-                    cur_h.execute("SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
-                    row_h = cur_h.fetchone()
-                    if row_h:
-                        document_id, existing_filename = row_h
-                        duplicate = True
-                        get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
-                        try:
-                            cur_h.execute("UPDATE rag_documents SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (document_id,))
-                            conn_h.commit()
-                        except Exception:
-                            pass
-                    else:
-                        duplicate = False
-                        document_id = rag_engine.add_document(
-                            group_id=group_id,
-                            filename=file.filename,
-                            content=text_content,
-                            original_filename=file.filename,
-                            stored_filename=stored_name
-                        )
-                    if duplicate and document_id:
-                        try:
-                            cur_h.execute("SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
-                            rcc = cur_h.fetchone()
-                            if rcc:
-                                duplicate_existing_chunk_count = rcc[0] or 0
-                        except Exception:
-                            pass
-                finally:
+            with db_manager.get_connection() as conn:
+                cur_h = conn.cursor()
+                db_manager.exec(cur_h, "SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
+                row_h = cur_h.fetchone()
+                if row_h:
+                    document_id, existing_filename = row_h
+                    duplicate = True
+                    get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
                     try:
-                        conn_h.close()
+                        db_manager.exec(cur_h, "UPDATE rag_documents SET updated_at = NOW() WHERE id = ?", (document_id,))
+                        conn.commit()
                     except Exception:
                         pass
-
+                else:
+                    duplicate = False
+                    document_id = rag_engine.add_document(
+                        group_id=group_id,
+                        filename=file.filename,
+                        content=text_content,
+                        original_filename=file.filename,
+                        stored_filename=stored_name
+                    )
+                if duplicate and document_id:
+                    try:
+                        db_manager.exec(cur_h, "SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
+                        rcc = cur_h.fetchone()
+                        if rcc:
+                            duplicate_existing_chunk_count = rcc[0] or 0
+                    except Exception:
+                        pass
             # Recupera dettagli documento per facilitare aggiornamento frontend immediato
             # Recupera dettagli documento via backend attivo
             doc_details = None
-            if USING_POSTGRES:
-                with db_manager.get_connection() as conn:
-                    cur_d = conn.cursor()
-                    # In Postgres archived è già definito come boolean, COALESCE per updated_at
-                    db_manager.exec(cur_d,
-                        "SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at, archived FROM rag_documents WHERE id = ?",
-                        (document_id,)
-                    )
-                    row = cur_d.fetchone()
-                    if row:
-                        doc_details = {
-                            "id": row[0],
-                            "group_id": row[1],
-                            "filename": row[2],
-                            "original_filename": row[3],
-                            "stored_filename": row[4],
-                            "file_size": row[5],
-                            "content_preview": row[6],
-                            "chunk_count": row[7],
-                            "created_at": row[8],
-                            "updated_at": row[9],
-                            "archived": bool(row[10])
-                        }
-            else:
-                import sqlite3
-                conn_d = sqlite3.connect(str(rag_engine.db_path))
-                try:
-                    cur_d = conn_d.cursor()
-                    cur_d.execute("PRAGMA table_info(rag_documents)")
-                    cols = [r[1] for r in cur_d.fetchall()]
-                    has_archived = 'archived' in cols
-                    select_archived = ", archived" if has_archived else ", 0 as archived"
-                    cur_d.execute(
-                        f"SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at{select_archived} FROM rag_documents WHERE id = ?",
-                        (document_id,)
-                    )
-                    row = cur_d.fetchone()
-                    if row:
-                        doc_details = {
-                            "id": row[0],
-                            "group_id": row[1],
-                            "filename": row[2],
-                            "original_filename": row[3],
-                            "stored_filename": row[4],
-                            "file_size": row[5],
-                            "content_preview": row[6],
-                            "chunk_count": row[7],
-                            "created_at": row[8],
-                            "updated_at": row[9],
-                            "archived": row[10] if len(row) > 10 else 0
-                        }
-                finally:
-                    try:
-                        conn_d.close()
-                    except Exception:
-                        pass
-
+            with db_manager.get_connection() as conn:
+                cur_d = conn.cursor()
+                # In Postgres archived è già definito come boolean, COALESCE per updated_at
+                db_manager.exec(cur_d,
+                    "SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at, archived FROM rag_documents WHERE id = ?",
+                    (document_id,)
+                )
+                row = cur_d.fetchone()
+                if row:
+                    doc_details = {
+                        "id": row[0],
+                        "group_id": row[1],
+                        "filename": row[2],
+                        "original_filename": row[3],
+                        "stored_filename": row[4],
+                        "file_size": row[5],
+                        "content_preview": row[6],
+                        "chunk_count": row[7],
+                        "created_at": row[8],
+                        "updated_at": row[9],
+                        "archived": bool(row[10])
+                    }
             message = f"Documento '{file.filename}' caricato con successo."
             if duplicate:
                 message = f"File '{file.filename}' è un duplicato di '{existing_filename}' e non è stato aggiunto."
@@ -4835,41 +4711,18 @@ async def admin_list_all_rag_documents(search: str | None = None, group_id: int 
         where_clause = f" WHERE {' AND '.join(conds)}" if conds else ""
         order_clause = " ORDER BY d.created_at DESC"
         limit_clause = " LIMIT ? OFFSET ?"
-        if USING_POSTGRES:
-            allow_select = ", d.allow_preview AS allow_preview, d.allow_download AS allow_download"
-        else:
-            import sqlite3
-            conn = sqlite3.connect(str(rag_engine.db_path))
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info(rag_documents)")
-            cols = [r[1] for r in cur.fetchall()]
-            has_allow_preview = 'allow_preview' in cols
-            has_allow_download = 'allow_download' in cols
-            allow_preview_sql = "d.allow_preview" if has_allow_preview else "1"
-            allow_download_sql = "d.allow_download" if has_allow_download else "1"
-            allow_select = f", {allow_preview_sql} AS allow_preview, {allow_download_sql} AS allow_download"
-            cur.close()
-            conn.close()
+        allow_select = ", d.allow_preview AS allow_preview, d.allow_download AS allow_download"
         base = (
             "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at"
             f"{allow_select} "
             "FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id"
         )
-        if USING_POSTGRES:
-            with db_manager.get_connection() as conn:
-                cur = conn.cursor()
-                db_manager.exec(cur, f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
-                total = cur.fetchone()[0]
-                db_manager.exec(cur, base + where_clause + order_clause + limit_clause, [*params, limit, offset])
-                rows = cur.fetchall()
-        else:
-            conn = sqlite3.connect(str(rag_engine.db_path))
+        with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
+            db_manager.exec(cur, f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
             total = cur.fetchone()[0]
-            cur.execute(base + where_clause + order_clause + limit_clause, [*params, limit, offset])
+            db_manager.exec(cur, base + where_clause + order_clause + limit_clause, [*params, limit, offset])
             rows = cur.fetchall()
-            conn.close()
         docs = [
             {
                 "id": r[0],
@@ -4908,18 +4761,10 @@ async def admin_search_rag_document(q: str):
             "WHERE LOWER(d.filename) LIKE ? OR LOWER(d.original_filename) LIKE ? "
             "ORDER BY d.created_at DESC LIMIT 50"
         )
-        if USING_POSTGRES:
-            with db_manager.get_connection() as conn:
-                cur = conn.cursor()
-                db_manager.exec(cur, sql, (like, like))
-                rows = cur.fetchall()
-        else:
-            import sqlite3
-            conn = sqlite3.connect(str(rag_engine.db_path))
+        with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(sql, (like, like))
+            db_manager.exec(cur, sql, (like, like))
             rows = cur.fetchall()
-            conn.close()
         results = [
             {
                 "id": r[0],
@@ -4939,29 +4784,12 @@ async def admin_search_rag_document(q: str):
 @router.get("/admin/rag/orphans")
 async def admin_list_rag_orphans():
     """Elenca documenti orfani: group_id NULL/0 o riferito a gruppo inesistente."""
-    import sqlite3
     try:
-        if USING_POSTGRES:
-            with db_manager.get_connection() as conn:
-                cur = conn.cursor()
-                db_manager.exec(cur, "SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
-                nulls = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
-                db_manager.exec(cur,
-                    """
-                    SELECT d.id, d.group_id, d.filename, d.created_at
-                    FROM rag_documents d
-                    LEFT JOIN rag_groups g ON d.group_id = g.id
-                    WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
-                    ORDER BY d.created_at DESC
-                    """
-                )
-                dangling = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
-        else:
-            conn = sqlite3.connect(str(rag_engine.db_path))
+        with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
+            db_manager.exec(cur, "SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
             nulls = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
-            cur.execute(
+            db_manager.exec(cur,
                 """
                 SELECT d.id, d.group_id, d.filename, d.created_at
                 FROM rag_documents d
@@ -4971,7 +4799,6 @@ async def admin_list_rag_orphans():
                 """
             )
             dangling = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
-            conn.close()
         return { 'success': True, 'null_group': nulls, 'dangling_group': dangling, 'total': len(nulls) + len(dangling) }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4991,30 +4818,16 @@ async def admin_download_rag_document(document_id: int, disposition: Optional[st
     try:
         stored_filename = None
         original_filename = None
-        if USING_POSTGRES:
-            with db_manager.get_connection() as conn:
-                cur = conn.cursor()
-                db_manager.exec(
-                    cur,
-                    "SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?",
-                    (document_id,),
-                )
-                row = cur.fetchone()
-                if row:
-                    stored_filename, original_filename = row[0], row[1]
-        else:
-            import sqlite3
-            conn = sqlite3.connect(str(rag_engine.db_path))
+        with db_manager.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute(
+            db_manager.exec(
+                cur,
                 "SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?",
                 (document_id,),
             )
             row = cur.fetchone()
-            conn.close()
             if row:
-                stored_filename, original_filename = row
-
+                stored_filename, original_filename = row[0], row[1]
         if stored_filename is None and original_filename is None:
             raise HTTPException(status_code=404, detail="Documento non trovato")
         if not stored_filename:
@@ -5215,40 +5028,18 @@ async def admin_rag_cleanup_orphan_documents():
     """
     try:
         # Elenco documenti orfani usando il backend attivo (Postgres o SQLite)
-        if USING_POSTGRES:
-            with db_manager.get_connection() as conn:
-                cur = conn.cursor()
-                # Documenti con group_id NULL o 0
-                db_manager.exec(cur, "SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0", ())
-                null_rows = cur.fetchall()
-                # Documenti con group_id che punta a gruppo inesistente
-                db_manager.exec(
-                    cur,
-                    "SELECT d.id, d.stored_filename FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id WHERE d.group_id IS NOT NULL AND d.group_id <> 0 AND g.id IS NULL",
-                    (),
-                )
-                dangling_rows = cur.fetchall()
-        else:
-            import sqlite3
-            conn = sqlite3.connect(str(rag_engine.db_path))
-            try:
-                cur = conn.cursor()
-                # Documenti con group_id NULL o 0
-                cur.execute("SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0")
-                null_rows = cur.fetchall()
-                # Documenti con group_id pendente verso gruppo inesistente
-                cur.execute(
-                    """
-                    SELECT d.id, d.stored_filename
-                    FROM rag_documents d
-                    LEFT JOIN rag_groups g ON d.group_id = g.id
-                    WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
-                    """
-                )
-                dangling_rows = cur.fetchall()
-            finally:
-                conn.close()
-
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            # Documenti con group_id NULL o 0
+            db_manager.exec(cur, "SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0", ())
+            null_rows = cur.fetchall()
+            # Documenti con group_id che punta a gruppo inesistente
+            db_manager.exec(
+                cur,
+                "SELECT d.id, d.stored_filename FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id WHERE d.group_id IS NOT NULL AND d.group_id <> 0 AND g.id IS NULL",
+                (),
+            )
+            dangling_rows = cur.fetchall()
         # Mappa {id: stored_filename}
         to_delete_map: dict[int, str | None] = {}
         for did, sf in null_rows + dangling_rows:
@@ -5417,14 +5208,12 @@ async def admin_rag_force_delete_document(document_id: int):
         # Prova a leggere stored_filename prima della cancellazione
         stored_filename = None
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(rag_engine.db_path))
-            cur = conn.cursor()
-            cur.execute("SELECT stored_filename FROM rag_documents WHERE id = ?", (document_id,))
-            row = cur.fetchone()
-            conn.close()
-            if row:
-                stored_filename = row[0]
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                db_manager.exec(cursor, "SELECT stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                row = cursor.fetchone()
+                if row:
+                    stored_filename = row[0]
         except Exception:
             pass
 

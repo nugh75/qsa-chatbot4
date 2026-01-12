@@ -126,6 +126,10 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         
         # Se la personalità ha gruppi specifici abilitati, usa quelli come filtro
         if personality_enabled_groups is not None:
+            # Se la lista è vuota esplicitamente, significa RAG disabilitato per questa personalità
+            if len(personality_enabled_groups) == 0:
+                print(f"[RAG] RAG esplicitamente disabilitato per questa personalità (enabled_rag_groups=[])")
+                return ""
             # Interseca i gruppi selezionati dall'utente con quelli abilitati per la personalità
             if user_selected_groups:
                 selected_groups = [g for g in user_selected_groups if g in personality_enabled_groups]
@@ -135,9 +139,14 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         else:
             # Fallback al comportamento precedente
             selected_groups = user_selected_groups
-        
+
         if not selected_groups:
             # Auto-selezione gruppi (fallback) se utente non ha scelto nulla
+            # Ma solo se la personalità non ha esplicitamente configurato i gruppi
+            if personality_enabled_groups is not None:
+                # La personalità ha configurato gruppi specifici ma l'intersezione è vuota
+                print(f"[RAG] Nessun gruppo disponibile dopo intersezione con gruppi personalità")
+                return ""
             try:
                 all_groups = rag_engine.get_groups()
                 # Prendi solo gruppi con almeno 1 documento

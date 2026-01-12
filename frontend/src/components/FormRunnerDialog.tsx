@@ -25,9 +25,13 @@ const FormRunnerDialog: React.FC<Props> = ({ open, onClose, enabledFormIds, conv
     if (!open) return
     (async()=>{
       const r = await apiService.listForms()
+      console.log('[FormRunnerDialog] listForms response:', r)
+      console.log('[FormRunnerDialog] enabledFormIds:', enabledFormIds)
       if (r.success && r.data) {
         const source = (r.data.forms || []) as any[]
+        console.log('[FormRunnerDialog] All forms from API:', source.map(f => ({ id: f.id, name: f.name })))
         const list = (enabledFormIds && enabledFormIds.length) ? source.filter((f:any)=> enabledFormIds.includes(f.id)) : source
+        console.log('[FormRunnerDialog] Filtered forms:', list.map((f: any) => ({ id: f.id, name: f.name })))
         // server already normalizes legacy items; still accept old shape
         const sorted = [...list].sort((a:any, b:any)=> (a?.name || '').localeCompare(b?.name || '', 'it', { numeric: true, sensitivity: 'base' }))
         setForms(sorted as any)

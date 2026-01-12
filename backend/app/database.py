@@ -1,16 +1,9 @@
-"""Database layer with dynamic backend (SQLite default, optional PostgreSQL via DATABASE_URL).
+"""Database layer per PostgreSQL.
 
-Se la variabile d'ambiente `DATABASE_URL` è impostata (formato postgresql://), userà psycopg2.
-Altrimenti mantiene il comportamento SQLite esistente.
+Richiede la variabile d'ambiente `DATABASE_URL` (formato postgresql://).
 
-NOTE: Le query originali usavano placeholder `?` (stile SQLite). Per compatibilità rapida
-quando è attivo Postgres vengono convertiti in `%s`. Le differenze di schema (AUTOINCREMENT,
-CURRENT_TIMESTAMP, BOOLEAN) sono gestite creando uno schema compatibile in Postgres se mancano le tabelle.
-
-Per migrazione schema vedi `postgres_migration.md`. Questa implementazione NON tenta di alterare tabelle
-già esistenti in Postgres: assume che la migrazione sia stata eseguita. Se il DB è vuoto, crea lo schema base.
+NOTE: Le query usano placeholder `?` che vengono convertiti in `%s` per PostgreSQL.
 """
-import sqlite3
 import hashlib
 import os
 import re
@@ -20,298 +13,103 @@ import math
 from pathlib import Path
 from contextlib import contextmanager
 
-# Rileva se usare Postgres
+# PostgreSQL obbligatorio
 DATABASE_URL = os.getenv("DATABASE_URL")
-USING_POSTGRES = bool(DATABASE_URL and DATABASE_URL.startswith("postgres"))
-if USING_POSTGRES:
-    try:
-        import psycopg2  # type: ignore
-        import psycopg2.extras  # type: ignore
-    except Exception as _e:
-        print(f"[DB] psycopg2 non disponibile ({_e}), fallback a SQLite")
-        USING_POSTGRES = False
+if not DATABASE_URL or not DATABASE_URL.startswith("postgres"):
+    raise RuntimeError("DATABASE_URL non configurato. PostgreSQL è richiesto.")
 
-# Configura il percorso del database nella nuova struttura
+USING_POSTGRES = True
+
+import psycopg2  # type: ignore
+import psycopg2.extras  # type: ignore
+
+# Percorso legacy (non usato con PostgreSQL ma mantenuto per compatibilità)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = str(BASE_DIR / "storage" / "databases" / "qsa_chatbot.db")
 
 class DatabaseManager:
-    """Gestisce la connessione e le operazioni sul database (SQLite default, Postgres opzionale)."""
+    """Gestisce la connessione e le operazioni sul database PostgreSQL."""
 
     def __init__(self, db_path: str = DATABASE_PATH):
-        self.db_path = db_path
-        if not USING_POSTGRES:
-            try:
-                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-            except Exception as e:
-                print(f"[DB] Warning: cannot create database directory: {e}")
+        self.db_path = db_path  # Mantenuto per compatibilità
         self.init_database()
 
     @contextmanager
     def get_connection(self):
-        if USING_POSTGRES:
-            # Use DictCursor so rows behave like sqlite3.Row (mapping-like)
-            conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)  # type: ignore
-            try:
-                yield conn
-            finally:
-                conn.close()
-        else:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
-                conn.close()
+        """Ottiene una connessione PostgreSQL con DictCursor."""
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
+        try:
+            yield conn
+        finally:
+            conn.close()
     
     def adapt_sql(self, sql: str) -> str:
-        """Converte placeholder '?' in '%s' per Postgres se necessario."""
-        if USING_POSTGRES:
-            # Placeholder conversion
-            sql = sql.replace('?', '%s')
-            # Boolean field normalization: SQLite used 0/1, Postgres wants TRUE/FALSE
-            # Simple regex replacements (word boundary)
-            sql = re.sub(r'\bis_active\s*=\s*1\b', 'is_active IS TRUE', sql)
-            sql = re.sub(r'\bis_active\s*=\s*0\b', 'is_active IS FALSE', sql)
-            sql = re.sub(r'\bis_deleted\s*=\s*1\b', 'is_deleted IS TRUE', sql)
-            sql = re.sub(r'\bis_deleted\s*=\s*0\b', 'is_deleted IS FALSE', sql)
-            sql = re.sub(r'\barchived\s*=\s*1\b', 'archived IS TRUE', sql)
-            sql = re.sub(r'\barchived\s*=\s*0\b', 'archived IS FALSE', sql)
-            return sql
+        """Converte placeholder '?' in '%s' per PostgreSQL."""
+        # Placeholder conversion
+        sql = sql.replace('?', '%s')
+        # Boolean field normalization: compatibilità con vecchie query che usavano 0/1
+        sql = re.sub(r'\bis_active\s*=\s*1\b', 'is_active IS TRUE', sql)
+        sql = re.sub(r'\bis_active\s*=\s*0\b', 'is_active IS FALSE', sql)
+        sql = re.sub(r'\bis_deleted\s*=\s*1\b', 'is_deleted IS TRUE', sql)
+        sql = re.sub(r'\bis_deleted\s*=\s*0\b', 'is_deleted IS FALSE', sql)
+        sql = re.sub(r'\barchived\s*=\s*1\b', 'archived IS TRUE', sql)
+        sql = re.sub(r'\barchived\s*=\s*0\b', 'archived IS FALSE', sql)
         return sql
 
     def exec(self, cursor, sql: str, params=()):
         cursor.execute(self.adapt_sql(sql), params)
 
     def ping(self) -> dict:
-        """Simple health check for the configured DB backend.
-
-        Returns a dict with backend type and ok flag. Exceptions are caught and
-        returned in the payload to avoid raising during health checks.
-        """
+        """Health check per il database PostgreSQL."""
         try:
             with self.get_connection() as conn:
                 cur = conn.cursor()
-                try:
-                    # Works for both SQLite and Postgres after adapt_sql
-                    self.exec(cur, "SELECT 1")
-                    _ = cur.fetchone() if hasattr(cur, 'fetchone') else None
-                finally:
-                    # No commit needed for read-only
-                    pass
-            return {"ok": True, "backend": "postgresql" if USING_POSTGRES else "sqlite"}
+                self.exec(cur, "SELECT 1")
+                cur.fetchone()
+            return {"ok": True, "backend": "postgresql"}
         except Exception as e:
-            return {"ok": False, "backend": "postgresql" if USING_POSTGRES else "sqlite", "error": str(e)}
+            return {"ok": False, "backend": "postgresql", "error": str(e)}
 
     def init_database(self):
-        """Inizializza il database e crea le tabelle.
-
-        - SQLite: crea lo schema completo come in precedenza.
-        - Postgres: applica in modo idempotente lo schema core e le tabelle accessorie
-          se il DB è fresco (assenza tabella users) o mancano tabelle note.
-        """
-        if USING_POSTGRES:
-            # Best-effort: se DB vuoto o mancano tabelle core, applica DDL idempotenti forniti negli script.
-            try:
-                from pathlib import Path as _P
-                schema_dir = _P(__file__).resolve().parent / 'scripts'
-                core_sql = (schema_dir / 'postgres_core_schema.sql')
-                extra_sql = (schema_dir / 'postgres_create_missing.sql')
-                with self.get_connection() as conn:
-                    cur = conn.cursor()
-                    # Check present tables
-                    self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-                    present = {r[0] for r in cur.fetchall()}
-                    need_core = any(t not in present for t in {'users','conversations','messages'})
-                    ran_any = False
-                    if need_core and core_sql.exists():
-                        try:
-                            sql = core_sql.read_text(encoding='utf-8')
-                            cur.execute(sql)
-                            ran_any = True
-                            print("[DB] Applied Postgres core schema (users/conversations/messages).")
-                        except Exception as e:
-                            print(f"[DB] Warning: core schema apply failed: {e}")
-                    # Apply accessories (devices, rag_*, feedback, personalities)
-                    self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
-                    present = {r[0] for r in cur.fetchall()}
-                    need_extra = any(t not in present for t in {'devices','device_sync_log','rag_groups','rag_documents','rag_chunks','feedback','personalities'})
-                    if need_extra and extra_sql.exists():
-                        try:
-                            sql2 = extra_sql.read_text(encoding='utf-8')
-                            cur.execute(sql2)
-                            ran_any = True
-                            print("[DB] Applied Postgres accessory schema (devices/rag/feedback/personalities).")
-                        except Exception as e:
-                            print(f"[DB] Warning: accessory schema apply failed: {e}")
-                    if ran_any:
-                        conn.commit()
-                # Continue without raising; later queries will fail loudly if schema still missing
-            except Exception as e:
-                print(f"[DB] PostgreSQL init best-effort skipped due to error: {e}")
-            # Keep a note for clarity
-            print("[DB] PostgreSQL attivo: schema verificato (best-effort).")
-            return
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Tabella utenti
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    user_key_hash TEXT NOT NULL,
-                    escrow_key_encrypted TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1,
-                    failed_login_attempts INTEGER DEFAULT 0,
-                    locked_until TIMESTAMP NULL
-                )
-            """)
-            # Ensure column must_change_password exists
-            cursor.execute("PRAGMA table_info(users)")
-            cols = [row[1] for row in cursor.fetchall()]
-            if 'must_change_password' not in cols:
-                try:
-                    cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0")
-                except Exception:
-                    pass
-            # Ensure column is_admin exists
-            cursor.execute("PRAGMA table_info(users)")
-            cols = [row[1] for row in cursor.fetchall()]
-            if 'is_admin' not in cols:
-                try:
-                    cursor.execute("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0")
-                except Exception:
-                    pass
-            
-            # Tabella conversazioni
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    title_encrypted TEXT NOT NULL,
-                    title_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    message_count INTEGER DEFAULT 0,
-                    is_deleted BOOLEAN DEFAULT 0,
-                    device_id TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella messaggi
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    content_encrypted TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    token_count INTEGER DEFAULT 0,
-                    processing_time REAL DEFAULT 0,
-                    is_deleted BOOLEAN DEFAULT 0,
-                    FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella dispositivi utente
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_devices (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    device_name TEXT NOT NULL,
-                    device_fingerprint TEXT NOT NULL,
-                    last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_ip TEXT,
-                    user_agent TEXT,
-                    is_active BOOLEAN DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella azioni amministrative (audit log)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS admin_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_email TEXT NOT NULL,
-                    action_type TEXT NOT NULL,
-                    target_user_id INTEGER,
-                    target_email TEXT,
-                    description TEXT NOT NULL,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ip_address TEXT,
-                    success BOOLEAN DEFAULT 1
-                )
-            """)
-            
-            # Indici per performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations (user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations (updated_at DESC)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages (conversation_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_user_id ON user_devices (user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON user_devices (device_fingerprint)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_actions_timestamp ON admin_actions (timestamp DESC)")
-
-            # Tabella risposte survey anonime (non legata a user_id)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS survey_responses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    session_id TEXT, -- identificatore client anonimo per prevenire duplicati semplici
-                    -- Dati anagrafici (facoltativi)
-                    demo_eta INTEGER,
-                    demo_sesso TEXT,
-                    demo_istruzione TEXT,
-                    demo_tipo_istituto TEXT,
-                    demo_provenienza TEXT,
-                    demo_area TEXT,
-                    q_utilita INTEGER,
-                    q_pertinenza INTEGER,
-                    q_chiarezza INTEGER,
-                    q_dettaglio INTEGER,
-                    q_facilita INTEGER,
-                    q_velocita INTEGER,
-                    q_fiducia INTEGER,
-                    q_riflessione INTEGER,
-                    q_coinvolgimento INTEGER,
-                    q_riuso INTEGER,
-                    q_riflessioni TEXT,
-                    q_commenti TEXT
-                )
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_survey_session ON survey_responses (session_id)")
-
-            # Aggiungi colonne demografiche se mancanti (migrazione leggera)
-            cursor.execute("PRAGMA table_info(survey_responses)")
-            existing_cols = [row[1] for row in cursor.fetchall()]
-            for col, ddl in [
-                ('demo_eta', 'INTEGER'),
-                ('demo_sesso', 'TEXT'),
-                ('demo_istruzione', 'TEXT'),
-                ('demo_tipo_istituto', 'TEXT'),
-                ('demo_provenienza', 'TEXT'),
-                ('demo_area', 'TEXT'),
-            ]:
-                if col not in existing_cols:
+        """Inizializza il database PostgreSQL e crea le tabelle se necessario."""
+        # Best-effort: se DB vuoto o mancano tabelle core, applica DDL idempotenti forniti negli script.
+        try:
+            from pathlib import Path as _P
+            schema_dir = _P(__file__).resolve().parent / 'scripts'
+            core_sql = (schema_dir / 'postgres_core_schema.sql')
+            extra_sql = (schema_dir / 'postgres_create_missing.sql')
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                # Check present tables
+                self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                present = {r[0] for r in cur.fetchall()}
+                need_core = any(t not in present for t in {'users','conversations','messages'})
+                ran_any = False
+                if need_core and core_sql.exists():
                     try:
-                        cursor.execute(f"ALTER TABLE survey_responses ADD COLUMN {col} {ddl}")
-                    except Exception:
-                        pass
-            
-            # Promote default admin if present
-            try:
-                cursor.execute("UPDATE users SET is_admin = 1 WHERE email = ?", ("daniele.dragoni@gmail.com",))
-            except Exception:
-                pass
-            conn.commit()
-            print("Database initialized successfully")
+                        sql = core_sql.read_text(encoding='utf-8')
+                        cur.execute(sql)
+                        ran_any = True
+                        print("[DB] Applied Postgres core schema (users/conversations/messages).")
+                    except Exception as e:
+                        print(f"[DB] Warning: core schema apply failed: {e}")
+                # Apply accessories (devices, rag_*, feedback, personalities)
+                self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                present = {r[0] for r in cur.fetchall()}
+                need_extra = any(t not in present for t in {'devices','device_sync_log','rag_groups','rag_documents','rag_chunks','feedback','personalities'})
+                if need_extra and extra_sql.exists():
+                    try:
+                        sql2 = extra_sql.read_text(encoding='utf-8')
+                        cur.execute(sql2)
+                        ran_any = True
+                        print("[DB] Applied Postgres accessory schema (devices/rag/feedback/personalities).")
+                    except Exception as e:
+                        print(f"[DB] Warning: accessory schema apply failed: {e}")
+                if ran_any:
+                    conn.commit()
+        except Exception as e:
+            print(f"[DB] PostgreSQL init best-effort skipped due to error: {e}")
+        print("[DB] PostgreSQL attivo: schema verificato (best-effort).")
 
 # Istanza globale del database manager
 db_manager = DatabaseManager()
@@ -325,15 +123,11 @@ class UserModel:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                if USING_POSTGRES:
-                    db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?) RETURNING id", (email, password_hash, user_key_hash, escrow_key_encrypted))
-                    user_id = cursor.fetchone()[0]
-                else:
-                    db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?)", (email, password_hash, user_key_hash, escrow_key_encrypted))
-                    user_id = cursor.lastrowid
+                db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?) RETURNING id", (email, password_hash, user_key_hash, escrow_key_encrypted))
+                user_id = cursor.fetchone()[0]
                 conn.commit()
                 return user_id
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
             return None  # Email già esistente
     
     @staticmethod
@@ -387,28 +181,15 @@ class UserModel:
             row = cursor.fetchone()
             if not row:
                 return
-            # Both sqlite3.Row and DictRow support key access; fallback to index
+            # DictRow supporta accesso per chiave
             current = (row[0] if isinstance(row, (tuple, list)) else row.get("failed_login_attempts")) or 0
             new_val = current + 1
             if new_val >= max_attempts:
-                if USING_POSTGRES:
-                    # Postgres: add interval using cast
-                    db_manager.exec(
-                        cursor,
-                        "UPDATE users SET failed_login_attempts = ?, locked_until = NOW() + ( ? )::interval WHERE email = ?",
-                        (new_val, f"{int(lock_minutes)} minutes", email),
-                    )
-                else:
-                    # SQLite: use datetime modifier
-                    db_manager.exec(
-                        cursor,
-                        """
-                        UPDATE users
-                        SET failed_login_attempts = ?, locked_until = datetime('now', ?)
-                        WHERE email = ?
-                        """,
-                        (new_val, f"+{int(lock_minutes)} minutes", email),
-                    )
+                db_manager.exec(
+                    cursor,
+                    "UPDATE users SET failed_login_attempts = ?, locked_until = NOW() + ( ? )::interval WHERE email = ?",
+                    (new_val, f"{int(lock_minutes)} minutes", email),
+                )
             else:
                 db_manager.exec(
                     cursor,
@@ -439,7 +220,7 @@ class ConversationModel:
                 """, (conversation_id, user_id, _title_for_store, title_hash, device_id))
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
     
     @staticmethod
@@ -530,7 +311,7 @@ class MessageModel:
                 
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
     
     @staticmethod
@@ -556,53 +337,38 @@ class DeviceModel:
     """Modello per gestire i dispositivi utente"""
     
     @staticmethod
-    def register_device(device_id: str, user_id: int, device_name: str, 
+    def register_device(device_id: str, user_id: int, device_name: str,
                        device_fingerprint: str, user_agent: str = None, ip: str = None) -> bool:
         """Registra un nuovo dispositivo"""
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                if USING_POSTGRES:
-                    # Write into unified 'devices' table; upsert on id
-                    db_manager.exec(cursor, """
-                        INSERT INTO devices (id, user_id, device_name, device_type, fingerprint, user_agent, last_ip)
-                        VALUES (?, ?, ?, 'unknown', ?, ?, ?)
-                        ON CONFLICT (id) DO UPDATE SET 
-                            user_id = EXCLUDED.user_id,
-                            device_name = EXCLUDED.device_name,
-                            device_type = EXCLUDED.device_type,
-                            fingerprint = EXCLUDED.fingerprint,
-                            user_agent = EXCLUDED.user_agent,
-                            last_ip = EXCLUDED.last_ip
-                    """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
-                else:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO user_devices 
-                        (id, user_id, device_name, device_fingerprint, user_agent, last_ip)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
+                db_manager.exec(cursor, """
+                    INSERT INTO devices (id, user_id, device_name, device_type, fingerprint, user_agent, last_ip)
+                    VALUES (?, ?, ?, 'unknown', ?, ?, ?)
+                    ON CONFLICT (id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        device_name = EXCLUDED.device_name,
+                        device_type = EXCLUDED.device_type,
+                        fingerprint = EXCLUDED.fingerprint,
+                        user_agent = EXCLUDED.user_agent,
+                        last_ip = EXCLUDED.last_ip
+                """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
-    
+
     @staticmethod
     def get_user_devices(user_id: int) -> List[Dict[str, Any]]:
         """Recupera i dispositivi di un utente"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            if USING_POSTGRES:
-                db_manager.exec(cursor, """
-                    SELECT * FROM devices 
-                    WHERE user_id = ? AND is_active = ?
-                    ORDER BY last_sync DESC
-                """, (user_id, True))
-            else:
-                cursor.execute("""
-                    SELECT * FROM user_devices 
-                    WHERE user_id = ? AND is_active = 1
-                    ORDER BY last_sync DESC
-                """, (user_id,))
+            db_manager.exec(cursor, """
+                SELECT * FROM devices
+                WHERE user_id = ? AND is_active = ?
+                ORDER BY last_sync DESC
+            """, (user_id, True))
             return [dict(row) for row in cursor.fetchall()]
 
 class AdminModel:

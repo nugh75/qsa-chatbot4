@@ -6,6 +6,14 @@ const baseRadius = 8
 export const appTheme = createTheme({
   shape: { borderRadius: baseRadius },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        // Rimuove il grassetto globale su strong/b applicato da CssBaseline
+        'strong, b': {
+          fontWeight: 'inherit'
+        }
+      }
+    },
     MuiPaper: {
       styleOverrides: {
         rounded: { borderRadius: baseRadius },

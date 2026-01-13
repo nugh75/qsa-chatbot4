@@ -196,10 +196,10 @@ const AppContent: React.FC = () => {
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-    // Placeholder provvisorio; sarà sostituito se esiste un welcome attivo
-    return [{role:'assistant', content:'Caricamento messaggio di benvenuto…', ts:Date.now()}]
+    // Nessun welcome message - chat vuota all'avvio
+    return []
   })
-  const [welcomeLoaded, setWelcomeLoaded] = useState(false)
+  const [welcomeLoaded, setWelcomeLoaded] = useState(true) // sempre true, welcome disabilitato
   const [activeGuide, setActiveGuide] = useState<string|undefined>()
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
@@ -718,25 +718,7 @@ const AppContent: React.FC = () => {
             setAsrProvider(defAsr as any)
           }
         }
-        // Fetch welcome + guide attivi (solo se non già persistiti in localStorage o non caricati)
-        try {
-          const wg = await apiService.getPublicWelcomeGuide()
-          if (wg.success && wg.data) {
-            const welcomeText = wg.data.welcome?.content
-            const guideText = wg.data.guide?.content
-            setActiveGuide(guideText)
-            setMessages(prev => {
-              // Se l'utente ha già iniziato una conversazione non sovrascrivere
-              if (prev.length > 1 || (prev[0] && prev[0].content && prev[0].content !== 'Caricamento messaggio di benvenuto…')) {
-                return prev
-              }
-              if (welcomeText) {
-                return [{ role:'assistant', content: welcomeText, ts: Date.now() }]
-              }
-              return prev
-            })
-          }
-        } catch(e){ /* ignora */ }
+        // Welcome message disabilitato - nessun messaggio di benvenuto
         // Load personalities after config
         const pers = await apiService.getPersonalities()
         if (pers.success && pers.data) {
@@ -756,22 +738,13 @@ const AppContent: React.FC = () => {
           if (def?.tts_voice) {
             setTtsVoice(def.tts_voice)
           }
-          // Se la chat è allo stato iniziale, sostituisci welcome con quello della personalità
-          if (def && messages.length <= 1) {
-            const currentFirst = messages[0]?.content || '';
-            if (toPlainText(currentFirst).trim().toLowerCase() === toPlainText('Caricamento messaggio di benvenuto…').trim().toLowerCase()) {
-              const welcomeText = def.welcome_message_content || def.welcome_message
-              if (welcomeText) {
-                setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
-              }
-            }
-          }
+          // Welcome message disabilitato
         }
       } catch (error) {
         console.error('Error loading config:', error)
       }
     }
-  loadConfig().finally(()=> setWelcomeLoaded(true))
+  loadConfig()
   }, [])
 
   // Disabilitato: non aprire più il dialog di cambio password forzato
@@ -799,9 +772,8 @@ const AppContent: React.FC = () => {
     // Chiama il logout del contesto auth
     logout();
 
-    // Azzera tutto lo stato dell'interfaccia
-    // Usa il placeholder di caricamento: verrà sostituito dal welcome pubblico o dalla personalità al caricamento
-    setMessages([{ role: 'assistant', content: 'Caricamento messaggio di benvenuto…', ts: Date.now() }]);
+    // Azzera tutto lo stato dell'interfaccia - chat vuota
+    setMessages([]);
     setInput('');
     setError(undefined);
     setLoading(false);
@@ -1466,20 +1438,8 @@ const AppContent: React.FC = () => {
           const newSessionId = createChatSessionId();
           setChatSessionId(newSessionId);
 
-          try {
-            const { apiService } = await import('./apiService')
-            const wg = await apiService.getPublicWelcomeGuide()
-            if (wg.success && wg.data?.welcome?.content) {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || wg.data.welcome.content, ts: Date.now() }])
-            } else {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-            }
-          } catch {
-            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-          }
+          // Chat vuota - nessun messaggio di benvenuto
+          setMessages([]);
           setCurrentConversationId(null);
         }}
         onShowGuide={async ()=> {
@@ -1536,7 +1496,7 @@ const AppContent: React.FC = () => {
         </Alert>
       )}
 
-  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, maxHeight: isMobile ? 'calc(100vh - 200px)' : 700, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflowY:'auto' }}>
+  <Box sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, maxHeight: isMobile ? 'calc(100vh - 200px)' : 700, position: 'relative', overflowY: 'auto' }}>
         {/* messages stack */}
         <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 22 : 0 }}>
           {messages.map((m,i)=>(
@@ -1558,26 +1518,26 @@ const AppContent: React.FC = () => {
                 )}
                 
                 {/* Bolla del messaggio - aumentata la dimensione */}
-                <Box sx={{ 
+                <Box sx={{
                   // Make bubble wider for structured form results; full width on very small screens
                   maxWidth: isVerySmall ? '100%' : (m.__formResult ? '92%' : '85%'),
                   bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
                   color: m.role === 'assistant' ? '#000' : '#fff',
                   p: 2,
                   borderRadius: 3,
-                  borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
-                  borderTopRightRadius: m.role === 'user' ? 1 : 3,
                   boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
                   position: 'relative',
                 }}>
                   <Box sx={{
                     // Relax table wrapper sizing for form result content
+                    fontWeight: 400,
                     '& table': { width: '100%', maxWidth: '100%', borderCollapse: 'collapse', my: 1 },
                     '& th, & td': { border: '1px solid rgba(0,0,0,0.15)', padding: '6px 8px', textAlign: 'left' },
                     '& thead th': { bgcolor: 'rgba(0,0,0,0.04)' },
                     '& code': { bgcolor: 'rgba(0,0,0,0.06)', px: 0.5, py: 0.1, borderRadius: 0.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' },
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
-                    '& p': { m: 0 },
+                    '& p': { m: 0, fontWeight: 400 },
+                    '& strong, & b': { fontWeight: 600 },
                    // If message is a form result, allow the inner content to expand more horizontally
                    ...(m.__formResult ? { maxWidth: '100%', '& .markdown-table-wrapper': { overflowX: 'auto' } } : {}),
                   }}>
@@ -1693,7 +1653,10 @@ const AppContent: React.FC = () => {
                                 <code>{txt}</code>
                               </pre>
                             )
-                          }
+                          },
+                          // Rendi il grassetto come testo normale (il modello a volte genera tutto in grassetto)
+                          strong: ({children, ...props}: any) => <span style={{ fontWeight: 400 }}>{children}</span>,
+                          b: ({children, ...props}: any) => <span style={{ fontWeight: 400 }}>{children}</span>
                         }}
                       >
                         {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
@@ -2024,40 +1987,44 @@ const AppContent: React.FC = () => {
             </Box>
           )}
           
-          {/* Feedback conversazione - ora dentro lo scroll per visibilità mobile */}
-          <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
-            <Stack direction="row" spacing={1}>
-              <Tooltip title="Mi è piaciuta questa conversazione">
-                <IconButton 
-                  onClick={() => giveFeedback(-1, 'like')}
-                  size="small" 
-                  sx={{ 
-                    color: feedback[-1] === 'like' ? '#4caf50' : '#666',
-                    bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f5f5f5',
-                    '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#e0e0e0' }
-                  }}
-                >
-                  <LikeIcon size={16} />
-                </IconButton>
-              </Tooltip>
+          {/* Feedback conversazione - visibile solo dopo la prima risposta dell'assistente */}
+          {messages.some(m => m.role === 'assistant') && (
+            <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'flex-end' }}>
+              <Stack direction="row" spacing={0.5}>
+                <Tooltip title="Mi è piaciuta questa conversazione">
+                  <IconButton
+                    onClick={() => giveFeedback(-1, 'like')}
+                    size="small"
+                    sx={{
+                      color: feedback[-1] === 'like' ? '#4caf50' : '#9e9e9e',
+                      bgcolor: 'transparent',
+                      transition: 'color 0.2s ease',
+                      '&:hover': { color: '#4caf50', bgcolor: 'transparent' }
+                    }}
+                  >
+                    <LikeIcon size={16} />
+                  </IconButton>
+                </Tooltip>
 
-              <Tooltip title="Non mi è piaciuta questa conversazione">
-                <IconButton 
-                  onClick={() => giveFeedback(-1, 'dislike')}
-                  size="small" 
-                  sx={{ 
-                    color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
-                    bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f5f5f5',
-                    '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#e0e0e0' }
-                  }}
-                >
-                  <DislikeIcon size={16} />
-                </IconButton>
-              </Tooltip>
-            </Stack>
-          </Box>
+                <Tooltip title="Non mi è piaciuta questa conversazione">
+                  <IconButton
+                    onClick={() => giveFeedback(-1, 'dislike')}
+                    size="small"
+                    sx={{
+                      color: feedback[-1] === 'dislike' ? '#f44336' : '#9e9e9e',
+                      bgcolor: 'transparent',
+                      transition: 'color 0.2s ease',
+                      '&:hover': { color: '#f44336', bgcolor: 'transparent' }
+                    }}
+                  >
+                    <DislikeIcon size={16} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Box>
+          )}
         </Stack>
-      </Paper>
+      </Box>
 
 
       {/* Feedback conversazione - in basso a destra */}
@@ -2394,24 +2361,8 @@ const AppContent: React.FC = () => {
           setSidebarOpen(false);
         }}
         onNewConversation={async () => {
-          try {
-            const { apiService } = await import('./apiService')
-            const wg = await apiService.getPublicWelcomeGuide()
-            if (wg.success && wg.data?.welcome?.content) {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              if (p?.welcome_message) {
-                setMessages([{ role:'assistant', content: p.welcome_message, ts: Date.now() }])
-              } else {
-                setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
-              }
-            } else {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-            }
-          } catch {
-            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-          }
+          // Chat vuota - nessun messaggio di benvenuto
+          setMessages([]);
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}

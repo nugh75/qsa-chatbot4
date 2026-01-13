@@ -6,8 +6,10 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import SettingsIcon from '@mui/icons-material/Settings'
 import { authFetch, BACKEND } from '../utils/authFetch'
 import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer, DelegateRule } from '../types/admin'
+import SystemPromptsPanel from './SystemPromptsPanel'
 
 interface PersonalitiesResponse { default_id: string | null; personalities: PersonalityEntry[] }
 
@@ -28,8 +30,6 @@ const PersonalitiesPanel: React.FC = () => {
   const [ttsVoice, setTtsVoice] = useState<string>('')
   const [availableVoices, setAvailableVoices] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
-  // Selected welcome message id (must match backend existing welcome messages)
-  const [welcomeMessageId, setWelcomeMessageId] = useState<string>('')
   const [guideId, setGuideId] = useState<string>('')
   const [contextWindow, setContextWindow] = useState<number | ''>('')
   const [temperature, setTemperature] = useState<number>(0.7)
@@ -41,7 +41,6 @@ const PersonalitiesPanel: React.FC = () => {
   const [avatarKey, setAvatarKey] = useState<number>(0) // Force re-render key
   const [removeAvatar, setRemoveAvatar] = useState(false)
   const [active, setActive] = useState<boolean>(true)
-  const [welcomeOptions, setWelcomeOptions] = useState<{id:string; label:string; content:string}[]>([])
   const [guideOptions, setGuideOptions] = useState<{id:string; label:string; content:string}[]>([])
   // Pipeline e RAG
   const [pipelineTopics, setPipelineTopics] = useState<string[]>([])
@@ -82,6 +81,8 @@ const PersonalitiesPanel: React.FC = () => {
   const [webhookIncludeHistory, setWebhookIncludeHistory] = useState<boolean>(true)
   // Delegation rules
   const [delegateRules, setDelegateRules] = useState<DelegateRule[]>([])
+  // Dialog per gestire System Prompts
+  const [systemPromptsDialogOpen, setSystemPromptsDialogOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,11 +144,6 @@ const PersonalitiesPanel: React.FC = () => {
     }
     if (!providers.length) setProviders(FULL_PROVIDERS)
     try {
-      const wm = await fetch(`${BACKEND}/api/welcome-guides/welcome`).then(r=>r.json())
-      if (Array.isArray(wm)) {
-        const list = wm.map((m:any)=>({ id: m.id || m.title, label: m.title || m.id, content: m.content }))
-        setWelcomeOptions(list)
-      }
       const gd = await fetch(`${BACKEND}/api/welcome-guides/guides`).then(r=>r.json())
       if (Array.isArray(gd)) {
         const glist = gd.map((g:any)=>({ id: g.id || g.title, label: g.title || g.id, content: g.content }))
@@ -212,13 +208,12 @@ const PersonalitiesPanel: React.FC = () => {
   // When provider changes in the dialog, fetch models list
   useEffect(()=>{ if (dialogOpen) { fetchProviderModels(provider) } }, [provider, dialogOpen, fetchProviderModels])
 
-  const openNew = () => { 
-    setEditing(null); 
-    setName(''); 
-    setProvider(providers[0] || 'local'); 
-    setModel(''); 
-    setSystemPromptId(''); 
-    setWelcomeMessageId(''); 
+  const openNew = () => {
+    setEditing(null);
+    setName('');
+    setProvider(providers[0] || 'local');
+    setModel('');
+    setSystemPromptId('');
     setGuideId(''); 
     setContextWindow(''); 
     setTemperature(0.7); 
@@ -253,9 +248,6 @@ const PersonalitiesPanel: React.FC = () => {
   }
   const openEdit = (p: PersonalityEntry) => {
     setEditing(p); setName(p.name); setProvider(p.provider); setModel(p.model); setSystemPromptId(p.system_prompt_id);
-    const ids = new Set(welcomeOptions.map(o=>o.id))
-    const wid = p.welcome_message_id || (p.welcome_message && ids.has(p.welcome_message) ? p.welcome_message : '')
-    setWelcomeMessageId(wid || '')
     const gids = new Set(guideOptions.map(o=>o.id))
     setGuideId(p.guide_id && gids.has(p.guide_id) ? p.guide_id : (p.guide_id || ''))
     setContextWindow(typeof p.context_window === 'number' ? p.context_window : '');
@@ -344,9 +336,8 @@ const PersonalitiesPanel: React.FC = () => {
           provider, 
           model, 
           system_prompt_id: systemPromptId, 
-          tts_provider: ttsProvider || null, 
-          tts_voice: ttsVoice || null, 
-          welcome_message: welcomeMessageId || null, 
+          tts_provider: ttsProvider || null,
+          tts_voice: ttsVoice || null,
           guide_id: guideId || null, 
           context_window: contextWindow === '' ? null : contextWindow, 
           temperature, 
@@ -440,7 +431,6 @@ const PersonalitiesPanel: React.FC = () => {
           p.system_prompt_id = systemPromptId
           p.tts_provider = ttsProvider || null
           ;(p as any).tts_voice = ttsVoice || null
-          p.welcome_message = welcomeMessageId || null
           p.guide_id = guideId || null
           p.context_window = contextWindow === '' ? null : (contextWindow as number)
           p.temperature = temperature
@@ -468,7 +458,6 @@ const PersonalitiesPanel: React.FC = () => {
             avatar: uploadedAvatarFilename,
             tts_provider: ttsProvider || null,
             tts_voice: ttsVoice || null,
-            welcome_message: welcomeMessageId || null,
             guide_id: guideId || null,
             context_window: contextWindow === '' ? null : (contextWindow as number),
             temperature,
@@ -649,11 +638,6 @@ const PersonalitiesPanel: React.FC = () => {
                         <strong>TTS:</strong> {p.tts_provider}
                       </Typography>
                     )}
-                    {p.welcome_message && (
-                      <Typography variant="caption" color="text.secondary">
-                        <strong>Welcome:</strong> ✓
-                      </Typography>
-                    )}
                     {p.guide_id && (
                       <Typography variant="caption" color="text.secondary">
                         <strong>Guida:</strong> ✓
@@ -712,7 +696,7 @@ const PersonalitiesPanel: React.FC = () => {
         })}
         {!loading && items.personalities.length===0 && <Typography variant="body2" color="text.secondary">Nessuna personalità.</Typography>}
       </Stack>
-      <Dialog open={dialogOpen} onClose={()=>setDialogOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={dialogOpen} onClose={()=>setDialogOpen(false)} fullWidth maxWidth="md">
         <DialogTitle>{editing? 'Modifica personalità':'Nuova personalità'}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt:1 }}>
@@ -878,12 +862,24 @@ const PersonalitiesPanel: React.FC = () => {
               </Stack>
               <Typography variant="caption" color="text.secondary">PNG/JPG/WebP max 2MB</Typography>
             </Box>
-            <FormControl size="small" fullWidth>
-              <InputLabel id="sp-label">System Prompt</InputLabel>
-              <Select labelId="sp-label" label="System Prompt" value={systemPromptId} onChange={e=>setSystemPromptId(e.target.value)}>
-                {systemPrompts.map(sp => <MenuItem key={sp.id} value={sp.id}>{sp.name}</MenuItem>)}
-              </Select>
-            </FormControl>
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel id="sp-label">System Prompt</InputLabel>
+                <Select labelId="sp-label" label="System Prompt" value={systemPromptId} onChange={e=>setSystemPromptId(e.target.value)}>
+                  {systemPrompts.map(sp => <MenuItem key={sp.id} value={sp.id}>{sp.name}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <Tooltip title="Gestisci System Prompts">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setSystemPromptsDialogOpen(true)}
+                  sx={{ minWidth: 'auto', px: 1.5, height: 40 }}
+                >
+                  <SettingsIcon fontSize="small" />
+                </Button>
+              </Tooltip>
+            </Stack>
             <FormControl size="small" fullWidth>
               <InputLabel id="tts-label">Voce (TTS)</InputLabel>
               <Select labelId="tts-label" label="Voce (TTS)" value={ttsProvider} onChange={e=> setTtsProvider(e.target.value)} displayEmpty>
@@ -906,13 +902,6 @@ const PersonalitiesPanel: React.FC = () => {
               <Select labelId="active-label" label="Stato" value={active ? 'true':'false'} onChange={e=> setActive(e.target.value === 'true')}>
                 <MenuItem value="true">Attiva (visibile in chat)</MenuItem>
                 <MenuItem value="false">Inattiva (nascosta)</MenuItem>
-              </Select>
-            </FormControl>
-            <FormControl size="small" fullWidth>
-              <InputLabel id="welcome-label">Welcome</InputLabel>
-              <Select labelId="welcome-label" label="Welcome" value={welcomeMessageId} onChange={e=> setWelcomeMessageId(e.target.value)}>
-                <MenuItem value=""><em>Nessuno</em></MenuItem>
-                {welcomeOptions.map(opt => <MenuItem key={opt.id} value={opt.id}>{opt.label || opt.id}</MenuItem>)}
               </Select>
             </FormControl>
             <FormControl size="small" fullWidth>
@@ -1300,6 +1289,29 @@ const PersonalitiesPanel: React.FC = () => {
         </DialogActions>
       </Dialog>
       {msg && <Alert severity="success" onClose={()=>setMsg(null)} sx={{ mt:1 }}>{msg}</Alert>}
+
+      {/* Dialog per gestire System Prompts */}
+      <Dialog
+        open={systemPromptsDialogOpen}
+        onClose={() => {
+          setSystemPromptsDialogOpen(false);
+          // Ricarica i system prompts dopo la chiusura
+          load();
+        }}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>Gestione System Prompts</DialogTitle>
+        <DialogContent>
+          <SystemPromptsPanel />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setSystemPromptsDialogOpen(false);
+            load();
+          }}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   )
 }

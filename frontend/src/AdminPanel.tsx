@@ -29,7 +29,7 @@ import DataTablesPanel from './components/DataTablesPanel'
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
-import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
+// WelcomeGuidesPanel rimosso
 import MCPPanel from './components/MCPPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
 import FooterSettingsPanel from './components/FooterSettingsPanel'
@@ -79,9 +79,9 @@ const AdminPanel: React.FC = () => {
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-    { id: 'conversation', label: 'LLM & Chat', panels: ['prompts', 'welcome_guides', 'personalities'] },
+    { id: 'conversation', label: 'Personalità', panels: ['personalities'] },
     { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
-    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline', 'summary_prompts'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
     { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'conversations', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
@@ -95,7 +95,6 @@ const AdminPanel: React.FC = () => {
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
     tts: false,
     transcription: false,
-    prompts: false,
     personalities: false,
     user_management: false,
     conversations: false,
@@ -110,7 +109,7 @@ const AdminPanel: React.FC = () => {
     forms: false,
     whisper_health: false,
     pipeline: false,
-    welcome_guides: false,
+    summary_prompts: false,
     footer_settings: false,
     mcp_servers: false,
     backup_panel: false,
@@ -204,6 +203,7 @@ const AdminPanel: React.FC = () => {
     loadUsage()
     loadUiSettings()
   }, [])
+
 
   // Fetch guida
   const openGuide = async () => {
@@ -471,58 +471,11 @@ const AdminPanel: React.FC = () => {
         </Alert>
       )}
 
-      {/* Layout a due colonne per LLM & Chat */}
+      {/* Layout per LLM & Chat - Personalità come pannello principale */}
       {selectedCategory === 'conversation' && (
-        <Grid container spacing={2}>
-          {/* Colonna sinistra: Prompts e Welcome & Guide Chat */}
-          <Grid item xs={12} md={6}>
-            {/* Prompts (System & Summary & Starter) */}
-            <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')} sx={{ mb: 2 }}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <DescriptionIcon fontSize="small" />
-                  <Typography variant="h6">Prompts (System, Summary, Starter)</Typography>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Stack spacing={2}>
-                  <SystemPromptsPanel />
-                  <SummaryPromptsPanel config={config as any} />
-                </Stack>
-              </AccordionDetails>
-            </Accordion>
-
-            {/* Welcome & Guides */}
-            <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
-                  <DescriptionIcon fontSize="small" />
-                  <Typography variant="h6">Welcome & Guide chat</Typography>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails>
-                <WelcomeGuidesPanel />
-              </AccordionDetails>
-            </Accordion>
-          </Grid>
-
-          {/* Colonna destra: Personalità */}
-          <Grid item xs={12} md={6}>
-            <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <AIIcon fontSize="small" />
-                  <Typography variant="h6">Personalità</Typography>
-                </Box>
-              </AccordionSummary>
-              <AccordionDetails>
-                <Stack spacing={3}>
-                  <PersonalitiesPanel />
-                </Stack>
-              </AccordionDetails>
-            </Accordion>
-          </Grid>
-        </Grid>
+        <Box>
+          <PersonalitiesPanel />
+        </Box>
       )}
 
       {/* Tab Provider rimosso */}
@@ -676,40 +629,7 @@ const AdminPanel: React.FC = () => {
       </Accordion>
   )}
 
-  {/* Prompts (System & Summary & Starter) */}
-  {panelVisible('prompts') && (
-  <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Prompts (System, Summary, Starter)</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={2}>
-            <SystemPromptsPanel />
-            <SummaryPromptsPanel config={config as any} />
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
-  )}
-
-  {/* Welcome & Guides */}
-  {panelVisible('welcome_guides') && (
-  <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
-          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
-            <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Welcome & Guide chat</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <WelcomeGuidesPanel />
-        </AccordionDetails>
-      </Accordion>
-  )}
-
-  {/* Personalità */}
+  {/* Prompts, Welcome & Guides, Personalità sono gestiti nel layout a due colonne sopra */}
   {/* Footer Settings */}
   {panelVisible('footer_settings') && (
   <Accordion expanded={expandedPanels.footer_settings} onChange={handlePanelExpansion('footer_settings')}>
@@ -724,22 +644,6 @@ const AdminPanel: React.FC = () => {
         </AccordionDetails>
       </Accordion>
   )}
-  {panelVisible('personalities') && (
-  <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AIIcon fontSize="small" />
-            <Typography variant="h6">Personalità</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={3}>
-            <PersonalitiesPanel />
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
-  )}
-
   {/* FastAPI Endpoints */}
       {panelVisible('apidocs') && (
       <Accordion expanded={expandedPanels.apidocs} onChange={handlePanelExpansion('apidocs')}>
@@ -907,6 +811,21 @@ const AdminPanel: React.FC = () => {
           <PipelinePanel />
         </AccordionDetails>
       </Accordion>
+  )}
+
+  {/* Summary Prompts */}
+  {panelVisible('summary_prompts') && (
+    <Accordion expanded={expandedPanels.summary_prompts} onChange={handlePanelExpansion('summary_prompts')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <DescriptionIcon fontSize="small" />
+          <Typography variant="h6">Summary Prompts</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <SummaryPromptsPanel config={config as any} />
+      </AccordionDetails>
+    </Accordion>
   )}
 
   {/* MCP Servers */}

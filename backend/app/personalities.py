@@ -175,6 +175,32 @@ def _ensure_personality_schema():
             """)
             if not cur.fetchone():
                 db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegate_rules JSONB DEFAULT '[]'::jsonb")
+            # AI-driven delegation columns
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegation_instructions'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegation_instructions TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegation_targets'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegation_targets JSONB DEFAULT '[]'::jsonb")
+            # Fallback model columns for provider failover
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'fallback_provider'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN fallback_provider TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'fallback_model'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN fallback_model TEXT DEFAULT NULL")
             conn.commit()
     except Exception:
         # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
@@ -253,7 +279,7 @@ def load_personalities() -> Dict:
         items: List[Dict] = []
         for r in rows:
             d = dict(r)
-            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules']:
+            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules','delegation_targets']:
                 v = d.get(k)
                 if isinstance(v, (bytes, str)):
                     try:
@@ -291,6 +317,10 @@ def load_personalities() -> Dict:
                 'webhook_auth_header': d.get('webhook_auth_header'),
                 'webhook_include_history': bool(d.get('webhook_include_history', True)),
                 'delegate_rules': d.get('delegate_rules') or [],
+                'delegation_instructions': d.get('delegation_instructions'),
+                'delegation_targets': d.get('delegation_targets') or [],
+                'fallback_provider': d.get('fallback_provider'),
+                'fallback_model': d.get('fallback_model'),
             })
         return {'default_id': default_id, 'personalities': items}
 
@@ -330,6 +360,10 @@ def upsert_personality(
     webhook_auth_header: Optional[str] = None,
     webhook_include_history: Optional[bool] = None,
     delegate_rules: Optional[List[Dict]] = None,
+    delegation_instructions: Optional[str] = None,
+    delegation_targets: Optional[List[Dict]] = None,
+    fallback_provider: Optional[str] = None,
+    fallback_model: Optional[str] = None,
 ) -> Dict:
     if not USING_POSTGRES:
         raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
@@ -343,6 +377,7 @@ def upsert_personality(
     e_forms = json.dumps(enabled_forms or [])
     s_prompts = json.dumps(starter_prompts or [])
     d_rules = json.dumps(delegate_rules or [])
+    d_targets = json.dumps(delegation_targets or [])
     with db_manager.get_connection() as conn:
         cur = conn.cursor()
         db_manager.exec(cur, """
@@ -352,8 +387,9 @@ def upsert_personality(
                 enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
                 show_pipeline_topics, show_source_docs, hide_rag_links, starter_prompts,
                 webhook_url, webhook_enabled, webhook_timeout, webhook_auth_header, webhook_include_history,
-                delegate_rules, is_default, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                delegate_rules, delegation_instructions, delegation_targets,
+                fallback_provider, fallback_model, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 system_prompt_id = EXCLUDED.system_prompt_id,
@@ -383,6 +419,10 @@ def upsert_personality(
                 webhook_auth_header = EXCLUDED.webhook_auth_header,
                 webhook_include_history = EXCLUDED.webhook_include_history,
                 delegate_rules = EXCLUDED.delegate_rules,
+                delegation_instructions = EXCLUDED.delegation_instructions,
+                delegation_targets = EXCLUDED.delegation_targets,
+                fallback_provider = EXCLUDED.fallback_provider,
+                fallback_model = EXCLUDED.fallback_model,
                 updated_at = NOW()
         """, (
             personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
@@ -398,6 +438,10 @@ def upsert_personality(
             webhook_auth_header or None,
             True if webhook_include_history is None else bool(webhook_include_history),
             d_rules,
+            delegation_instructions or None,
+            d_targets,
+            fallback_provider or None,
+            fallback_model or None,
             False
         ))
         if set_default:

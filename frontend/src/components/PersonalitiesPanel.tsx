@@ -68,6 +68,14 @@ const PersonalitiesPanel: React.FC = () => {
   const [testing, setTesting] = useState<boolean>(false)
   const [testResult, setTestResult] = useState<any>(null)
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState<string>('')
+  // Extended model data with metadata (is_free for openrouter, is_cloud for ollama)
+  const [extendedModels, setExtendedModels] = useState<Record<string, Array<{id: string; is_free?: boolean; is_cloud?: boolean}>>>({})
+  // Filter states
+  const [showFreeOnly, setShowFreeOnly] = useState(false)
+  const [showCloudOnly, setShowCloudOnly] = useState(false)
+  // Fallback model states
+  const [fallbackModel, setFallbackModel] = useState<string>('')
+  const [fallbackProvider, setFallbackProvider] = useState<string>('')
   
   // State per form starter prompts
   const [selectedFormPrompt, setSelectedFormPrompt] = useState<string>('')
@@ -81,6 +89,9 @@ const PersonalitiesPanel: React.FC = () => {
   const [webhookIncludeHistory, setWebhookIncludeHistory] = useState<boolean>(true)
   // Delegation rules
   const [delegateRules, setDelegateRules] = useState<DelegateRule[]>([])
+  // AI-driven delegation
+  const [delegationInstructions, setDelegationInstructions] = useState<string>('')
+  const [delegationTargets, setDelegationTargets] = useState<{id: string; name: string; description: string}[]>([])
   // Dialog per gestire System Prompts
   const [systemPromptsDialogOpen, setSystemPromptsDialogOpen] = useState(false)
 
@@ -184,23 +195,47 @@ const PersonalitiesPanel: React.FC = () => {
     if (!prov) return
     setModelsLoading(true); setModelsNote(null)
     try {
-      const url = `${BACKEND}/api/admin/provider-models/${prov}${refresh ? '?refresh=1':''}`
-      const r = await authFetch(url)
-      if (r.ok) {
-        const data = await r.json()
-        if (data.success) {
-          const models: string[] = Array.isArray(data.models) ? data.models : []
-          setProviderModels(prev => ({ ...prev, [prov]: models }))
-          if (data.note) setModelsNote(data.note)
-          // Auto-select first if current model empty or vanished
-          if (models.length && (!model || !models.includes(model))) {
-            setModel(models[0])
+      // For openrouter and ollama, use extended endpoint to get metadata
+      if (prov === 'openrouter' || prov === 'ollama') {
+        const url = `${BACKEND}/api/admin/provider-models-extended/${prov}${refresh ? '?refresh=1':''}`
+        const r = await authFetch(url)
+        if (r.ok) {
+          const data = await r.json()
+          if (data.success) {
+            const extModels = Array.isArray(data.models) ? data.models : []
+            setExtendedModels(prev => ({ ...prev, [prov]: extModels }))
+            const models: string[] = extModels.map((m: {id: string}) => m.id)
+            setProviderModels(prev => ({ ...prev, [prov]: models }))
+            if (data.note) setModelsNote(data.note)
+            // Auto-select first if current model empty or vanished
+            if (models.length && (!model || !models.includes(model))) {
+              setModel(models[0])
+            }
+          } else {
+            setModelsNote(data.error || 'errore')
           }
         } else {
-          setModelsNote(data.error || 'errore')
+          setModelsNote('fetch_error')
         }
       } else {
-        setModelsNote('fetch_error')
+        const url = `${BACKEND}/api/admin/provider-models/${prov}${refresh ? '?refresh=1':''}`
+        const r = await authFetch(url)
+        if (r.ok) {
+          const data = await r.json()
+          if (data.success) {
+            const models: string[] = Array.isArray(data.models) ? data.models : []
+            setProviderModels(prev => ({ ...prev, [prov]: models }))
+            if (data.note) setModelsNote(data.note)
+            // Auto-select first if current model empty or vanished
+            if (models.length && (!model || !models.includes(model))) {
+              setModel(models[0])
+            }
+          } else {
+            setModelsNote(data.error || 'errore')
+          }
+        } else {
+          setModelsNote('fetch_error')
+        }
       }
     } catch { setModelsNote('fetch_exception') } finally { setModelsLoading(false) }
   }, [model])
@@ -237,6 +272,15 @@ const PersonalitiesPanel: React.FC = () => {
     setWebhookIncludeHistory(true);
     // Reset delegation rules
     setDelegateRules([]);
+    // Reset AI delegation
+    setDelegationInstructions('');
+    setDelegationTargets([]);
+    // Reset filter states
+    setShowFreeOnly(false)
+    setShowCloudOnly(false)
+    // Reset fallback states
+    setFallbackModel('')
+    setFallbackProvider('')
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if ((providers[0] || 'local') === 'ollama') {
@@ -282,6 +326,15 @@ const PersonalitiesPanel: React.FC = () => {
     setWebhookIncludeHistory(p.webhook_include_history !== false)
     // Carica delegation rules
     setDelegateRules((p as any).delegate_rules || [])
+    // Carica AI delegation
+    setDelegationInstructions((p as any).delegation_instructions || '')
+    setDelegationTargets((p as any).delegation_targets || [])
+    // Reset filter states
+    setShowFreeOnly(false)
+    setShowCloudOnly(false)
+    // Load fallback states from personality
+    setFallbackModel((p as any).fallback_model || '')
+    setFallbackProvider((p as any).fallback_provider || '')
     setDialogOpen(true)
     setTestResult(null); setTestMessage('Ciao! Test rapido.')
     if (p.provider === 'ollama') {
@@ -360,7 +413,11 @@ const PersonalitiesPanel: React.FC = () => {
           webhook_timeout: webhookTimeout,
           webhook_auth_header: webhookAuthHeader || null,
           webhook_include_history: webhookIncludeHistory,
-          delegate_rules: delegateRules
+          delegate_rules: delegateRules,
+          delegation_instructions: delegationInstructions || null,
+          delegation_targets: delegationTargets.length > 0 ? delegationTargets : null,
+          fallback_provider: fallbackProvider || null,
+          fallback_model: fallbackModel || null
         })
       })
       if (!res.ok) {
@@ -774,6 +831,34 @@ const PersonalitiesPanel: React.FC = () => {
             {provider === 'ollama' && (
               <TextField size="small" fullWidth label="Ollama Base URL" placeholder="http://192.168.x.x:11434" value={ollamaBaseUrl} onChange={e=> setOllamaBaseUrl(e.target.value)} />
             )}
+            {/* Checkbox filtro per OpenRouter (solo gratuiti) */}
+            {provider === 'openrouter' && extendedModels[provider] && (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showFreeOnly}
+                    onChange={(e) => setShowFreeOnly(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label={<Typography variant="body2">Mostra solo modelli gratuiti</Typography>}
+              />
+            )}
+
+            {/* Checkbox filtro per Ollama (solo cloud) */}
+            {provider === 'ollama' && extendedModels[provider] && (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showCloudOnly}
+                    onChange={(e) => setShowCloudOnly(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label={<Typography variant="body2">Mostra solo modelli cloud</Typography>}
+              />
+            )}
+
             {/* Model selector dinamico basato su provider: se ci sono modelli => Select, altrimenti TextField per input manuale */}
             { (providerModels[provider]?.length || 0) > 0 ? (
               <FormControl size="small" fullWidth>
@@ -785,7 +870,26 @@ const PersonalitiesPanel: React.FC = () => {
                   onChange={e=>setModel(e.target.value)}
                   endAdornment={modelsLoading ? <LinearProgress sx={{ width: 60 }} /> : undefined}
                 >
-                  {providerModels[provider].map(m => <MenuItem key={m} value={m}>{m}</MenuItem>)}
+                  {(() => {
+                    let models = providerModels[provider] || []
+                    // Apply free filter for openrouter
+                    if (provider === 'openrouter' && showFreeOnly && extendedModels[provider]) {
+                      const freeIds = new Set(extendedModels[provider].filter(m => m.is_free).map(m => m.id))
+                      models = models.filter(m => freeIds.has(m))
+                    }
+                    // Apply cloud filter for ollama
+                    if (provider === 'ollama' && showCloudOnly && extendedModels[provider]) {
+                      const cloudIds = new Set(extendedModels[provider].filter(m => m.is_cloud).map(m => m.id))
+                      models = models.filter(m => cloudIds.has(m))
+                    }
+                    return models.map(m => {
+                      const extModel = extendedModels[provider]?.find(em => em.id === m)
+                      const isFree = extModel?.is_free
+                      const isCloud = extModel?.is_cloud
+                      const suffix = isFree ? ' (gratuito)' : isCloud ? ' (cloud)' : ''
+                      return <MenuItem key={m} value={m}>{m}{suffix}</MenuItem>
+                    })
+                  })()}
                   {model && !providerModels[provider].includes(model) && (
                     <MenuItem value={model}>{model} (personalizzato)</MenuItem>
                   )}
@@ -798,7 +902,7 @@ const PersonalitiesPanel: React.FC = () => {
                 label={modelsLoading ? 'Caricamento modelli…' : 'Modello (inserisci manualmente)'}
                 value={model}
                 onChange={e=>setModel(e.target.value)}
-                helperText={modelsLoading ? 'Recupero elenco modelli...' : (modelsNote === 'missing_api_key' ? 'Configura API key per elenco automatico' : 'Nessun elenco remoto, inserisci il nome esatto')}                
+                helperText={modelsLoading ? 'Recupero elenco modelli...' : (modelsNote === 'missing_api_key' ? 'Configura API key per elenco automatico' : 'Nessun elenco remoto, inserisci il nome esatto')}
               />
             ) }
             <Stack direction="row" spacing={1}>
@@ -808,6 +912,88 @@ const PersonalitiesPanel: React.FC = () => {
             {modelsNote && modelsNote !== 'missing_api_key' && modelsNote !== 'fetch_error' && modelsNote !== 'fetch_exception' && (
               <Typography variant="caption" color="text.secondary">Nota: {modelsNote}</Typography>
             )}
+
+            {/* Sezione Fallback Model */}
+            {(provider === 'openrouter' || provider === 'ollama') && extendedModels[provider] && (
+              <Paper variant="outlined" sx={{ p: 2, mt: 1, bgcolor: 'action.hover' }}>
+                <Stack spacing={2}>
+                  <Typography variant="subtitle2">Modello di Fallback</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {provider === 'openrouter'
+                      ? 'Se il modello gratuito fallisce, verrà utilizzato questo modello di fallback'
+                      : 'Se il modello cloud fallisce, verrà utilizzato questo modello di fallback'}
+                  </Typography>
+
+                  {/* Fallback Provider (stesso o diverso) */}
+                  <FormControl size="small" fullWidth>
+                    <InputLabel>Provider Fallback</InputLabel>
+                    <Select
+                      label="Provider Fallback"
+                      value={fallbackProvider}
+                      onChange={e => {
+                        setFallbackProvider(e.target.value)
+                        setFallbackModel('')
+                        // Load models for fallback provider if needed
+                        if (e.target.value && !extendedModels[e.target.value]) {
+                          fetchProviderModels(e.target.value, false)
+                        }
+                      }}
+                    >
+                      <MenuItem value="">Nessun fallback</MenuItem>
+                      {provider === 'openrouter' && (
+                        <>
+                          <MenuItem value="openrouter">OpenRouter (non gratuito)</MenuItem>
+                          <MenuItem value="ollama">Ollama (locale)</MenuItem>
+                        </>
+                      )}
+                      {provider === 'ollama' && (
+                        <>
+                          <MenuItem value="ollama">Ollama (locale)</MenuItem>
+                          <MenuItem value="openrouter">OpenRouter</MenuItem>
+                        </>
+                      )}
+                    </Select>
+                  </FormControl>
+
+                  {/* Fallback Model selector */}
+                  {fallbackProvider && (
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Modello Fallback</InputLabel>
+                      <Select
+                        label="Modello Fallback"
+                        value={fallbackModel}
+                        onChange={e => setFallbackModel(e.target.value)}
+                      >
+                        <MenuItem value="">Seleziona modello...</MenuItem>
+                        {(() => {
+                          const fallbackModels = extendedModels[fallbackProvider] || []
+                          // For openrouter fallback from openrouter: show only non-free
+                          if (provider === 'openrouter' && fallbackProvider === 'openrouter') {
+                            return fallbackModels
+                              .filter(m => !m.is_free)
+                              .slice(0, 100)
+                              .map(m => <MenuItem key={m.id} value={m.id}>{m.id}</MenuItem>)
+                          }
+                          // For ollama fallback from ollama: show only non-cloud (local)
+                          if (provider === 'ollama' && fallbackProvider === 'ollama') {
+                            return fallbackModels
+                              .filter(m => !m.is_cloud)
+                              .map(m => <MenuItem key={m.id} value={m.id}>{m.id}</MenuItem>)
+                          }
+                          // Cross-provider fallback: show all models
+                          return fallbackModels.map(m => (
+                            <MenuItem key={m.id} value={m.id}>
+                              {m.id}{m.is_free ? ' (gratuito)' : m.is_cloud ? ' (cloud)' : ''}
+                            </MenuItem>
+                          ))
+                        })()}
+                      </Select>
+                    </FormControl>
+                  )}
+                </Stack>
+              </Paper>
+            )}
+
             {/* Test rapido LLM */}
             <Paper variant="outlined" sx={{ p:1.5 }}>
               <Stack spacing={1.2}>
@@ -1276,6 +1462,105 @@ const PersonalitiesPanel: React.FC = () => {
                   <Typography variant="caption" color="text.secondary">
                     Crea altre personalità per poter configurare le deleghe
                   </Typography>
+                )}
+              </Stack>
+            </Paper>
+
+            {/* AI-Driven Delegation */}
+            <Paper variant="outlined" sx={{ p: 2 }}>
+              <Stack spacing={2}>
+                <Typography variant="subtitle2">Delega Intelligente (AI)</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  L'AI valuta semanticamente il messaggio e decide se delegare, anche quando il regex non matcha.
+                  Scrivi istruzioni in linguaggio naturale su quando delegare.
+                </Typography>
+
+                <TextField
+                  label="Istruzioni per la delega"
+                  multiline
+                  minRows={3}
+                  maxRows={8}
+                  value={delegationInstructions}
+                  onChange={e => setDelegationInstructions(e.target.value)}
+                  fullWidth
+                  placeholder={`Esempio:
+Delega all'esperto di matematica quando l'utente:
+- Chiede aiuto con calcoli o equazioni
+- Ha problemi matematici da risolvere
+- Vuole capire concetti matematici
+
+Delega all'esperto di storia quando l'utente:
+- Chiede informazioni su eventi storici
+- Vuole sapere di personaggi del passato`}
+                  helperText="Descrivi in linguaggio naturale quando delegare e a quale personalità"
+                />
+
+                {/* Lista target per delega AI */}
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>Personalità target per la delega AI</Typography>
+
+                {delegationTargets.map((target, idx) => (
+                  <Paper key={idx} variant="outlined" sx={{ p: 1.5, bgcolor: 'action.hover' }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <FormControl size="small" sx={{ minWidth: 180 }}>
+                        <InputLabel>Personalità</InputLabel>
+                        <Select
+                          label="Personalità"
+                          value={target.id}
+                          onChange={e => {
+                            const selectedP = items.personalities.find(p => p.id === e.target.value)
+                            const updated = [...delegationTargets]
+                            updated[idx] = {
+                              ...target,
+                              id: e.target.value,
+                              name: selectedP?.name || e.target.value
+                            }
+                            setDelegationTargets(updated)
+                          }}
+                        >
+                          {items.personalities
+                            .filter(p => p.id !== editing?.id)
+                            .map(p => (
+                              <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>
+                            ))
+                          }
+                        </Select>
+                      </FormControl>
+                      <TextField
+                        size="small"
+                        label="Descrizione (per l'AI)"
+                        value={target.description}
+                        onChange={e => {
+                          const updated = [...delegationTargets]
+                          updated[idx] = { ...target, description: e.target.value }
+                          setDelegationTargets(updated)
+                        }}
+                        sx={{ flex: 1 }}
+                        placeholder="Es: Esperto in calcoli e problemi matematici"
+                      />
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={() => setDelegationTargets(prev => prev.filter((_, i) => i !== idx))}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Stack>
+                  </Paper>
+                ))}
+
+                <Button
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setDelegationTargets(prev => [...prev, { id: '', name: '', description: '' }])}
+                  disabled={items.personalities.filter(p => p.id !== editing?.id).length === 0}
+                >
+                  Aggiungi target
+                </Button>
+
+                {delegationInstructions && delegationTargets.length === 0 && (
+                  <Alert severity="warning" sx={{ py: 0.5 }}>
+                    Hai scritto istruzioni ma non hai aggiunto personalità target. Aggiungi almeno un target.
+                  </Alert>
                 )}
               </Stack>
             </Paper>

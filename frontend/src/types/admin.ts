@@ -4,8 +4,8 @@ export interface AdminConfig {
     gemini:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
     claude:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
     openai:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
-    openrouter: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
-    ollama:     { enabled: boolean; name: string; base_url: string; models: string[]; selected_model: string }
+    openrouter: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string; fallback_model?: string; fallback_ollama_model?: string }
+    ollama:     { enabled: boolean; name: string; base_url: string; models: string[]; selected_model: string; fallback_model?: string; fallback_openrouter_model?: string }
   }
   tts_providers: {
     edge:        { enabled: boolean; name: string; voices: string[]; selected_voice: string }

@@ -131,7 +131,7 @@ async def _summary_fallback_reply(messages: List[Dict], context_hint: str = "") 
     """Fallback uniforme per i summary quando i provider falliscono."""
     return GENERIC_FALLBACK_TEXT
 
-async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3, is_summary_request: bool = False, ollama_base_url: Optional[str] = None) -> str:
+async def chat_with_provider(messages: List[Dict], provider: str = "local", context_hint: str = "", model: Optional[str] = None, temperature: float = 0.3, is_summary_request: bool = False, ollama_base_url: Optional[str] = None, fallback_provider: Optional[str] = None, fallback_model: Optional[str] = None) -> str:
     provider = (provider or 'local').lower()
     strict = os.getenv('STRICT_PROVIDER', '0').lower() in ('1','true','yes','on')
     debug_log(f"Provider selezionato: {provider} (strict={strict})")
@@ -210,32 +210,85 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         if not api_key:
             errors['openrouter'] = 'missing api key'
             return None
-        payload = {
-            "model": p_model or DEFAULT_MODELS['openrouter'],
-            "messages": [{"role": m['role'], "content": m['content']} for m in messages],
-            "temperature": float(temperature),
-            "max_tokens": 2500
-        }
-        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openrouter']) as cx:
-            r = await cx.post("https://openrouter.ai/api/v1/chat/completions",
-                               headers={
-                                   "Authorization": f"Bearer {api_key}",
-                                   "HTTP-Referer": "https://qsa-chatbot.local",
-                                   "X-Title": "QSA Chatbot"
-                               }, json=payload)
-        if not r.is_success:
-            errors['openrouter'] = f"http {r.status_code} {r.text[:120]}"
-            return None
-        data = r.json()
-        choice = (data.get('choices') or [None])[0]
-        if not choice or 'message' not in choice:
-            errors['openrouter'] = 'no_message_field'
-            return None
-        content = choice['message'].get('content', '')
-        if not content or not content.strip():
-            errors['openrouter'] = 'empty_content'
-            return None
-        return content
+
+        # Helper function for actual API call
+        async def _call_openrouter(model_to_use: str) -> Optional[str]:
+            payload = {
+                "model": model_to_use,
+                "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+                "temperature": float(temperature),
+                "max_tokens": 2500
+            }
+            async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openrouter']) as cx:
+                r = await cx.post("https://openrouter.ai/api/v1/chat/completions",
+                                   headers={
+                                       "Authorization": f"Bearer {api_key}",
+                                       "HTTP-Referer": "https://qsa-chatbot.local",
+                                       "X-Title": "QSA Chatbot"
+                                   }, json=payload)
+            if not r.is_success:
+                return None
+            data = r.json()
+            choice = (data.get('choices') or [None])[0]
+            if not choice or 'message' not in choice:
+                return None
+            content = choice['message'].get('content', '')
+            if not content or not content.strip():
+                return None
+            return content
+
+        # Try primary model
+        primary_model = p_model or DEFAULT_MODELS['openrouter']
+        result = await _call_openrouter(primary_model)
+        if result:
+            return result
+
+        # Try fallback model if configured (personality fallback takes priority)
+        try:
+            # Use personality fallback if provided, otherwise fall back to global config
+            fb_provider = fallback_provider
+            fb_model = fallback_model
+
+            if not fb_provider or not fb_model:
+                # Fall back to global config
+                from .admin import load_config as _load_cfg
+                _cfg = _load_cfg()
+                openrouter_cfg = _cfg.get('ai_providers', {}).get('openrouter', {})
+                if not fb_model:
+                    fb_model = openrouter_cfg.get('fallback_model')
+                    fb_provider = 'openrouter'
+
+            # Try fallback based on provider
+            if fb_model and fb_provider:
+                if fb_provider == 'openrouter' and fb_model != primary_model:
+                    debug_log(f"OpenRouter primary model failed, trying fallback: {fb_model}", provider='openrouter')
+                    result = await _call_openrouter(fb_model)
+                    if result:
+                        return result
+                elif fb_provider == 'ollama':
+                    debug_log(f"OpenRouter fallback to Ollama: {fb_model}", provider='openrouter')
+                    # Call Ollama directly
+                    from .admin import load_config as _load_cfg2
+                    _cfg2 = _load_cfg2()
+                    ollama_cfg = _cfg2.get('ai_providers', {}).get('ollama', {})
+                    ollama_base = os.getenv("OLLAMA_BASE_URL") or ollama_cfg.get('base_url') or "http://localhost:11434"
+                    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['ollama']) as cx:
+                        r = await cx.post(f"{ollama_base}/api/chat", json={
+                            "model": fb_model,
+                            "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+                            "stream": False,
+                            "options": {"temperature": float(temperature), "top_p": 0.9}
+                        })
+                    if r.is_success:
+                        data = r.json()
+                        out = data.get('message', {}).get('content', '')
+                        if out and out.strip():
+                            return out
+        except Exception as e:
+            debug_log(f"Error in fallback chain: {e}", provider='openrouter')
+
+        errors['openrouter'] = 'all_models_failed'
+        return None
 
     async def adapter_openai(p_model: str) -> Optional[str]:
         api_key = _get_api_key_from_file_or_env("OPENAI_API_KEY")
@@ -326,33 +379,81 @@ async def chat_with_provider(messages: List[Dict], provider: str = "local", cont
         # base url precedence: explicit param -> env -> config -> default
         base_url_env = ollama_base_url or os.getenv("OLLAMA_BASE_URL")
         base_url_cfg = None
+        fallback_model = None
         try:
             from .admin import load_config as _load_cfg  # type: ignore
             _cfg_tmp = _load_cfg()
-            base_url_cfg = _cfg_tmp.get('ai_providers', {}).get('ollama', {}).get('base_url') if isinstance(_cfg_tmp, dict) else None
+            ollama_cfg = _cfg_tmp.get('ai_providers', {}).get('ollama', {}) if isinstance(_cfg_tmp, dict) else {}
+            base_url_cfg = ollama_cfg.get('base_url')
+            fallback_model = ollama_cfg.get('fallback_model')
         except Exception:
             base_url_cfg = None
         base_url = base_url_env or base_url_cfg or "http://localhost:11434"
-        model_name = p_model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODELS['ollama']
-        async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['ollama']) as cx:
-            r = await cx.post(f"{base_url}/api/chat", json={
-                "model": model_name,
-                "messages": [{"role": m['role'], "content": m['content']} for m in messages],
-                "stream": False,
-                "options": {"temperature": float(temperature), "top_p": 0.9}
-            })
-        if not r.is_success:
-            msg = f"http {r.status_code}"
-            if r.status_code == 404 and 'model' in r.text.lower():
-                msg += ' missing_model'
-            errors['ollama'] = msg
-            return None
-        data = r.json()
-        out = data.get('message', {}).get('content', '')
-        if not out or not out.strip():
-            errors['ollama'] = 'empty_content'
-            return None
-        return out
+
+        # Helper function for actual API call
+        async def _call_ollama(model_to_use: str) -> Optional[str]:
+            async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['ollama']) as cx:
+                r = await cx.post(f"{base_url}/api/chat", json={
+                    "model": model_to_use,
+                    "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+                    "stream": False,
+                    "options": {"temperature": float(temperature), "top_p": 0.9}
+                })
+            if not r.is_success:
+                return None
+            data = r.json()
+            out = data.get('message', {}).get('content', '')
+            if not out or not out.strip():
+                return None
+            return out
+
+        # Try primary model
+        primary_model = p_model or os.getenv("OLLAMA_MODEL") or DEFAULT_MODELS['ollama']
+        result = await _call_ollama(primary_model)
+        if result:
+            return result
+
+        # Try fallback model if configured
+        if fallback_model and fallback_model != primary_model:
+            debug_log(f"Ollama primary model failed, trying fallback: {fallback_model}", provider='ollama')
+            result = await _call_ollama(fallback_model)
+            if result:
+                return result
+
+        # Try OpenRouter fallback if configured
+        try:
+            from .admin import load_config as _load_cfg2
+            _cfg2 = _load_cfg2()
+            fallback_openrouter_model = _cfg2.get('ai_providers', {}).get('ollama', {}).get('fallback_openrouter_model')
+            if fallback_openrouter_model:
+                debug_log(f"Ollama fallback failed, trying OpenRouter: {fallback_openrouter_model}", provider='ollama')
+                api_key = _get_api_key_from_file_or_env("OPENROUTER_API_KEY")
+                if api_key:
+                    payload = {
+                        "model": fallback_openrouter_model,
+                        "messages": [{"role": m['role'], "content": m['content']} for m in messages],
+                        "temperature": float(temperature),
+                        "max_tokens": 2500
+                    }
+                    async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUTS['openrouter']) as cx:
+                        r = await cx.post("https://openrouter.ai/api/v1/chat/completions",
+                                           headers={
+                                               "Authorization": f"Bearer {api_key}",
+                                               "HTTP-Referer": "https://qsa-chatbot.local",
+                                               "X-Title": "QSA Chatbot"
+                                           }, json=payload)
+                    if r.is_success:
+                        data = r.json()
+                        choice = (data.get('choices') or [None])[0]
+                        if choice and 'message' in choice:
+                            content = choice['message'].get('content', '')
+                            if content and content.strip():
+                                return content
+        except Exception as e:
+            debug_log(f"Error in OpenRouter fallback: {e}", provider='ollama')
+
+        errors['ollama'] = 'all_models_failed'
+        return None
 
     adapter_map: Dict[str, Callable[[Optional[str]], Any]] = {
         'openrouter': adapter_openrouter,

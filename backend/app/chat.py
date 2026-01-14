@@ -116,6 +116,113 @@ def _check_delegation(message: str, personality_meta: Optional[Dict]) -> Optiona
     return None
 
 
+async def _check_delegation_ai(
+    message: str,
+    personality_meta: Optional[Dict],
+    provider: str,
+    model: Optional[str] = None,
+    conversation_history: Optional[List[Dict]] = None
+) -> Optional[Dict]:
+    """Verifica se la personalità decide di delegare usando AI.
+
+    Questa funzione fa una chiamata LLM per decidere se delegare ad un'altra personalità
+    basandosi sulle istruzioni configurate nella personalità corrente.
+
+    Ritorna None se non c'è delega, altrimenti:
+    {
+        "target_personality_id": str,
+        "mode": "full",
+        "reason": str  # motivazione dell'AI per la delega
+    }
+    """
+    if not personality_meta:
+        return None
+
+    delegation_instructions = personality_meta.get("delegation_instructions")
+    delegation_targets = personality_meta.get("delegation_targets") or []
+
+    # Se non ci sono istruzioni o target, non c'è delega AI
+    if not delegation_instructions or not delegation_targets:
+        return None
+
+    # Costruisci la lista dei target per il prompt
+    targets_description = "\n".join([
+        f"- ID: {t.get('id')} | Nome: {t.get('name')} | Descrizione: {t.get('description', 'Nessuna descrizione')}"
+        for t in delegation_targets
+    ])
+
+    # Prompt per la decisione di delega
+    delegation_prompt = f"""Sei un sistema di routing che deve decidere se delegare questa conversazione ad un'altra personalità.
+
+ISTRUZIONI PER LA DELEGA:
+{delegation_instructions}
+
+PERSONALITÀ DISPONIBILI PER LA DELEGA:
+{targets_description}
+
+MESSAGGIO DELL'UTENTE:
+{message}
+
+Rispondi SOLO con un JSON valido nel seguente formato:
+- Se NON devi delegare: {{"delegate": false}}
+- Se DEVI delegare: {{"delegate": true, "target_id": "id-della-personalita", "reason": "breve motivazione"}}
+
+Rispondi SOLO con il JSON, nient'altro."""
+
+    messages = [{"role": "system", "content": delegation_prompt}]
+
+    # Aggiungi un po' di contesto dalla conversazione se disponibile
+    if conversation_history:
+        # Prendi solo gli ultimi 3 messaggi per contesto
+        recent_history = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+        for msg in recent_history:
+            messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
+
+    messages.append({"role": "user", "content": message})
+
+    try:
+        # Chiamata LLM per la decisione (usa temperatura bassa per decisioni deterministiche)
+        response = await chat_with_provider(
+            messages,
+            provider=provider,
+            model=model,
+            temperature=0.1,
+            is_summary_request=True  # Evita logging eccessivo
+        )
+
+        # Parse della risposta JSON
+        import json
+        # Pulisci la risposta da eventuali markdown code blocks
+        clean_response = response.strip()
+        if clean_response.startswith("```"):
+            clean_response = clean_response.split("```")[1]
+            if clean_response.startswith("json"):
+                clean_response = clean_response[4:]
+            clean_response = clean_response.strip()
+
+        decision = json.loads(clean_response)
+
+        if decision.get("delegate") and decision.get("target_id"):
+            # Verifica che il target sia valido
+            valid_target_ids = {t.get("id") for t in delegation_targets}
+            target_id = decision.get("target_id")
+            if target_id in valid_target_ids:
+                print(f"[AI-DELEGATION] Decided to delegate to '{target_id}': {decision.get('reason', 'no reason')}")
+                return {
+                    "target_personality_id": target_id,
+                    "mode": "full",
+                    "reason": decision.get("reason", "")
+                }
+            else:
+                print(f"[AI-DELEGATION] Invalid target_id '{target_id}' returned by AI")
+
+        return None
+
+    except Exception as e:
+        print(f"[AI-DELEGATION] Error during AI delegation check: {str(e)}")
+        return None
+
+
 def _resolve_temperature(header_temp: Optional[float], personality_id: Optional[str]) -> float:
     temp_value = 0.3
     if header_temp is not None:
@@ -667,10 +774,28 @@ async def chat(
         effective_provider = provider_override
 
     # --- Delegation check ---
+    # Prima controlla la delega pattern-based (legacy)
     delegation_info = _check_delegation(full_user_message, _pmeta)
     delegate_system = None
     delegate_provider = None
     delegate_model = None
+
+    # Se non c'è delega pattern-based, prova la delega AI
+    if not delegation_info and _pmeta:
+        # Costruisci la cronologia per il check AI
+        if use_memory_buffer:
+            ai_check_history = memory.get_conversation_history(session_id)
+        else:
+            ai_check_history = frontend_history
+
+        delegation_info = await _check_delegation_ai(
+            full_user_message,
+            _pmeta,
+            provider=effective_provider,
+            model=model_override,
+            conversation_history=ai_check_history
+        )
+
     if delegation_info:
         target_id = delegation_info["target_personality_id"]
         d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
@@ -678,7 +803,10 @@ async def chat(
             delegate_system = d_sys
             delegate_provider = d_prov
             delegate_model = d_model
-            print(f"[DELEGATION] Activated: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            if delegation_info.get("matched_pattern"):
+                print(f"[DELEGATION] Pattern-based: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            else:
+                print(f"[AI-DELEGATION] AI-decided: -> {target_id} (reason={delegation_info.get('reason', 'N/A')})")
 
     # Log risoluzione provider/modello
     try:
@@ -1378,10 +1506,29 @@ async def chat_stream(
     effective_provider = provider_override or provider
 
     # --- Delegation check (stream) ---
+    # Prima controlla la delega pattern-based (legacy)
     delegation_info = _check_delegation(full_user_message, _pmeta)
     delegate_system = None
     delegate_provider = None
     delegate_model = None
+
+    # Se non c'è delega pattern-based, prova la delega AI
+    if not delegation_info and _pmeta:
+        # Costruisci la cronologia per il check AI
+        if use_memory_buffer:
+            memory_for_check = get_memory()
+            ai_check_history = memory_for_check.get_conversation_history(session_id)
+        else:
+            ai_check_history = frontend_history
+
+        delegation_info = await _check_delegation_ai(
+            full_user_message,
+            _pmeta,
+            provider=effective_provider,
+            model=model_override,
+            conversation_history=ai_check_history
+        )
+
     if delegation_info:
         target_id = delegation_info["target_personality_id"]
         d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
@@ -1389,7 +1536,10 @@ async def chat_stream(
             delegate_system = d_sys
             delegate_provider = d_prov
             delegate_model = d_model
-            print(f"[DELEGATION][stream] Activated: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            if delegation_info.get("matched_pattern"):
+                print(f"[DELEGATION][stream] Pattern-based: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            else:
+                print(f"[AI-DELEGATION][stream] AI-decided: -> {target_id} (reason={delegation_info.get('reason', 'N/A')})")
 
     # Log risoluzione stream
     try:

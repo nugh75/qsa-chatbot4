@@ -353,6 +353,29 @@ async def _fetch_openrouter_models(api_key: str) -> list[str]:
                 models.append(mid)
         return models
 
+async def _fetch_openrouter_models_extended(api_key: str) -> list[dict]:
+    """Fetch OpenRouter models with extended info (is_free flag)."""
+    import httpx
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://openrouter.ai/api/v1/models", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        models = []
+        for m in data.get('data', []):
+            mid = m.get('id') or m.get('name')
+            if isinstance(mid, str):
+                # Check if model is free (has :free suffix or pricing is 0)
+                pricing = m.get('pricing', {})
+                prompt_price = float(pricing.get('prompt', '1') or '1')
+                completion_price = float(pricing.get('completion', '1') or '1')
+                is_free = ':free' in mid.lower() or (prompt_price == 0 and completion_price == 0)
+                models.append({
+                    'id': mid,
+                    'is_free': is_free
+                })
+        return models
+
 async def _fetch_openai_models(api_key: str) -> list[str]:
     import httpx
     async with httpx.AsyncClient(timeout=30) as cx:
@@ -567,6 +590,66 @@ async def get_provider_models(provider: str, refresh: bool = False):
         models = ordered
     else:
         models = sorted(set(models))
+
+    _cache_set(cache_key, models, ttl)
+    resp = {"success": True, "provider": provider, "cached": False, "models": models}
+    if note:
+        resp['note'] = note
+    return resp
+
+@router.get('/admin/provider-models-extended/{provider}')
+async def get_provider_models_extended(provider: str, refresh: bool = False):
+    """Return extended model list with metadata (is_free for OpenRouter, is_cloud for Ollama).
+    Used by frontend to show filters and configure fallback models."""
+    provider = provider.lower()
+    import os, time
+    ttl = int(os.getenv('REMOTE_MODEL_LIST_CACHE_SECONDS', str(_PROVIDER_MODELS_TTL_DEFAULT)))
+    cache_key = f"prov_models_ext:{provider}"
+    if not refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return {"success": True, "provider": provider, "cached": True, "models": cached}
+
+    models: list[dict] = []
+    note = None
+
+    try:
+        if provider == 'openrouter':
+            api_key = _get_api_key('OPENROUTER_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openrouter_models_extended(api_key)
+                except Exception as e:
+                    note = f"openrouter_fetch_error:{e}"
+            else:
+                note = 'missing_api_key'
+        elif provider == 'ollama':
+            # ENV ha precedenza sul config file
+            base_url = os.getenv('OLLAMA_BASE_URL') or load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or 'http://localhost:11434'
+            try:
+                raw_models = await _fetch_ollama_models(base_url)
+                # Add is_cloud flag based on model name containing 'cloud'
+                for m in raw_models:
+                    models.append({
+                        'id': m,
+                        'is_cloud': 'cloud' in m.lower()
+                    })
+            except Exception as e:
+                note = f"ollama_fetch_error:{e}"
+        else:
+            return {"success": False, "error": "provider_not_supported_for_extended"}
+    except Exception as e:
+        note = f"generic_error:{e}"
+
+    # Dedup preserving order
+    seen = set()
+    ordered = []
+    for m in models:
+        mid = m.get('id', '')
+        if mid not in seen:
+            seen.add(mid)
+            ordered.append(m)
+    models = ordered
 
     _cache_set(cache_key, models, ttl)
     resp = {"success": True, "provider": provider, "cached": False, "models": models}
@@ -1716,8 +1799,14 @@ class PersonalityIn(BaseModel):
     webhook_timeout: Optional[int] = 60  # timeout in secondi per la chiamata webhook
     webhook_auth_header: Optional[str] = None  # header Authorization opzionale
     webhook_include_history: Optional[bool] = True  # se includere la cronologia nella richiesta
-    # Delegation rules
+    # Delegation rules (pattern-based - legacy)
     delegate_rules: Optional[List[Dict]] = None  # regole di delega a altre personalità
+    # AI-driven delegation (la personalità decide autonomamente quando delegare)
+    delegation_instructions: Optional[str] = None  # istruzioni per l'AI su quando delegare
+    delegation_targets: Optional[List[Dict]] = None  # [{id, name, description}] personalità target
+    # Fallback model configuration
+    fallback_provider: Optional[str] = None  # provider per il modello di fallback
+    fallback_model: Optional[str] = None  # modello di fallback se il primario fallisce
 
 
 class PersonalityDuplicateIn(BaseModel):
@@ -1786,6 +1875,10 @@ async def upsert_personality_admin(p: PersonalityIn):
             webhook_auth_header=p.webhook_auth_header,
             webhook_include_history=p.webhook_include_history,
             delegate_rules=p.delegate_rules,
+            delegation_instructions=p.delegation_instructions,
+            delegation_targets=p.delegation_targets,
+            fallback_provider=p.fallback_provider,
+            fallback_model=p.fallback_model,
         )
         return {"success": True, "id": res['id']}
     except Exception as e:

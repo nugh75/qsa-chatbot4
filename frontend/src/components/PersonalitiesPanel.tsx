@@ -10,6 +10,7 @@ import SettingsIcon from '@mui/icons-material/Settings'
 import { authFetch, BACKEND } from '../utils/authFetch'
 import { PersonalityEntry, SystemPromptEntry, RAGGroup, MCPServer, DelegateRule } from '../types/admin'
 import SystemPromptsPanel from './SystemPromptsPanel'
+import WelcomeGuidesPanel from './WelcomeGuidesPanel'
 
 interface PersonalitiesResponse { default_id: string | null; personalities: PersonalityEntry[] }
 
@@ -94,6 +95,7 @@ const PersonalitiesPanel: React.FC = () => {
   const [delegationTargets, setDelegationTargets] = useState<{id: string; name: string; description: string}[]>([])
   // Dialog per gestire System Prompts
   const [systemPromptsDialogOpen, setSystemPromptsDialogOpen] = useState(false)
+  const [guidesDialogOpen, setGuidesDialogOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -123,6 +125,20 @@ const PersonalitiesPanel: React.FC = () => {
         setForms(list.map((f:any)=> ({ id: f.id, name: f.name, description: f.description, items_count: (f.items||[]).length || f.items_count || 0 })))
       }
     } finally { setLoading(false) }
+  }, [])
+
+  const loadGuides = useCallback(async () => {
+    try {
+      const gd = await fetch(`${BACKEND}/api/welcome-guides/guides`).then(r=>r.json())
+      if (Array.isArray(gd)) {
+        const glist = gd.map((g:any)=>({ id: g.id || g.title, label: g.title || g.id, content: g.content }))
+        setGuideOptions(glist)
+      } else {
+        setGuideOptions([])
+      }
+    } catch {
+      setGuideOptions([])
+    }
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -155,12 +171,8 @@ const PersonalitiesPanel: React.FC = () => {
     }
     if (!providers.length) setProviders(FULL_PROVIDERS)
     try {
-      const gd = await fetch(`${BACKEND}/api/welcome-guides/guides`).then(r=>r.json())
-      if (Array.isArray(gd)) {
-        const glist = gd.map((g:any)=>({ id: g.id || g.title, label: g.title || g.id, content: g.content }))
-        setGuideOptions(glist)
-      }
-      
+      await loadGuides()
+
       // Carica opzioni pipeline
       const pipelineRes = await authFetch(`${BACKEND}/api/admin/pipeline-options`)
       if (pipelineRes.ok) {
@@ -188,7 +200,7 @@ const PersonalitiesPanel: React.FC = () => {
         }
       }
     } catch {}
-  })() },[])
+  })() },[loadGuides])
 
   // Fetch models for a single provider on demand (used when user changes provider in dialog)
   const fetchProviderModels = useCallback(async (prov: string, refresh = false) => {
@@ -913,86 +925,128 @@ const PersonalitiesPanel: React.FC = () => {
               <Typography variant="caption" color="text.secondary">Nota: {modelsNote}</Typography>
             )}
 
-            {/* Sezione Fallback Model */}
-            {(provider === 'openrouter' || provider === 'ollama') && extendedModels[provider] && (
-              <Paper variant="outlined" sx={{ p: 2, mt: 1, bgcolor: 'action.hover' }}>
-                <Stack spacing={2}>
-                  <Typography variant="subtitle2">Modello di Fallback</Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {provider === 'openrouter'
-                      ? 'Se il modello gratuito fallisce, verrà utilizzato questo modello di fallback'
-                      : 'Se il modello cloud fallisce, verrà utilizzato questo modello di fallback'}
-                  </Typography>
+            {/* ============================================ */}
+            {/* SEZIONE LLM FALLBACK (identica a principale) */}
+            {/* ============================================ */}
+            <Paper variant="outlined" sx={{ p: 2, mt: 2, bgcolor: 'warning.50', border: '1px solid', borderColor: 'warning.main' }}>
+              <Stack spacing={2}>
+                <Typography variant="subtitle2" color="warning.dark">LLM di Fallback (opzionale)</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Se il modello principale fallisce, verrà utilizzato questo modello di fallback
+                </Typography>
 
-                  {/* Fallback Provider (stesso o diverso) */}
+                {/* Fallback Provider */}
+                <FormControl size="small" fullWidth>
+                  <InputLabel id="fallback-prov-label">Provider Fallback</InputLabel>
+                  <Select
+                    labelId="fallback-prov-label"
+                    label="Provider Fallback"
+                    value={fallbackProvider}
+                    onChange={e => {
+                      setFallbackProvider(e.target.value)
+                      setFallbackModel('')
+                      // Load models for fallback provider if needed
+                      if (e.target.value && !providerModels[e.target.value]) {
+                        fetchProviderModels(e.target.value, false)
+                      }
+                    }}
+                  >
+                    <MenuItem value="">Nessun fallback</MenuItem>
+                    {providers.map(pv => <MenuItem key={pv} value={pv}>{pv}</MenuItem>)}
+                  </Select>
+                </FormControl>
+
+                {/* Fallback Ollama Base URL (se ollama) */}
+                {fallbackProvider === 'ollama' && (
+                  <TextField size="small" fullWidth label="Ollama Base URL (Fallback)" placeholder="http://192.168.x.x:11434" value={ollamaBaseUrl} onChange={e => setOllamaBaseUrl(e.target.value)} />
+                )}
+
+                {/* Checkbox filtro per OpenRouter fallback (solo gratuiti) */}
+                {fallbackProvider === 'openrouter' && extendedModels['openrouter'] && (
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={showFreeOnly}
+                        onChange={(e) => setShowFreeOnly(e.target.checked)}
+                        size="small"
+                      />
+                    }
+                    label={<Typography variant="body2">Mostra solo modelli gratuiti</Typography>}
+                  />
+                )}
+
+                {/* Checkbox filtro per Ollama fallback (solo cloud) */}
+                {fallbackProvider === 'ollama' && extendedModels['ollama'] && (
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={showCloudOnly}
+                        onChange={(e) => setShowCloudOnly(e.target.checked)}
+                        size="small"
+                      />
+                    }
+                    label={<Typography variant="body2">Mostra solo modelli cloud</Typography>}
+                  />
+                )}
+
+                {/* Fallback Model selector */}
+                {fallbackProvider && (providerModels[fallbackProvider]?.length || 0) > 0 ? (
                   <FormControl size="small" fullWidth>
-                    <InputLabel>Provider Fallback</InputLabel>
+                    <InputLabel id="fallback-model-label">Modello Fallback</InputLabel>
                     <Select
-                      label="Provider Fallback"
-                      value={fallbackProvider}
-                      onChange={e => {
-                        setFallbackProvider(e.target.value)
-                        setFallbackModel('')
-                        // Load models for fallback provider if needed
-                        if (e.target.value && !extendedModels[e.target.value]) {
-                          fetchProviderModels(e.target.value, false)
-                        }
-                      }}
+                      labelId="fallback-model-label"
+                      label="Modello Fallback"
+                      value={fallbackModel}
+                      onChange={e => setFallbackModel(e.target.value)}
                     >
-                      <MenuItem value="">Nessun fallback</MenuItem>
-                      {provider === 'openrouter' && (
-                        <>
-                          <MenuItem value="openrouter">OpenRouter (non gratuito)</MenuItem>
-                          <MenuItem value="ollama">Ollama (locale)</MenuItem>
-                        </>
-                      )}
-                      {provider === 'ollama' && (
-                        <>
-                          <MenuItem value="ollama">Ollama (locale)</MenuItem>
-                          <MenuItem value="openrouter">OpenRouter</MenuItem>
-                        </>
+                      <MenuItem value="">Seleziona modello...</MenuItem>
+                      {(() => {
+                        let models = providerModels[fallbackProvider] || []
+                        // Apply free filter for openrouter
+                        if (fallbackProvider === 'openrouter' && showFreeOnly && extendedModels['openrouter']) {
+                          const freeIds = new Set(extendedModels['openrouter'].filter(m => m.is_free).map(m => m.id))
+                          models = models.filter(m => freeIds.has(m))
+                        }
+                        // Apply cloud filter for ollama
+                        if (fallbackProvider === 'ollama' && showCloudOnly && extendedModels['ollama']) {
+                          const cloudIds = new Set(extendedModels['ollama'].filter(m => m.is_cloud).map(m => m.id))
+                          models = models.filter(m => cloudIds.has(m))
+                        }
+                        return models.map(m => {
+                          const extModel = extendedModels[fallbackProvider]?.find(em => em.id === m)
+                          const isFree = extModel?.is_free
+                          const isCloud = extModel?.is_cloud
+                          const suffix = isFree ? ' (gratuito)' : isCloud ? ' (cloud)' : ''
+                          return <MenuItem key={m} value={m}>{m}{suffix}</MenuItem>
+                        })
+                      })()}
+                      {fallbackModel && !providerModels[fallbackProvider]?.includes(fallbackModel) && (
+                        <MenuItem value={fallbackModel}>{fallbackModel} (personalizzato)</MenuItem>
                       )}
                     </Select>
                   </FormControl>
+                ) : fallbackProvider ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Modello Fallback (inserisci manualmente)"
+                    value={fallbackModel}
+                    onChange={e => setFallbackModel(e.target.value)}
+                    helperText="Nessun elenco remoto, inserisci il nome esatto"
+                  />
+                ) : null}
 
-                  {/* Fallback Model selector */}
-                  {fallbackProvider && (
-                    <FormControl size="small" fullWidth>
-                      <InputLabel>Modello Fallback</InputLabel>
-                      <Select
-                        label="Modello Fallback"
-                        value={fallbackModel}
-                        onChange={e => setFallbackModel(e.target.value)}
-                      >
-                        <MenuItem value="">Seleziona modello...</MenuItem>
-                        {(() => {
-                          const fallbackModels = extendedModels[fallbackProvider] || []
-                          // For openrouter fallback from openrouter: show only non-free
-                          if (provider === 'openrouter' && fallbackProvider === 'openrouter') {
-                            return fallbackModels
-                              .filter(m => !m.is_free)
-                              .slice(0, 100)
-                              .map(m => <MenuItem key={m.id} value={m.id}>{m.id}</MenuItem>)
-                          }
-                          // For ollama fallback from ollama: show only non-cloud (local)
-                          if (provider === 'ollama' && fallbackProvider === 'ollama') {
-                            return fallbackModels
-                              .filter(m => !m.is_cloud)
-                              .map(m => <MenuItem key={m.id} value={m.id}>{m.id}</MenuItem>)
-                          }
-                          // Cross-provider fallback: show all models
-                          return fallbackModels.map(m => (
-                            <MenuItem key={m.id} value={m.id}>
-                              {m.id}{m.is_free ? ' (gratuito)' : m.is_cloud ? ' (cloud)' : ''}
-                            </MenuItem>
-                          ))
-                        })()}
-                      </Select>
-                    </FormControl>
-                  )}
-                </Stack>
-              </Paper>
-            )}
+                {/* Pulsante aggiorna modelli fallback */}
+                {fallbackProvider && (
+                  <Stack direction="row" spacing={1}>
+                    <Button size="small" onClick={() => fetchProviderModels(fallbackProvider, true)} disabled={modelsLoading}>
+                      Aggiorna modelli fallback
+                    </Button>
+                    {modelsLoading && <LinearProgress sx={{ flex: 1 }} />}
+                  </Stack>
+                )}
+              </Stack>
+            </Paper>
 
             {/* Test rapido LLM */}
             <Paper variant="outlined" sx={{ p:1.5 }}>
@@ -1090,13 +1144,25 @@ const PersonalitiesPanel: React.FC = () => {
                 <MenuItem value="false">Inattiva (nascosta)</MenuItem>
               </Select>
             </FormControl>
-            <FormControl size="small" fullWidth>
-              <InputLabel id="guide-label">Guida</InputLabel>
-              <Select labelId="guide-label" label="Guida" value={guideId} onChange={e=> setGuideId(e.target.value)}>
-                <MenuItem value=""><em>Nessuna</em></MenuItem>
-                {guideOptions.map(opt => <MenuItem key={opt.id} value={opt.id}>{opt.label || opt.id}</MenuItem>)}
-              </Select>
-            </FormControl>
+            <Stack direction="row" spacing={1} alignItems="flex-start">
+              <FormControl size="small" sx={{ flex: 1 }}>
+                <InputLabel id="guide-label">Guida</InputLabel>
+                <Select labelId="guide-label" label="Guida" value={guideId} onChange={e=> setGuideId(e.target.value)}>
+                  <MenuItem value=""><em>Nessuna</em></MenuItem>
+                  {guideOptions.map(opt => <MenuItem key={opt.id} value={opt.id}>{opt.label || opt.id}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <Tooltip title="Gestisci Guide">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setGuidesDialogOpen(true)}
+                  sx={{ minWidth: 'auto', px: 1.5, height: 40 }}
+                >
+                  <SettingsIcon fontSize="small" />
+                </Button>
+              </Tooltip>
+            </Stack>
             <TextField label="Context Window" value={contextWindow} onChange={e=>{ const v = e.target.value; if(v===''){ setContextWindow(''); } else { const n = Number(v); if(!isNaN(n) && n>=0 && n<=200){ setContextWindow(n)} } }} fullWidth size="small" placeholder="Es. 8 (numero scambi recenti)" />
             <TextField label="Max Tokens" value={maxTokens} onChange={e=>{ const v = e.target.value; if(v===''){ setMaxTokens(''); } else { const n = Number(v); if(!isNaN(n) && n>=1 && n<=50000){ setMaxTokens(n)} } }} fullWidth size="small" placeholder="Es. 2000 (massimo token per risposta)" />
             {/* Temperature - hidden when webhook is active */}
@@ -1594,6 +1660,27 @@ Delega all'esperto di storia quando l'utente:
           <Button onClick={() => {
             setSystemPromptsDialogOpen(false);
             load();
+          }}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={guidesDialogOpen}
+        onClose={() => {
+          setGuidesDialogOpen(false);
+          loadGuides();
+        }}
+        fullWidth
+        maxWidth="md"
+      >
+        <DialogTitle>Gestione Guide</DialogTitle>
+        <DialogContent>
+          <WelcomeGuidesPanel mode="guide" />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setGuidesDialogOpen(false);
+            loadGuides();
           }}>Chiudi</Button>
         </DialogActions>
       </Dialog>

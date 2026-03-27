@@ -710,13 +710,13 @@ def get_summary_model():
         return model
     provider = ss.get("provider", "openrouter")
     defaults = {
-        "openrouter": "anthropic/claude-3.5-sonnet",
-        "claude": "claude-3-5-sonnet-20241022",
+        "openrouter": "anthropic/claude-sonnet-4.5",
+        "claude": "claude-sonnet-4-5-20250514",
         "openai": "gpt-4o-mini",
         "gemini": "gemini-1.5-pro",
         "ollama": "llama3.1:8b"
     }
-    return defaults.get(provider, "anthropic/claude-3.5-sonnet")
+    return defaults.get(provider, "anthropic/claude-sonnet-4.5")
 
 # ---- TTS providers / voices management ----
 class TTSVoicesRequest(BaseModel):

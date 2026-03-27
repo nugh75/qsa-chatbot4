@@ -15,6 +15,7 @@ from .memory import get_memory
 
 from .auth import get_optional_current_user, get_current_active_user
 from .database import db_manager, MessageModel
+from .interaction_summary import load_summary, append_interaction_summary
 from fastapi.responses import StreamingResponse
 import asyncio
 
@@ -47,6 +48,13 @@ def _safe_log_system(level: int, msg: str):
         log_system(level, msg)
     except Exception:
         pass
+
+async def _safe_append_summary(conv_id: str, user_msg: str, assistant_reply: str):
+    """Genera e salva il riassunto dell'interazione in modo sicuro (non blocca il flusso)."""
+    try:
+        await append_interaction_summary(conv_id, user_msg, assistant_reply)
+    except Exception as e:
+        print(f"[interaction_summary] Errore nel salvataggio riassunto: {e}")
 
 def _resolve_personality(personality_id: Optional[str]):
     """Ritorna (system_prompt, provider_override, model_override, personality_meta, webhook_config)."""
@@ -855,6 +863,19 @@ async def chat(
             "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"
         })
 
+    # Inietta il riassunto delle interazioni precedenti (memoria persistente MD)
+    _summary_conv_id = conversation_id or session_id
+    _existing_summary = load_summary(_summary_conv_id)
+    if _existing_summary:
+        messages.append({
+            "role": "system",
+            "content": (
+                "[MEMORIA CONVERSAZIONE - Riassunto delle interazioni precedenti]\n"
+                "Usa queste informazioni come contesto per mantenere coerenza nella conversazione.\n\n"
+                + _existing_summary[:4000]
+            )
+        })
+
     # Aggiungi la cronologia della conversazione
     messages.extend(conversation_history)
     
@@ -1029,6 +1050,9 @@ async def chat(
         except Exception as e:
             print(f"Error saving assistant message: {e}")
     
+    # Genera riassunto interazione e salva su file MD (in background, non blocca la risposta)
+    asyncio.ensure_future(_safe_append_summary(_summary_conv_id, user_msg, answer))
+
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
     resp = {"reply": answer, "topic": topic, "topics": [t["topic"] for t in topics_multi] if topics_multi else ([topic] if topic else [])}
@@ -1576,6 +1600,20 @@ async def chat_stream(
             "role": "system",
             "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"
         })
+
+    # Inietta il riassunto delle interazioni precedenti (memoria persistente MD) - STREAM
+    _summary_conv_id_stream = conversation_id or session_id
+    _existing_summary_stream = load_summary(_summary_conv_id_stream)
+    if _existing_summary_stream:
+        messages.append({
+            "role": "system",
+            "content": (
+                "[MEMORIA CONVERSAZIONE - Riassunto delle interazioni precedenti]\n"
+                "Usa queste informazioni come contesto per mantenere coerenza nella conversazione.\n\n"
+                + _existing_summary_stream[:4000]
+            )
+        })
+
     messages += conversation_history
     # Aggiungi il messaggio utente corrente (con allegati) se non già presente in cronologia
     if not any(m.get('role') == 'user' and m.get('content') == full_user_message for m in conversation_history):
@@ -1863,6 +1901,8 @@ async def chat_stream(
                             print("Warning: failed to save assistant message (stream)")
                     except Exception as e:
                         print(f"Error saving assistant message (stream): {e}")
+                # Genera riassunto interazione (in background, non blocca lo stream)
+                asyncio.ensure_future(_safe_append_summary(_summary_conv_id_stream, user_msg, full_answer))
                 # Logging usage
                 try:
                     cfg = load_config()

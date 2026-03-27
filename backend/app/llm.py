@@ -30,7 +30,7 @@ DEFAULT_MODELS: Dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.0-flash",
     "ollama": "llama3.1:8b",
-    "claude": "claude-3-5-sonnet-latest",
+    "claude": "claude-sonnet-4-5-20250514",
 }
 
 PROVIDER_TIMEOUTS: Dict[str, int] = {

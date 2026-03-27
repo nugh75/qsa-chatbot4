@@ -16,7 +16,7 @@ import traceback
 
 from . import welcome_guides as _wg
 from .admin import get_summary_provider, get_summary_model
-from .auth import get_current_active_user
+from .auth import get_current_active_user, get_optional_current_user
 from .crypto_at_rest import encrypt_text as _enc_text, decrypt_text as _dec_text, is_encrypted as _is_enc
 from .database import ConversationModel, MessageModel, DeviceModel
 from .database import db_manager
@@ -1232,3 +1232,48 @@ async def export_conversation_with_report_post(
     except Exception as e:
         print(f"Unexpected error in export_conversation_with_report (POST): {e}")
         raise HTTPException(status_code=500, detail=f"Internal error during export (POST): {str(e)}")
+
+
+# ────────────────────────────────────────────────────────────────
+# Endpoint per consultare i riassunti delle interazioni (file MD)
+# ────────────────────────────────────────────────────────────────
+
+@router.get("/interaction-summaries")
+async def list_interaction_summaries(
+    current_user: Optional[dict] = Depends(get_optional_current_user)
+):
+    """Elenca tutti i file di riassunto disponibili."""
+    from .interaction_summary import list_summaries
+    summaries = list_summaries()
+    return {"summaries": summaries, "count": len(summaries)}
+
+
+@router.get("/{conversation_id}/interaction-summary")
+async def get_interaction_summary(
+    conversation_id: str,
+    current_user: Optional[dict] = Depends(get_optional_current_user)
+):
+    """Restituisce il riassunto delle interazioni per una conversazione specifica."""
+    from .interaction_summary import load_summary
+    content = load_summary(conversation_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Nessun riassunto trovato per questa conversazione")
+    return {
+        "conversation_id": conversation_id,
+        "content": content,
+        "chars": len(content),
+    }
+
+
+@router.delete("/{conversation_id}/interaction-summary")
+async def delete_interaction_summary(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_active_user)
+):
+    """Elimina il file di riassunto di una conversazione."""
+    from .interaction_summary import _summary_path
+    path = _summary_path(conversation_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Nessun riassunto trovato")
+    path.unlink()
+    return {"success": True, "message": f"Riassunto per {conversation_id} eliminato"}

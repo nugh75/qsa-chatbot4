@@ -5,9 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_ROOT="${CHATBOT_DATA_ROOT:-${ROOT_DIR}/runtime-data}"
 DEFAULT_STORAGE_ROOT="${ROOT_DIR}/backend"
 
-# Modelli ML: condivisi tra tutte le istanze (binari pesanti, nessun dato utente)
+# Modelli ML: condivisi tra tutte le istanze (binari pesanti, nessun dato utente).
+# --ignore-existing: seeda solo i file mancanti, NON cancella i modelli gia' scaricati.
 mkdir -p "${DATA_ROOT}/models"
-rsync -a --delete "${DEFAULT_STORAGE_ROOT}/models/" "${DATA_ROOT}/models/" >/dev/null 2>&1 || true
+rsync -a --ignore-existing "${DEFAULT_STORAGE_ROOT}/models/" "${DATA_ROOT}/models/" >/dev/null 2>&1 || true
 
 # Ogni istanza ha dati e config isolati: storage + config + backups + exports per-istanza
 for site in poggi pef counselorbot; do

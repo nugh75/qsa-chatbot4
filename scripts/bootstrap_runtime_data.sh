@@ -5,23 +5,31 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA_ROOT="${CHATBOT_DATA_ROOT:-${ROOT_DIR}/runtime-data}"
 DEFAULT_STORAGE_ROOT="${ROOT_DIR}/backend"
 
+# Modelli ML: condivisi tra tutte le istanze (binari pesanti, nessun dato utente)
 mkdir -p "${DATA_ROOT}/models"
-mkdir -p "${DATA_ROOT}/config"
 rsync -a --delete "${DEFAULT_STORAGE_ROOT}/models/" "${DATA_ROOT}/models/" >/dev/null 2>&1 || true
-rsync -a --delete "${DEFAULT_STORAGE_ROOT}/config/" "${DATA_ROOT}/config/" >/dev/null 2>&1 || true
 
+# Ogni istanza ha dati e config isolati: storage + config + backups + exports per-istanza
 for site in poggi pef counselorbot; do
-  mkdir -p "${DATA_ROOT}/${site}/storage"
+  mkdir -p "${DATA_ROOT}/${site}/storage" \
+           "${DATA_ROOT}/${site}/config" \
+           "${DATA_ROOT}/${site}/backups" \
+           "${DATA_ROOT}/${site}/exports"
+
+  # Seed storage di default (no --delete: non cancella dati istanza)
   SOURCE_DIR="${DEFAULT_STORAGE_ROOT}/storage-${site}"
   if [ -d "${SOURCE_DIR}" ]; then
-    echo "[bootstrap] copying defaults for ${site}"
+    echo "[bootstrap] copying storage defaults for ${site}"
     if ! rsync -a "${SOURCE_DIR}/" "${DATA_ROOT}/${site}/storage/"; then
       echo "[bootstrap] warning: unable to copy ${SOURCE_DIR} (check permissions)" >&2
     fi
   fi
-  mkdir -p "${DATA_ROOT}/${site}/backups"
-  mkdir -p "${DATA_ROOT}/${site}/exports"
-  done
+
+  # Seed config di default solo per file mancanti: mai sovrascrive api_keys/config dell'istanza
+  if [ -d "${DEFAULT_STORAGE_ROOT}/config" ]; then
+    rsync -a --ignore-existing "${DEFAULT_STORAGE_ROOT}/config/" "${DATA_ROOT}/${site}/config/" >/dev/null 2>&1 || true
+  fi
+done
 
 python3 - "${DATA_ROOT}" <<'PY'
 import json

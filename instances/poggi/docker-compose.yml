@@ -12,13 +12,9 @@ x-pg: &pg
     start_period: 5s
 
 x-be: &be
-  build: ./backend
+  build: ../../backend
   restart: unless-stopped
   user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
-  volumes:
-    - ./backend/storage:/app/storage
-    - ./backend/models:/app/models
-    - ./backend/config:/app/config
   depends_on: {}
 
 x-fe: &fe
@@ -30,28 +26,28 @@ services:
   # ---- Postgres Poggi ----
   postgres-poggi:
     <<: *pg
-    env_file: [.env.poggi]
+    env_file: [.env]
     ports: ["5537:5432"]
     volumes: ["pgdata-poggi:/var/lib/postgresql/data"]
 
   # ---- Backend Poggi ----
   backend-poggi:
     <<: *be
-    env_file: [.env.poggi]
+    env_file: [.env]
     ports: ["8117:8005"]
     volumes:
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/poggi/storage:/app/storage
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
-      # Monta il file env anche dove il backend lo cerca (backend/.env)
-      - ./.env.poggi:/app/backend/.env:ro
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/poggi/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/poggi/config:/app/config
+      - ./.env:/app/.env:ro
+      - ./.env:/app/backend/.env:ro
     depends_on: { postgres-poggi: { condition: service_healthy } }
 
   # ---- Frontend Poggi ----
   frontend-poggi:
     <<: *fe
-    build: 
-      context: ./frontend
+    build:
+      context: ../../frontend
       dockerfile: Dockerfile
       args:
         VITE_BACKEND_TARGET: http://backend-poggi:8005

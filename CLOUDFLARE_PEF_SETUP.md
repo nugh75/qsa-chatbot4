@@ -118,7 +118,7 @@ Aggiungere i seguenti record DNS nel dashboard Cloudflare:
 ### 5. Avviare i servizi
 ```bash
 # 1. Avviare Docker Compose per PEF
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 docker-compose -f docker-compose.pef.yml up -d
 
 # 2. Verificare che i servizi siano attivi

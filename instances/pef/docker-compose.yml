@@ -12,13 +12,9 @@ x-pg: &pg
     start_period: 5s
 
 x-be: &be
-  build: ./backend
+  build: ../../backend
   restart: unless-stopped
   user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
-  volumes:
-    - ./backend/storage:/app/storage
-    - ./backend/models:/app/models
-    - ./backend/config:/app/config
   depends_on: {}
 
 x-fe: &fe
@@ -30,27 +26,28 @@ services:
   # ---- Postgres PEF ----
   postgres-pef:
     <<: *pg
-    env_file: [.env.pef]
+    env_file: [.env]
     ports: ["5535:5432"]
     volumes: ["pgdata-pef:/var/lib/postgresql/data"]
 
   # ---- Backend PEF ----
   backend-pef:
     <<: *be
-    env_file: [.env.pef]
+    env_file: [.env]
     ports: ["8115:8005"]
     volumes:
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/pef/storage:/app/storage
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
-      - ./.env.pef:/app/.env:ro
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/pef/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/pef/config:/app/config
+      - ./.env:/app/.env:ro
+      - ./.env:/app/backend/.env:ro
     depends_on: { postgres-pef: { condition: service_healthy } }
 
   # ---- Frontend PEF ----
   frontend-pef:
     <<: *fe
-    build: 
-      context: ./frontend
+    build:
+      context: ../../frontend
       dockerfile: Dockerfile
       args:
         VITE_BACKEND_TARGET: http://backend-pef:8005

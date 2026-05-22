@@ -55,20 +55,20 @@
 
 ### Opzione 1: Pulizia Automatica Sicura (Consigliata)
 ```bash
-cd /mnt/git/qsa-chatbot4/frontend
+cd /mnt/git/ai4educ-chatbots/frontend
 ./cleanup_unused_files.sh
 # Scegli opzione 1 (solo file sicuri)
 ```
 
 ### Opzione 2: Analisi Manuale Prima
 ```bash
-cd /mnt/git/qsa-chatbot4/frontend
+cd /mnt/git/ai4educ-chatbots/frontend
 node analyze_react_imports.cjs src/ --show-external --format both
 ```
 
 ### Opzione 3: Export Dettagliato
 ```bash
-cd /mnt/git/qsa-chatbot4/frontend  
+cd /mnt/git/ai4educ-chatbots/frontend  
 node analyze_react_imports.cjs src/ --format json --output frontend_analysis.json
 ```
 

@@ -1,0 +1,60 @@
+# Template istanza ai4educ-chatbots.
+# Copia questa cartella in instances/<nome>/, poi sostituisci:
+#   - SITE  -> nome istanza (es. miabot)  [name:, percorsi runtime-data, VITE_SITE_NAME]
+#   - porte -> scegli porte host LIBERE (PG / backend / frontend)
+# Codice backend/frontend è CONDIVISO (build context ../../). Dati isolati in runtime-data/<nome>/.
+
+name: SITE
+
+x-pg: &pg
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qsa_user} -d $${POSTGRES_DB:-qsa_chatbot}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 5s
+
+x-be: &be
+  build: ../../backend
+  restart: unless-stopped
+  user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+  depends_on: {}
+
+x-fe: &fe
+  restart: unless-stopped
+  depends_on: []
+
+services:
+  postgres-SITE:
+    <<: *pg
+    env_file: [.env]
+    ports: ["5599:5432"]            # <-- scegli porta PG libera
+    volumes: ["pgdata-SITE:/var/lib/postgresql/data"]
+
+  backend-SITE:
+    <<: *be
+    env_file: [.env]
+    ports: ["8199:8005"]            # <-- scegli porta backend libera
+    volumes:
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/SITE/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/SITE/config:/app/config
+      - ./.env:/app/.env:ro
+      - ./.env:/app/backend/.env:ro
+    depends_on: { postgres-SITE: { condition: service_healthy } }
+
+  frontend-SITE:
+    <<: *fe
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-SITE:8005
+        VITE_SITE_NAME: SITE
+    ports: ["5199:5175"]            # <-- scegli porta frontend libera
+    depends_on: [backend-SITE]
+
+volumes:
+  pgdata-SITE:

@@ -161,7 +161,7 @@ Per progetti molto grandi (>1000 file), l'analisi potrebbe richiedere alcuni sec
 
 ### Analizza backend QSA Chatbot
 ```bash
-cd /path/to/qsa-chatbot4/backend
+cd /path/to/ai4educ-chatbots/backend
 python analyze_imports.py app/ --show-external --output backend_deps.json
 ```
 

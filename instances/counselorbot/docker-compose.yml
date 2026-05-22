@@ -1,10 +1,10 @@
-version: '3.8'
+name: counselorbot
 
 services:
   postgres-counselorbot:
     image: postgres:16-alpine
     restart: unless-stopped
-    env_file: [.env.counselorbot]
+    env_file: [.env]
     ports:
       - "5532:5432"
     volumes:
@@ -18,24 +18,25 @@ services:
 
   backend-counselorbot:
     build:
-      context: ./backend
+      context: ../../backend
     restart: unless-stopped
     user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
-    env_file: [.env.counselorbot]
+    env_file: [.env]
     ports:
       - "8112:8005"
     volumes:
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/counselorbot/storage:/app/storage
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/models:/app/models
-      - ${CHATBOT_DATA_ROOT:-./runtime-data}/config:/app/config
-      - ./.env.counselorbot:/app/.env:ro
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/counselorbot/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/counselorbot/config:/app/config
+      - ./.env:/app/.env:ro
+      - ./.env:/app/backend/.env:ro
     depends_on:
       postgres-counselorbot:
         condition: service_healthy
 
   frontend-counselorbot:
     build:
-      context: ./frontend
+      context: ../../frontend
       dockerfile: Dockerfile
       args:
         VITE_BACKEND_TARGET: http://backend-counselorbot:8005

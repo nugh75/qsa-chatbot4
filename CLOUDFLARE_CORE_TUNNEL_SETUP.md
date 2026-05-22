@@ -89,14 +89,14 @@ echo "✅ Record DNS configurati!"
 ### Avviare Poggi
 ```bash
 # Terminal 1: Avviare servizi Docker Poggi
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 ./start-poggi.sh
 ```
 
 ### Avviare PEF
 ```bash
 # Terminal 2: Avviare servizi Docker PEF
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 ./start-pef.sh
 ```
 
@@ -143,7 +143,7 @@ curl https://counselor.ai4educ.org  # Verifica esistente
 
 ```bash
 # Setup completo automatico
-curl -s https://raw.githubusercontent.com/tuoaccount/qsa-chatbot4/main/setup-core-tunnel.sh | bash
+curl -s https://raw.githubusercontent.com/tuoaccount/ai4educ-chatbots/main/setup-core-tunnel.sh | bash
 ```
 
 ## 📊 Configurazione Finale

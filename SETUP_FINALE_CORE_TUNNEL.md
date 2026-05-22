@@ -44,7 +44,7 @@ ingress:
 
 ```bash
 # Setup completo in 4 comandi
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 ./setup-core-tunnel-config.sh    # Aggiorna config.yml
 ./setup-core-tunnel-dns.sh       # Configura DNS records
 ./start-poggi.sh &               # Avvia Poggi (background)

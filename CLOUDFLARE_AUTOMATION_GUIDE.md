@@ -13,7 +13,7 @@ Aggiungere **Poggi** e **PEF** al tunnel `core-tunnel` esistente.
 
 ### 1. Setup completo automatico
 ```bash
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 
 # Step 1: Aggiornare configurazione tunnel
 ./setup-core-tunnel-config.sh
@@ -135,12 +135,12 @@ echo "🚀 Per avviare: cloudflared tunnel --config ~/.cloudflared/pef-config.ym
 ### Avviare entrambi gli ambienti
 ```bash
 # Terminal 1: Avviare Poggi
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 ./start-poggi.sh
 cloudflared tunnel --config ~/.cloudflared/poggi-config.yml run poggi-tunnel
 
 # Terminal 2: Avviare PEF  
-cd /home/nugh75/qsa-chatbot4
+cd /home/nugh75/ai4educ-chatbots
 ./start-pef.sh
 cloudflared tunnel --config ~/.cloudflared/pef-config.yml run pef-tunnel
 ```

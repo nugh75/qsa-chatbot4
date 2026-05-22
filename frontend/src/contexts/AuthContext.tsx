@@ -2,9 +2,10 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { ChatCrypto, CredentialManager } from '../crypto';
 import { createApiService } from '../types/api';
 
-interface UserInfo {
+export interface UserInfo {
   id: number;
   email: string;
+  username?: string;
   is_admin: boolean;
   created_at: string;
 }
@@ -16,9 +17,14 @@ interface AuthContextType {
   isLoading: boolean;
   needsCryptoReauth: boolean; // Indica se è necessario riloggarsi per la crittografia
   mustChangePassword: boolean;
+  impersonatedUser: UserInfo | null; // Utente impersonato (solo per admin)
   login: (user: UserInfo, crypto: ChatCrypto) => void;
   logout: () => void;
   checkAuthStatus: () => Promise<void>;
+  setImpersonation: (targetUser: UserInfo | null) => void;
+  getEffectiveUserId: () => number | null; // Restituisce l'ID dell'utente impersonato o dell'utente reale
+  isGuest: boolean;
+  continueAsGuest: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -45,6 +51,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [needsCryptoReauth, setNeedsCryptoReauth] = useState(false);
   const [mustChangePassword, setMustChangePassword] = useState(false);
+  const [impersonatedUser, setImpersonatedUser] = useState<UserInfo | null>(null);
+  const [isGuest, setIsGuest] = useState(false);
 
   // Usa sempre il prefisso /api per evitare 404 (/auth/me prima restituiva 404)
   const apiService = createApiService(API_BASE);
@@ -88,24 +96,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           );
         }
         setUser(response.data);
-        // Prova a ripristinare la chiave dalla sessione, se presente e coerente con l'utente
-        try {
-          const raw = sessionStorage.getItem('qsa_crypto_key_raw');
-          const uemail = sessionStorage.getItem('qsa_crypto_key_user');
-          if (raw && uemail && uemail === response.data.email) {
-            const cryptoInst = new ChatCrypto();
-            await cryptoInst.importKeyFromRaw(raw);
-            setCrypto(cryptoInst);
-            setNeedsCryptoReauth(false);
-          } else {
-            setCrypto(null);
-            setNeedsCryptoReauth(true); // Utente autenticato ma senza chiave crypto
-          }
-        } catch (e) {
-          console.warn('Ripristino chiave sessione fallito:', e);
-          setCrypto(null);
-          setNeedsCryptoReauth(true);
-        }
+  // Client-side encryption is disabled: no per-user key to restore
+  setCrypto(null);
+  setNeedsCryptoReauth(false);
         setMustChangePassword(!!response.data.must_change_password);
         // Non possiamo ricreare la chiave crittografica senza password – l'utente dovrà riloggarsi per operazioni di decrittazione se necessario
       } else {
@@ -113,7 +106,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const storedInfo = CredentialManager.getUserInfo();
         if (storedInfo) {
           setUser(storedInfo);
-          setNeedsCryptoReauth(true);
+          setNeedsCryptoReauth(false);
         } else {
           clearStoredTokens();
           setUser(null);
@@ -128,7 +121,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const storedInfo = CredentialManager.getUserInfo();
       if (storedInfo) {
         setUser(storedInfo);
-        setNeedsCryptoReauth(true);
+        setNeedsCryptoReauth(false);
       } else {
         clearStoredTokens();
         setUser(null);
@@ -151,12 +144,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setUser(null);
     setCrypto(null);
     setNeedsCryptoReauth(false);
+    setImpersonatedUser(null);
+    setIsGuest(false);
     clearStoredTokens();
-    // Rimuovi eventuale chiave salvata in sessione
-    try {
-      sessionStorage.removeItem('qsa_crypto_key_raw');
-      sessionStorage.removeItem('qsa_crypto_key_user');
-    } catch {}
+  // No client-side crypto keys to remove
     
     // Opzionale: notifica il backend del logout
     const token = getStoredToken();
@@ -165,6 +156,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         headers: { Authorization: `Bearer ${token}` }
       }).catch(console.error);
     }
+  };
+
+  const setImpersonation = (targetUser: UserInfo | null) => {
+    // Solo gli admin possono impersonare
+    if (user?.is_admin) {
+      setImpersonatedUser(targetUser);
+    }
+  };
+
+  const getEffectiveUserId = (): number | null => {
+    return impersonatedUser?.id || user?.id || null;
+  };
+
+  const continueAsGuest = () => {
+    setIsGuest(true);
+    setUser(null);
+    setCrypto(null);
   };
 
   // Auto-check auth status on mount
@@ -180,9 +188,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isLoading,
     needsCryptoReauth,
     mustChangePassword,
+    impersonatedUser,
     login,
     logout,
     checkAuthStatus,
+    setImpersonation,
+    getEffectiveUserId,
+    isGuest,
+    continueAsGuest,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

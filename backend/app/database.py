@@ -1,203 +1,115 @@
+"""Database layer per PostgreSQL.
+
+Richiede la variabile d'ambiente `DATABASE_URL` (formato postgresql://).
+
+NOTE: Le query usano placeholder `?` che vengono convertiti in `%s` per PostgreSQL.
 """
-Database models and configuration for QSA Chatbot with encrypted conversations
-"""
-import sqlite3
 import hashlib
 import os
+import re
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import math
 from pathlib import Path
 from contextlib import contextmanager
 
-# Configura il percorso del database nella nuova struttura
+# PostgreSQL obbligatorio
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL or not DATABASE_URL.startswith("postgres"):
+    raise RuntimeError("DATABASE_URL non configurato. PostgreSQL è richiesto.")
+
+USING_POSTGRES = True
+
+import psycopg2  # type: ignore
+import psycopg2.extras  # type: ignore
+
+# Percorso legacy (non usato con PostgreSQL ma mantenuto per compatibilità)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_PATH = str(BASE_DIR / "storage" / "databases" / "qsa_chatbot.db")
 
 class DatabaseManager:
-    """Gestisce la connessione e le operazioni sul database SQLite"""
-    
+    """Gestisce la connessione e le operazioni sul database PostgreSQL."""
+
     def __init__(self, db_path: str = DATABASE_PATH):
-        self.db_path = db_path
-        # Ensure parent directory exists to avoid 'unable to open database file'
-        try:
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            print(f"[DB] Warning: cannot create database directory: {e}")
+        self.db_path = db_path  # Mantenuto per compatibilità
         self.init_database()
-    
+
     @contextmanager
     def get_connection(self):
-        """Context manager per gestire connessioni al database"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # Permette accesso per nome colonna
+        """Ottiene una connessione PostgreSQL con DictCursor."""
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.DictCursor)
         try:
             yield conn
         finally:
             conn.close()
     
+    def adapt_sql(self, sql: str) -> str:
+        """Converte placeholder '?' in '%s' per PostgreSQL."""
+        # Placeholder conversion
+        sql = sql.replace('?', '%s')
+        # Boolean field normalization: compatibilità con vecchie query che usavano 0/1
+        sql = re.sub(r'\bis_active\s*=\s*1\b', 'is_active IS TRUE', sql)
+        sql = re.sub(r'\bis_active\s*=\s*0\b', 'is_active IS FALSE', sql)
+        sql = re.sub(r'\bis_deleted\s*=\s*1\b', 'is_deleted IS TRUE', sql)
+        sql = re.sub(r'\bis_deleted\s*=\s*0\b', 'is_deleted IS FALSE', sql)
+        sql = re.sub(r'\barchived\s*=\s*1\b', 'archived IS TRUE', sql)
+        sql = re.sub(r'\barchived\s*=\s*0\b', 'archived IS FALSE', sql)
+        return sql
+
+    def exec(self, cursor, sql: str, params=()):
+        cursor.execute(self.adapt_sql(sql), params)
+
+    def ping(self) -> dict:
+        """Health check per il database PostgreSQL."""
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                self.exec(cur, "SELECT 1")
+                cur.fetchone()
+            return {"ok": True, "backend": "postgresql"}
+        except Exception as e:
+            return {"ok": False, "backend": "postgresql", "error": str(e)}
+
     def init_database(self):
-        """Inizializza il database e crea le tabelle"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Tabella utenti
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    user_key_hash TEXT NOT NULL,
-                    escrow_key_encrypted TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_login TIMESTAMP,
-                    is_active BOOLEAN DEFAULT 1,
-                    failed_login_attempts INTEGER DEFAULT 0,
-                    locked_until TIMESTAMP NULL
-                )
-            """)
-            # Ensure column must_change_password exists
-            cursor.execute("PRAGMA table_info(users)")
-            cols = [row[1] for row in cursor.fetchall()]
-            if 'must_change_password' not in cols:
-                try:
-                    cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0")
-                except Exception:
-                    pass
-            # Ensure column is_admin exists
-            cursor.execute("PRAGMA table_info(users)")
-            cols = [row[1] for row in cursor.fetchall()]
-            if 'is_admin' not in cols:
-                try:
-                    cursor.execute("ALTER TABLE users ADD COLUMN is_admin BOOLEAN DEFAULT 0")
-                except Exception:
-                    pass
-            
-            # Tabella conversazioni
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS conversations (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    title_encrypted TEXT NOT NULL,
-                    title_hash TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    message_count INTEGER DEFAULT 0,
-                    is_deleted BOOLEAN DEFAULT 0,
-                    device_id TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella messaggi
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id TEXT PRIMARY KEY,
-                    conversation_id TEXT NOT NULL,
-                    content_encrypted TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    token_count INTEGER DEFAULT 0,
-                    processing_time REAL DEFAULT 0,
-                    is_deleted BOOLEAN DEFAULT 0,
-                    FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella dispositivi utente
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS user_devices (
-                    id TEXT PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    device_name TEXT NOT NULL,
-                    device_fingerprint TEXT NOT NULL,
-                    last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    last_ip TEXT,
-                    user_agent TEXT,
-                    is_active BOOLEAN DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-                )
-            """)
-            
-            # Tabella azioni amministrative (audit log)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS admin_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    admin_email TEXT NOT NULL,
-                    action_type TEXT NOT NULL,
-                    target_user_id INTEGER,
-                    target_email TEXT,
-                    description TEXT NOT NULL,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    ip_address TEXT,
-                    success BOOLEAN DEFAULT 1
-                )
-            """)
-            
-            # Indici per performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations (user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations (updated_at DESC)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages (conversation_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_user_id ON user_devices (user_id)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_devices_fingerprint ON user_devices (device_fingerprint)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_admin_actions_timestamp ON admin_actions (timestamp DESC)")
-
-            # Tabella risposte survey anonime (non legata a user_id)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS survey_responses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    session_id TEXT, -- identificatore client anonimo per prevenire duplicati semplici
-                    -- Dati anagrafici (facoltativi)
-                    demo_eta INTEGER,
-                    demo_sesso TEXT,
-                    demo_istruzione TEXT,
-                    demo_tipo_istituto TEXT,
-                    demo_provenienza TEXT,
-                    demo_area TEXT,
-                    q_utilita INTEGER,
-                    q_pertinenza INTEGER,
-                    q_chiarezza INTEGER,
-                    q_dettaglio INTEGER,
-                    q_facilita INTEGER,
-                    q_velocita INTEGER,
-                    q_fiducia INTEGER,
-                    q_riflessione INTEGER,
-                    q_coinvolgimento INTEGER,
-                    q_riuso INTEGER,
-                    q_riflessioni TEXT,
-                    q_commenti TEXT
-                )
-            """)
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_survey_session ON survey_responses (session_id)")
-
-            # Aggiungi colonne demografiche se mancanti (migrazione leggera)
-            cursor.execute("PRAGMA table_info(survey_responses)")
-            existing_cols = [row[1] for row in cursor.fetchall()]
-            for col, ddl in [
-                ('demo_eta', 'INTEGER'),
-                ('demo_sesso', 'TEXT'),
-                ('demo_istruzione', 'TEXT'),
-                ('demo_tipo_istituto', 'TEXT'),
-                ('demo_provenienza', 'TEXT'),
-                ('demo_area', 'TEXT'),
-            ]:
-                if col not in existing_cols:
+        """Inizializza il database PostgreSQL e crea le tabelle se necessario."""
+        # Best-effort: se DB vuoto o mancano tabelle core, applica DDL idempotenti forniti negli script.
+        try:
+            from pathlib import Path as _P
+            schema_dir = _P(__file__).resolve().parent / 'scripts'
+            core_sql = (schema_dir / 'postgres_core_schema.sql')
+            extra_sql = (schema_dir / 'postgres_create_missing.sql')
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                # Check present tables
+                self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                present = {r[0] for r in cur.fetchall()}
+                need_core = any(t not in present for t in {'users','conversations','messages'})
+                ran_any = False
+                if need_core and core_sql.exists():
                     try:
-                        cursor.execute(f"ALTER TABLE survey_responses ADD COLUMN {col} {ddl}")
-                    except Exception:
-                        pass
-            
-            # Promote default admin if present
-            try:
-                cursor.execute("UPDATE users SET is_admin = 1 WHERE email = ?", ("daniele.dragoni@gmail.com",))
-            except Exception:
-                pass
-            conn.commit()
-            print("Database initialized successfully")
+                        sql = core_sql.read_text(encoding='utf-8')
+                        cur.execute(sql)
+                        ran_any = True
+                        print("[DB] Applied Postgres core schema (users/conversations/messages).")
+                    except Exception as e:
+                        print(f"[DB] Warning: core schema apply failed: {e}")
+                # Apply accessories (devices, rag_*, feedback, personalities)
+                self.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                present = {r[0] for r in cur.fetchall()}
+                need_extra = any(t not in present for t in {'devices','device_sync_log','rag_groups','rag_documents','rag_chunks','feedback','personalities'})
+                if need_extra and extra_sql.exists():
+                    try:
+                        sql2 = extra_sql.read_text(encoding='utf-8')
+                        cur.execute(sql2)
+                        ran_any = True
+                        print("[DB] Applied Postgres accessory schema (devices/rag/feedback/personalities).")
+                    except Exception as e:
+                        print(f"[DB] Warning: accessory schema apply failed: {e}")
+                if ran_any:
+                    conn.commit()
+        except Exception as e:
+            print(f"[DB] PostgreSQL init best-effort skipped due to error: {e}")
+        print("[DB] PostgreSQL attivo: schema verificato (best-effort).")
 
 # Istanza globale del database manager
 db_manager = DatabaseManager()
@@ -211,13 +123,11 @@ class UserModel:
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted)
-                    VALUES (?, ?, ?, ?)
-                """, (email, password_hash, user_key_hash, escrow_key_encrypted))
+                db_manager.exec(cursor, "INSERT INTO users (email, password_hash, user_key_hash, escrow_key_encrypted) VALUES (?, ?, ?, ?) RETURNING id", (email, password_hash, user_key_hash, escrow_key_encrypted))
+                user_id = cursor.fetchone()[0]
                 conn.commit()
-                return cursor.lastrowid
-        except sqlite3.IntegrityError:
+                return user_id
+        except psycopg2.IntegrityError:
             return None  # Email già esistente
     
     @staticmethod
@@ -225,7 +135,8 @@ class UserModel:
         """Recupera un utente per email"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE email = ? AND is_active = 1", (email,))
+            # Use boolean parameter for is_active for cross-DB compatibility
+            db_manager.exec(cursor, "SELECT * FROM users WHERE email = ? AND is_active = ?", (email, True))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -234,7 +145,7 @@ class UserModel:
         """Recupera un utente per ID"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM users WHERE id = ? AND is_active = 1", (user_id,))
+            db_manager.exec(cursor, "SELECT * FROM users WHERE id = ? AND is_active = ?", (user_id, True))
             row = cursor.fetchone()
             return dict(row) if row else None
     
@@ -243,7 +154,7 @@ class UserModel:
         """Aggiorna timestamp ultimo login"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users SET last_login = CURRENT_TIMESTAMP, failed_login_attempts = 0, locked_until = NULL
                 WHERE id = ?
             """, (user_id,))
@@ -254,7 +165,7 @@ class UserModel:
         """Incrementa tentativi di login falliti"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users SET failed_login_attempts = failed_login_attempts + 1
                 WHERE email = ?
             """, (email,))
@@ -265,27 +176,25 @@ class UserModel:
         """Incrementa i tentativi falliti e imposta locked_until se si supera la soglia."""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            # Leggi valore corrente
-            cursor.execute("SELECT failed_login_attempts FROM users WHERE email = ?", (email,))
+            # Lettura tentativi correnti
+            db_manager.exec(cursor, "SELECT failed_login_attempts FROM users WHERE email = ?", (email,))
             row = cursor.fetchone()
             if not row:
                 return
-            current = row[0] or 0
+            # DictRow supporta accesso per chiave
+            current = (row[0] if isinstance(row, (tuple, list)) else row.get("failed_login_attempts")) or 0
             new_val = current + 1
             if new_val >= max_attempts:
-                # Imposta anche locked_until
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET failed_login_attempts = ?, locked_until = datetime('now', ?)
-                    WHERE email = ?
-                    """,
-                    (new_val, f"+{int(lock_minutes)} minutes", email)
+                db_manager.exec(
+                    cursor,
+                    "UPDATE users SET failed_login_attempts = ?, locked_until = NOW() + ( ? )::interval WHERE email = ?",
+                    (new_val, f"{int(lock_minutes)} minutes", email),
                 )
             else:
-                cursor.execute(
+                db_manager.exec(
+                    cursor,
                     "UPDATE users SET failed_login_attempts = ? WHERE email = ?",
-                    (new_val, email)
+                    (new_val, email),
                 )
             conn.commit()
 
@@ -296,16 +205,22 @@ class ConversationModel:
     def create_conversation(conversation_id: str, user_id: int, title_encrypted: str, device_id: str = None) -> bool:
         """Crea una nuova conversazione"""
         try:
-            title_hash = hashlib.sha256(title_encrypted.encode()).hexdigest()
+            # Ensure title is encrypted at rest
+            try:
+                from .crypto_at_rest import encrypt_text as _enc_text
+                _title_for_store = _enc_text(title_encrypted)
+            except Exception:
+                _title_for_store = title_encrypted
+            title_hash = hashlib.sha256((title_encrypted or '').encode()).hexdigest()
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     INSERT INTO conversations (id, user_id, title_encrypted, title_hash, device_id)
                     VALUES (?, ?, ?, ?, ?)
-                """, (conversation_id, user_id, title_encrypted, title_hash, device_id))
+                """, (conversation_id, user_id, _title_for_store, title_hash, device_id))
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
     
     @staticmethod
@@ -313,32 +228,46 @@ class ConversationModel:
         """Recupera le conversazioni di un utente"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM conversations 
                 WHERE user_id = ? AND is_deleted = 0
                 ORDER BY updated_at DESC
                 LIMIT ?
             """, (user_id, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            # Normalize timestamps to ISO strings to avoid Pydantic errors
+            for r in rows:
+                for k in ("created_at", "updated_at"):
+                    v = r.get(k)
+                    if isinstance(v, datetime):
+                        r[k] = v.isoformat()
+            return rows
     
     @staticmethod
     def get_conversation(conversation_id: str, user_id: int) -> Optional[Dict[str, Any]]:
         """Recupera una conversazione specifica"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM conversations 
                 WHERE id = ? AND user_id = ? AND is_deleted = 0
             """, (conversation_id, user_id))
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            r = dict(row)
+            for k in ("created_at", "updated_at"):
+                v = r.get(k)
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat()
+            return r
     
     @staticmethod
     def update_conversation_timestamp(conversation_id: str):
         """Aggiorna timestamp ultima modifica conversazione"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE conversations SET updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (conversation_id,))
@@ -349,23 +278,32 @@ class MessageModel:
     
     @staticmethod
     def add_message(message_id: str, conversation_id: str, content_encrypted: str, 
-                   role: str, token_count: int = 0, processing_time: float = 0) -> bool:
+                   role: str, token_count: int = 0, processing_time: float = 0,
+                   content_plaintext_for_hash: Optional[str] = None) -> bool:
         """Aggiunge un messaggio alla conversazione"""
         try:
-            content_hash = hashlib.sha256(content_encrypted.encode()).hexdigest()
+            # Encrypt at rest (idempotent if already encrypted)
+            try:
+                from .crypto_at_rest import encrypt_text as _enc_text
+                _content_for_store = _enc_text(content_encrypted)
+            except Exception:
+                _content_for_store = content_encrypted
+            # Hash must be based on plaintext for search consistency
+            base_for_hash = content_plaintext_for_hash if content_plaintext_for_hash is not None else content_encrypted
+            content_hash = hashlib.sha256((base_for_hash or '').encode()).hexdigest()
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Inserisci messaggio
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     INSERT INTO messages (id, conversation_id, content_encrypted, content_hash, 
                                         role, token_count, processing_time)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (message_id, conversation_id, content_encrypted, content_hash, 
+                """, (message_id, conversation_id, _content_for_store, content_hash, 
                      role, token_count, processing_time))
                 
                 # Aggiorna contatore messaggi nella conversazione
-                cursor.execute("""
+                db_manager.exec(cursor, """
                     UPDATE conversations 
                     SET message_count = message_count + 1, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
@@ -373,7 +311,7 @@ class MessageModel:
                 
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
     
     @staticmethod
@@ -381,44 +319,56 @@ class MessageModel:
         """Recupera i messaggi di una conversazione"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT * FROM messages 
                 WHERE conversation_id = ? AND is_deleted = 0
                 ORDER BY timestamp ASC
                 LIMIT ?
             """, (conversation_id, limit))
-            return [dict(row) for row in cursor.fetchall()]
+            rows = [dict(row) for row in cursor.fetchall()]
+            # Normalize timestamp field
+            for r in rows:
+                v = r.get("timestamp")
+                if isinstance(v, datetime):
+                    r["timestamp"] = v.isoformat()
+            return rows
 
 class DeviceModel:
     """Modello per gestire i dispositivi utente"""
     
     @staticmethod
-    def register_device(device_id: str, user_id: int, device_name: str, 
+    def register_device(device_id: str, user_id: int, device_name: str,
                        device_fingerprint: str, user_agent: str = None, ip: str = None) -> bool:
         """Registra un nuovo dispositivo"""
         try:
             with db_manager.get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    INSERT OR REPLACE INTO user_devices 
-                    (id, user_id, device_name, device_fingerprint, user_agent, last_ip)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                db_manager.exec(cursor, """
+                    INSERT INTO devices (id, user_id, device_name, device_type, fingerprint, user_agent, last_ip)
+                    VALUES (?, ?, ?, 'unknown', ?, ?, ?)
+                    ON CONFLICT (id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        device_name = EXCLUDED.device_name,
+                        device_type = EXCLUDED.device_type,
+                        fingerprint = EXCLUDED.fingerprint,
+                        user_agent = EXCLUDED.user_agent,
+                        last_ip = EXCLUDED.last_ip
                 """, (device_id, user_id, device_name, device_fingerprint, user_agent, ip))
                 conn.commit()
                 return True
-        except sqlite3.Error:
+        except psycopg2.Error:
             return False
-    
+
     @staticmethod
     def get_user_devices(user_id: int) -> List[Dict[str, Any]]:
         """Recupera i dispositivi di un utente"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM user_devices 
-                WHERE user_id = ? AND is_active = 1
+            db_manager.exec(cursor, """
+                SELECT * FROM devices
+                WHERE user_id = ? AND is_active = ?
                 ORDER BY last_sync DESC
-            """, (user_id,))
+            """, (user_id, True))
             return [dict(row) for row in cursor.fetchall()]
 
 class AdminModel:
@@ -431,7 +381,7 @@ class AdminModel:
         """Registra un'azione amministrativa"""
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 INSERT INTO admin_actions 
                 (admin_email, action_type, target_user_id, target_email, description, ip_address, success)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -466,7 +416,7 @@ class SurveyModel:
                 values.append(data.get('q_riflessioni'))
                 values.append(data.get('q_commenti'))
                 values.append(data.get('session_id'))
-                cursor.execute(f"INSERT INTO survey_responses ({','.join(cols)}) VALUES ({placeholders})", values)
+                db_manager.exec(cursor, f"INSERT INTO survey_responses ({','.join(cols)}) VALUES ({placeholders})", values)
                 conn.commit()
                 return True
         except Exception:
@@ -478,14 +428,15 @@ class SurveyModel:
             cursor = conn.cursor()
             summary = {}
             for f in SurveyModel.FIELDS:
-                cursor.execute(
+                db_manager.exec(
+                    cursor,
                     f"SELECT COUNT({f}) as n, AVG({f}) as avg, MIN({f}) as min, MAX({f}) as max, SUM({f}) as sum, SUM({f}*{f}) as sumsq FROM survey_responses WHERE {f} IS NOT NULL"
                 )
                 row = cursor.fetchone()
                 n = row['n'] or 0
                 avg = row['avg']
                 # distribuzione valori 1-5
-                cursor.execute(f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
+                db_manager.exec(cursor, f"SELECT {f} as val, COUNT(*) as c FROM survey_responses WHERE {f} IS NOT NULL GROUP BY {f}")
                 dist_rows = cursor.fetchall()
                 dist = {i:0 for i in range(1,6)}
                 for dr in dist_rows:
@@ -493,11 +444,13 @@ class SurveyModel:
                 # deviazione standard (popolazione)
                 std = None
                 if n and avg is not None and row['sumsq'] is not None:
-                    var = (row['sumsq'] / n) - (avg * avg)
+                    avg_f = float(avg)
+                    sumsq_f = float(row['sumsq'])
+                    var = (sumsq_f / n) - (avg_f * avg_f)
                     std = math.sqrt(var) if var is not None and var > 0 else 0.0
                 # mediana
                 median = None
-                cursor.execute(f"SELECT {f} as val FROM survey_responses WHERE {f} IS NOT NULL ORDER BY {f}")
+                db_manager.exec(cursor, f"SELECT {f} as val FROM survey_responses WHERE {f} IS NOT NULL ORDER BY {f}")
                 vals = [r['val'] for r in cursor.fetchall()]
                 if vals:
                     m = len(vals)
@@ -514,14 +467,14 @@ class SurveyModel:
                     'median': median,
                     'distribution': dist
                 }
-            cursor.execute("SELECT COUNT(*) as total FROM survey_responses")
+            db_manager.exec(cursor, "SELECT COUNT(*) as total FROM survey_responses")
             total = cursor.fetchone()['total']
 
             # Demografia
             # Età: min, max, avg e distribuzione per fasce
-            cursor.execute("SELECT MIN(demo_eta) as min, MAX(demo_eta) as max, AVG(demo_eta) as avg FROM survey_responses WHERE demo_eta IS NOT NULL")
+            db_manager.exec(cursor, "SELECT MIN(demo_eta) as min, MAX(demo_eta) as max, AVG(demo_eta) as avg FROM survey_responses WHERE demo_eta IS NOT NULL")
             eta_row = cursor.fetchone()
-            cursor.execute("SELECT demo_eta as eta FROM survey_responses WHERE demo_eta IS NOT NULL")
+            db_manager.exec(cursor, "SELECT demo_eta as eta FROM survey_responses WHERE demo_eta IS NOT NULL")
             bins = {'<=17':0,'18-24':0,'25-34':0,'35-44':0,'45-54':0,'55+':0}
             for r in cursor.fetchall():
                 e = r['eta']
@@ -534,15 +487,15 @@ class SurveyModel:
                 else: bins['55+'] += 1
 
             # Sesso e istruzione
-            cursor.execute("SELECT demo_sesso as k, COUNT(*) as c FROM survey_responses WHERE demo_sesso IS NOT NULL AND demo_sesso!='' GROUP BY demo_sesso")
+            db_manager.exec(cursor, "SELECT demo_sesso as k, COUNT(*) as c FROM survey_responses WHERE demo_sesso IS NOT NULL AND demo_sesso!='' GROUP BY demo_sesso")
             sesso = {row['k']: row['c'] for row in cursor.fetchall()}
-            cursor.execute("SELECT demo_istruzione as k, COUNT(*) as c FROM survey_responses WHERE demo_istruzione IS NOT NULL AND demo_istruzione!='' GROUP BY demo_istruzione")
+            db_manager.exec(cursor, "SELECT demo_istruzione as k, COUNT(*) as c FROM survey_responses WHERE demo_istruzione IS NOT NULL AND demo_istruzione!='' GROUP BY demo_istruzione")
             istruzione = {row['k']: row['c'] for row in cursor.fetchall()}
 
             # Top categorie per tipo istituto e provenienza
-            cursor.execute("SELECT demo_tipo_istituto as k, COUNT(*) as c FROM survey_responses WHERE demo_tipo_istituto IS NOT NULL AND demo_tipo_istituto!='' GROUP BY demo_tipo_istituto ORDER BY c DESC LIMIT 20")
+            db_manager.exec(cursor, "SELECT demo_tipo_istituto as k, COUNT(*) as c FROM survey_responses WHERE demo_tipo_istituto IS NOT NULL AND demo_tipo_istituto!='' GROUP BY demo_tipo_istituto ORDER BY c DESC LIMIT 20")
             tipo_istituto = {row['k']: row['c'] for row in cursor.fetchall()}
-            cursor.execute("SELECT demo_provenienza as k, COUNT(*) as c FROM survey_responses WHERE demo_provenienza IS NOT NULL AND demo_provenienza!='' GROUP BY demo_provenienza ORDER BY c DESC LIMIT 20")
+            db_manager.exec(cursor, "SELECT demo_provenienza as k, COUNT(*) as c FROM survey_responses WHERE demo_provenienza IS NOT NULL AND demo_provenienza!='' GROUP BY demo_provenienza ORDER BY c DESC LIMIT 20")
             provenienza = {row['k']: row['c'] for row in cursor.fetchall()}
 
             demographics = {
@@ -558,7 +511,7 @@ class SurveyModel:
             for area in ['STEM','Umanistiche']:
                 area_avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_area = ? AND {f} IS NOT NULL", (area,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_area = ? AND {f} IS NOT NULL", (area,))
                     row = cursor.fetchone()
                     area_avgs[f] = row['avg']
                 by_area[area] = area_avgs
@@ -579,7 +532,7 @@ class SurveyModel:
             for label, cond in age_bins_def:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE {cond} AND {f} IS NOT NULL")
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE {cond} AND {f} IS NOT NULL")
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_age_bins[label] = avgs
@@ -590,7 +543,7 @@ class SurveyModel:
             for s in ['F','M','Altro','ND']:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_sesso = ? AND {f} IS NOT NULL", (s,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_sesso = ? AND {f} IS NOT NULL", (s,))
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_sesso[s] = avgs
@@ -601,7 +554,7 @@ class SurveyModel:
             for istr in ['Scuola','Università','Dottorato','Altro']:
                 avgs = {}
                 for f in SurveyModel.FIELDS:
-                    cursor.execute(f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_istruzione = ? AND {f} IS NOT NULL", (istr,))
+                    db_manager.exec(cursor, f"SELECT AVG({f}) as avg FROM survey_responses WHERE demo_istruzione = ? AND {f} IS NOT NULL", (istr,))
                     r = cursor.fetchone()
                     avgs[f] = r['avg']
                 by_istruzione[istr] = avgs
@@ -613,7 +566,7 @@ class SurveyModel:
     def get_open_answers(limit: int = 500):
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT q_riflessioni, q_commenti, submitted_at FROM survey_responses ORDER BY submitted_at DESC LIMIT ?", (limit,))
+            db_manager.exec(cursor, "SELECT q_riflessioni, q_commenti, submitted_at FROM survey_responses ORDER BY submitted_at DESC LIMIT ?", (limit,))
             rows = cursor.fetchall()
             results = []
             for r in rows:

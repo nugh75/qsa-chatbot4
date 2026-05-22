@@ -1,19 +1,64 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Chip, LinearProgress, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert, Divider, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, List, ListItemButton, ListItemText } from '@mui/material';
-import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon } from '@mui/icons-material';
+import { Box, Card, CardContent, Typography, Stack, TextField, Button, IconButton, Chip, LinearProgress, Tabs, Tab, Table, TableHead, TableRow, TableCell, TableBody, Checkbox, Alert, Divider, Dialog, DialogTitle, DialogContent, DialogActions, FormControlLabel, Switch, List, ListItemButton, ListItemText, Tooltip } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
+import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon, Refresh as RefreshIcon, FileOpen as FileOpenIcon, Close as CloseIcon, Edit as EditIcon, NoteAdd as NoteAddIcon, HelpOutline as HelpOutlineIcon, Download as DownloadIcon, Upload as UploadIcon, History as HistoryIcon } from '@mui/icons-material';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkSlugLocal from '../utils/remarkSlugLocal';
 import { apiService } from '../apiService';
-// DebugPipelineTest removed per nuova specifica
+import { prepareChatMarkdown } from '../utils/markdownPipeline';
 
-interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; }
+interface PatternIssue { pattern: string; topic?: string; severity: 'INFO'|'WARN'|'ERROR'; code: string; message: string }
+interface PipelineConfigData { routes: { pattern: string; topic: string }[]; files: Record<string,string>; validation?: { issues: PatternIssue[]; counts: { ERROR:number; WARN:number; INFO:number } } }
 
 interface EditingRoute { mode: 'add' | 'edit'; old_pattern?: string; old_topic?: string; pattern: string; topic: string; }
 
+interface MatchHighlight {
+  matched: boolean;
+  matchStart: number;
+  matchEnd: number;
+  matchedSubstring: string;
+}
+
 const emptyRoute: EditingRoute = { mode: 'add', pattern: '', topic: '' };
+
+// Cheatsheet rapido per regex
+const REGEX_CHEATSHEET = [
+  { syntax: '\\b', desc: 'Confine parola', example: '\\bmemoria\\b' },
+  { syntax: '(?i)', desc: 'Case insensitive', example: '(?i)memoria' },
+  { syntax: '(a|b)', desc: 'Alternativa', example: '(memoria|ricordo)' },
+  { syntax: '\\s+', desc: 'Uno o più spazi', example: 'memoria\\s+di\\s+lavoro' },
+  { syntax: '[aeiou]', desc: 'Classe caratteri', example: 'f[ao]ttor[ei]' },
+  { syntax: '.*', desc: 'Qualsiasi carattere', example: 'inizio.*fine' },
+  { syntax: '.+', desc: 'Almeno un carattere', example: 'C[1-7].+' },
+  { syntax: '[^\\n]{0,80}', desc: 'Max 80 char no newline', example: 'parola1[^\\n]{0,80}parola2' },
+];
+
+// Helper per ottenere dettagli sul match
+const getMatchHighlight = (pattern: string, text: string): MatchHighlight => {
+  if (!text || !pattern) return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  try {
+    const regex = new RegExp(pattern, 'i');
+    const match = regex.exec(text);
+    if (match) {
+      return {
+        matched: true,
+        matchStart: match.index,
+        matchEnd: match.index + match[0].length,
+        matchedSubstring: match[0]
+      };
+    }
+    return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  } catch {
+    return { matched: false, matchStart: -1, matchEnd: -1, matchedSubstring: '' };
+  }
+};
 
 const PipelinePanel: React.FC = () => {
   const [tab, setTab] = useState(0); // 0: Routes, 1: File Editor
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<PipelineConfigData | null>(null);
+  const [validation, setValidation] = useState<{ issues: PatternIssue[]; counts: { ERROR:number; WARN:number; INFO:number } }|null>(null);
   const [error, setError] = useState<string|null>(null);
   const [editingRoute, setEditingRoute] = useState<EditingRoute>(emptyRoute);
   const [selectedRouteKeys, setSelectedRouteKeys] = useState<Set<string>>(new Set());
@@ -34,8 +79,184 @@ const PipelinePanel: React.FC = () => {
   // uploading logic removed with Files tab
   const [regexTestInput, setRegexTestInput] = useState('');
   const [regexMatches, setRegexMatches] = useState<string[]>([]);
+  const [regexMatchDetails, setRegexMatchDetails] = useState<Record<string, MatchHighlight>>({});
   const [regexError, setRegexError] = useState<string|null>(null);
   const [filter, setFilter] = useState('');
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [guideContent, setGuideContent] = useState<string>('');
+  const [guideLoading, setGuideLoading] = useState(false);
+  const [guideError, setGuideError] = useState<string|null>(null);
+  const [guideSource, setGuideSource] = useState<string>('');
+  const [guideSearch, setGuideSearch] = useState('');
+  const [guideToc, setGuideToc] = useState<{id:string; level:number; title:string}[]>([]);
+  const [activeGuideHeading, setActiveGuideHeading] = useState('');
+  const guideContainerRef = React.useRef<HTMLDivElement|null>(null);
+  const [revalidating, setRevalidating] = useState(false);
+  // Preview RAG context
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<{ exists: boolean; topic: string; filename?: string; message?: string; content_length?: number; preview?: string } | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // History
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [historyData, setHistoryData] = useState<Array<{ timestamp: string; action: string; user: string; before?: any; after?: any }>>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // Import
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importMerge, setImportMerge] = useState(false);
+  // Pipeline settings flags
+  const [forceCaseInsensitive, setForceCaseInsensitive] = useState<boolean|undefined>(undefined);
+  const [normalizeAccents, setNormalizeAccents] = useState<boolean|undefined>(undefined);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const theme = useTheme();
+
+  const openGuide = async () => {
+    setGuideOpen(true);
+    if (!guideContent && !guideLoading) {
+      setGuideLoading(true);
+      setGuideError(null);
+      const res = await apiService.getPipelineRegexGuide();
+      if (res.success && (res.data as any)?.content) {
+        const dataAny: any = res.data;
+        setGuideContent(prepareChatMarkdown(dataAny.content));
+        if (dataAny.source) setGuideSource(String(dataAny.source));
+      } else {
+        setGuideError(res.error || 'Errore nel caricamento della guida');
+      }
+      setGuideLoading(false);
+    }
+  };
+
+  // Build TOC when guide content changes
+  useEffect(() => {
+    if (!guideContent) { setGuideToc([]); return; }
+    const lines = guideContent.split(/\n/);
+    const toc: {id:string; level:number; title:string}[] = [];
+    lines.forEach(l => {
+      const m = /^(#{1,4})\s+(.*)$/.exec(l.trim());
+      if (m) {
+        const level = m[1].length;
+        const raw = m[2].replace(/[`*_]+/g,'').trim();
+        const id = raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
+        toc.push({ id, level, title: raw });
+      }
+    });
+    setGuideToc(toc);
+  }, [guideContent]);
+
+  // Scroll spy
+  useEffect(() => {
+    if (!guideOpen) return;
+    const el = guideContainerRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4')) as HTMLElement[];
+      const top = el.scrollTop;
+      let current = '';
+      for (const h of headings) {
+        if (h.offsetTop - 80 <= top) current = h.id || '';
+        else break;
+      }
+      if (current && current !== activeGuideHeading) setActiveGuideHeading(current);
+    };
+    el.addEventListener('scroll', onScroll);
+    onScroll();
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [guideOpen, guideContent, activeGuideHeading]);
+
+  // Search highlight processing
+  const filteredGuideMarkdown = useMemo(() => {
+    if (!guideSearch) return guideContent;
+    try {
+      const re = new RegExp(`(${guideSearch.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})`, 'ig');
+      return guideContent.replace(re, '===$1===');
+    } catch { return guideContent; }
+  }, [guideContent, guideSearch]);
+
+  const renderers = useMemo(() => ({
+    text: (props: any) => {
+      const parts = String(props.children).split(/===/g);
+      if (parts.length === 1) return <>{props.children}</>;
+      return <>{parts.map((p,i) => i%2===1 ? <mark key={i} style={{ background:'#ffc107', color:'#000', padding:'0 2px' }}>{p}</mark> : p)}</>;
+    }
+  }), []);
+
+  const revalidate = async () => {
+    setRevalidating(true);
+    try {
+      const res = await apiService.validatePipeline();
+      if (res.success) setValidation(res.data as any);
+    } finally {
+      setRevalidating(false);
+    }
+  };
+
+  // Load history
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    setHistoryDialogOpen(true);
+    try {
+      const res = await apiService.getPipelineHistory(50, 0);
+      if (res.success && res.data) {
+        setHistoryData(res.data.history || []);
+      }
+    } catch (e) {
+      setError('Errore caricamento storico');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Export config
+  const handleExport = async () => {
+    try {
+      await apiService.exportPipelineConfig();
+    } catch (e) {
+      setError('Errore durante export');
+    }
+  };
+
+  // Import config
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.routes || !data.files) {
+        setError('File JSON non valido: mancano routes o files');
+        return;
+      }
+      const res = await apiService.importPipelineConfig(data, importMerge);
+      if (res.success) {
+        setImportDialogOpen(false);
+        loadAll();
+      } else {
+        setError(res.error || 'Errore import');
+      }
+    } catch (err: any) {
+      setError('Errore parsing JSON: ' + (err?.message || 'formato non valido'));
+    }
+    e.target.value = '';
+  };
+
+  // Preview RAG context for a topic
+  const openPreviewContext = async (topic: string) => {
+    setPreviewLoading(true);
+    setPreviewDialogOpen(true);
+    setPreviewData(null);
+    try {
+      const res = await apiService.getPipelinePreviewContext(topic);
+      if (res.success && res.data) {
+        setPreviewData(res.data);
+      } else {
+        setPreviewData({ exists: false, topic, message: res.error || 'Errore caricamento preview' });
+      }
+    } catch (e: any) {
+      setPreviewData({ exists: false, topic, message: e?.message || 'Errore' });
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true); setError(null);
@@ -43,8 +264,19 @@ const PipelinePanel: React.FC = () => {
       console.log('[PipelinePanel] Loading config and files...');
       const cfgRes = await apiService.getPipelineConfig();
       console.log('[PipelinePanel] Config result:', cfgRes);
-      if (cfgRes.success) setConfig(cfgRes.data as any);
+      if (cfgRes.success) {
+        setConfig(cfgRes.data as any);
+        if ((cfgRes.data as any).validation) {
+          setValidation((cfgRes.data as any).validation);
+        }
+      }
       else setError(cfgRes.error||'Errore caricamento config');
+      // Load pipeline settings (independent)
+      const settingsRes = await apiService.getPipelineSettings();
+      if (settingsRes.success) {
+        setForceCaseInsensitive((settingsRes.data as any)?.settings?.force_case_insensitive);
+        setNormalizeAccents((settingsRes.data as any)?.settings?.normalize_accents);
+      }
   const filesRes = await apiService.listAvailablePipelineFiles();
   if (filesRes.success) setAvailableFiles(filesRes.data?.files||[]);
     } catch (e:any) { 
@@ -189,15 +421,22 @@ const PipelinePanel: React.FC = () => {
     openFileEditor(fname);
   };
 
-  // Regex live test: test all patterns over input, show topics matched
+  // Regex live test: test all patterns over input, show topics matched with details
   useEffect(() => {
-    if (!regexTestInput || !config) { setRegexMatches([]); setRegexError(null); return; }
+    if (!regexTestInput || !config) { setRegexMatches([]); setRegexMatchDetails({}); setRegexError(null); return; }
     const matches: string[] = [];
+    const details: Record<string, MatchHighlight> = {};
     for (const r of config.routes) {
-      try { if (new RegExp(r.pattern, 'i').test(regexTestInput)) matches.push(r.topic); }
+      try {
+        const highlight = getMatchHighlight(r.pattern, regexTestInput);
+        if (highlight.matched) {
+          matches.push(r.topic);
+          details[r.pattern] = highlight;
+        }
+      }
       catch (e:any) { setRegexError(`Errore pattern: ${r.pattern}`); }
     }
-    setRegexError(null); setRegexMatches(matches);
+    setRegexError(null); setRegexMatches(matches); setRegexMatchDetails(details);
   }, [regexTestInput, config]);
 
   const filteredRoutes = useMemo(() => !filter ? config?.routes||[] : (config?.routes||[]).filter(r => r.pattern.includes(filter) || r.topic.includes(filter)), [filter, config]);
@@ -229,8 +468,21 @@ const PipelinePanel: React.FC = () => {
       {tab===0 && (
         <Card sx={{ display:'flex', flexDirection:'column' }}>
           <CardContent sx={{ pb:1 }}>
+            <Alert severity="info" sx={{ mb:2 }}>
+              <Typography variant="body2">
+                Guida rapida regex disponibile nel file <strong>pipeline_regex_guide.json</strong> (root progetto). Evita pattern con alternativa vuota (es. <code>|</code> finale) o troppo generici. Usa <code>\\b</code> per limitare le parole. I log mostrano <code>topics_patterns</code> per audit.
+              </Typography>
+            </Alert>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb:1 }}>
               <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openAddRouteModal}>Aggiungi Route</Button>
+              <IconButton size="small" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton>
+              {validation && (
+                <Chip size="small" color={validation.counts.ERROR>0? 'error': (validation.counts.WARN>0? 'warning':'default')} label={`Val: ${validation.counts.ERROR}E ${validation.counts.WARN}W ${validation.counts.INFO}I`} />
+              )}
+              <Button size="small" variant="outlined" onClick={revalidate} disabled={revalidating} startIcon={<RefreshIcon fontSize="inherit" />}>{revalidating? '...' : 'Rivalida'}</Button>
+              <Tooltip title="Esporta configurazione"><IconButton size="small" onClick={handleExport}><DownloadIcon fontSize="small" /></IconButton></Tooltip>
+              <Tooltip title="Importa configurazione"><IconButton size="small" onClick={() => setImportDialogOpen(true)}><UploadIcon fontSize="small" /></IconButton></Tooltip>
+              <Tooltip title="Storico modifiche"><IconButton size="small" onClick={loadHistory}><HistoryIcon fontSize="small" /></IconButton></Tooltip>
               <TextField size="small" label="Filtro" value={filter} onChange={e=> setFilter(e.target.value)} sx={{ width:160 }} />
               <TextField size="small" label="Test regex" value={regexTestInput} onChange={e=> setRegexTestInput(e.target.value)} sx={{ flex:1, minWidth:200 }} />
               <IconButton size="small" onClick={loadAll}><RefreshIcon fontSize="small" /></IconButton>
@@ -240,6 +492,48 @@ const PipelinePanel: React.FC = () => {
                   Elimina ({selectedRouteKeys.size})
                 </Button>
               )}
+            </Stack>
+            {/* Match Details Preview */}
+            {regexTestInput && regexMatches.length > 0 && (
+              <Alert severity="success" sx={{ my:1 }}>
+                <Typography variant="subtitle2" sx={{ mb:0.5 }}>Match trovati: {regexMatches.length}</Typography>
+                {Object.entries(regexMatchDetails).slice(0, 3).map(([pattern, detail]) => {
+                  const topic = config?.routes.find(r => r.pattern === pattern)?.topic || 'N/A';
+                  const before = regexTestInput.substring(0, detail.matchStart);
+                  const matched = detail.matchedSubstring;
+                  const after = regexTestInput.substring(detail.matchEnd);
+                  return (
+                    <Box key={pattern} sx={{ mb:0.5, fontSize:13 }}>
+                      <strong>{topic}:</strong>{' '}
+                      <span style={{ fontFamily:'monospace' }}>
+                        {before}<mark style={{ background:'#ffc107', padding:'0 2px' }}>{matched}</mark>{after}
+                      </span>
+                      <Typography variant="caption" color="text.secondary" sx={{ ml:1 }}>
+                        (pos {detail.matchStart}-{detail.matchEnd})
+                      </Typography>
+                    </Box>
+                  );
+                })}
+                {Object.keys(regexMatchDetails).length > 3 && (
+                  <Typography variant="caption" color="text.secondary">...e altri {Object.keys(regexMatchDetails).length - 3} match</Typography>
+                )}
+              </Alert>
+            )}
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ mb:1 }}>
+              <Divider flexItem orientation="vertical" sx={{ mx:1 }} />
+              <FormControlLabel sx={{ m:0 }} control={<Switch size="small" disabled={forceCaseInsensitive===undefined||savingSettings} checked={!!forceCaseInsensitive} onChange={async e=> {
+                const val = e.target.checked; setForceCaseInsensitive(val); setSavingSettings(true);
+                const res = await apiService.updatePipelineSettings(val, !!normalizeAccents);
+                if (!res.success) { setError(res.error||'Errore salvataggio settings'); }
+                setSavingSettings(false);
+              }} />} label={<Typography variant="caption">Case Insens.</Typography>} />
+              <FormControlLabel sx={{ m:0 }} control={<Switch size="small" disabled={normalizeAccents===undefined||savingSettings} checked={!!normalizeAccents} onChange={async e=> {
+                const val = e.target.checked; setNormalizeAccents(val); setSavingSettings(true);
+                const res = await apiService.updatePipelineSettings(!!forceCaseInsensitive, val);
+                if (!res.success) { setError(res.error||'Errore salvataggio settings'); }
+                setSavingSettings(false);
+              }} />} label={<Typography variant="caption">Normalizza Acc.</Typography>} />
+              {savingSettings && <Chip size="small" label="Salvataggio..." />}
             </Stack>
             <Divider sx={{ mb:1 }} />
             <Table size="small" stickyHeader>
@@ -252,6 +546,7 @@ const PipelinePanel: React.FC = () => {
                       }} />
                     </TableCell>
                     <TableCell>Pattern</TableCell>
+                    <TableCell>Val</TableCell>
                     <TableCell>Topic</TableCell>
                     <TableCell>File</TableCell>
                   <TableCell width={90}>Azioni</TableCell>
@@ -263,13 +558,27 @@ const PipelinePanel: React.FC = () => {
                     const selKey = r.pattern+'\u0001'+r.topic;
                     const selected = selectedRouteKeys.has(selKey);
                     const highlight = patternMatchesTest(r.pattern);
+                    const issues = (validation?.issues||[]).filter(i => i.pattern===r.pattern);
+                    const worst = issues.find(i=> i.severity==='ERROR') || issues.find(i=> i.severity==='WARN') || issues.find(i=> i.severity==='INFO');
+                    const sevBg = worst?.severity==='ERROR' ? 'rgba(244,67,54,0.15)' : worst?.severity==='WARN' ? 'rgba(255,152,0,0.12)' : worst?.severity==='INFO' ? 'rgba(33,150,243,0.10)' : undefined;
                     return (
-                      <TableRow key={key} hover selected={selected} sx={{ bgcolor: highlight? 'success.light':undefined }}>
+                      <TableRow key={key} hover selected={selected} sx={{ bgcolor: highlight? (theme.palette.mode==='dark' ? 'rgba(76,175,80,0.25)' : 'rgba(76,175,80,0.18)') : sevBg, outline: highlight? '2px solid rgba(76,175,80,0.6)': undefined, outlineOffset: -2 }}>
                         <TableCell padding="checkbox" onClick={(e)=> { e.stopPropagation(); toggleSelectRoute(r); }}>
                           <Checkbox size="small" checked={selected} />
                         </TableCell>
                         <TableCell><Typography variant="body2" component="span" sx={{ fontFamily:'monospace' }}>{r.pattern}</Typography></TableCell>
-                        <TableCell><Chip size="small" label={r.topic} /></TableCell>
+                        <TableCell>
+                          {worst && (
+                            <Tooltip title={issues.map(i=> `${i.severity}: ${i.message}`).join('\n')}>
+                              <Chip size="small" label={worst.severity} color={worst.severity==='ERROR'? 'error': (worst.severity==='WARN'? 'warning':'default')} />
+                            </Tooltip>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Tooltip title="Clicca per preview contesto RAG">
+                            <Chip size="small" label={r.topic} onClick={() => openPreviewContext(r.topic)} sx={{ cursor:'pointer' }} />
+                          </Tooltip>
+                        </TableCell>
                         <TableCell>
                           {config?.files && config.files[r.topic] ? (
                             <Button size="small" onClick={(e)=> { e.stopPropagation(); openFileEditor(config!.files[r.topic]); }} startIcon={<FileOpenIcon fontSize="inherit" />}>{config!.files[r.topic]}</Button>
@@ -331,11 +640,30 @@ const PipelinePanel: React.FC = () => {
           <Stack spacing={2}>
             <TextField label="Pattern" value={editingRoute.pattern} onChange={e=> setEditingRoute(r=> ({...r, pattern:e.target.value}))} fullWidth multiline minRows={3} />
             <TextField label="Topic" value={editingRoute.topic} onChange={e=> setEditingRoute(r=> ({...r, topic:e.target.value}))} fullWidth />
-            {regexTestInput && editingRoute.pattern && (
-              <Alert severity={patternMatchesTest(editingRoute.pattern)? 'success':'warning'} variant="outlined">
-                {patternMatchesTest(editingRoute.pattern)? 'Il test input corrisponde a questo pattern':'Il test input non corrisponde a questo pattern'}
-              </Alert>
-            )}
+            {regexTestInput && editingRoute.pattern && (() => {
+              const matchDetail = getMatchHighlight(editingRoute.pattern, regexTestInput);
+              if (matchDetail.matched) {
+                const before = regexTestInput.substring(0, matchDetail.matchStart);
+                const matched = matchDetail.matchedSubstring;
+                const after = regexTestInput.substring(matchDetail.matchEnd);
+                return (
+                  <Alert severity="success" variant="outlined">
+                    <Typography variant="body2" sx={{ mb:0.5 }}>Il test input corrisponde a questo pattern</Typography>
+                    <Box sx={{ fontFamily:'monospace', fontSize:13, bgcolor:'rgba(0,0,0,0.04)', p:1, borderRadius:1 }}>
+                      {before}<mark style={{ background:'#ffc107', padding:'0 2px' }}>{matched}</mark>{after}
+                    </Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Match: "{matched}" (posizione {matchDetail.matchStart}-{matchDetail.matchEnd})
+                    </Typography>
+                  </Alert>
+                );
+              }
+              return (
+                <Alert severity="warning" variant="outlined">
+                  Il test input non corrisponde a questo pattern
+                </Alert>
+              );
+            })()}
             <Divider />
             <Typography variant="subtitle2">File associato</Typography>
             <FormControlLabel control={<Switch checked={createNewFileInRoute} onChange={e=> { setCreateNewFileInRoute(e.target.checked); if (e.target.checked) setSelectedExistingFile(''); }} />} label="Crea nuovo file" />
@@ -371,6 +699,210 @@ const PipelinePanel: React.FC = () => {
         <DialogActions>
           <Button onClick={()=> setFileDialogOpen(false)}>Annulla</Button>
           <Button variant="contained" startIcon={<SaveIcon />} onClick={createStandaloneFile}>Crea</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Regex Guide Dialog with TOC & Search */}
+      <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
+        <DialogTitle sx={{ pr:2 }}>Guida Regex Pipeline</DialogTitle>
+        <DialogContent
+          dividers
+          sx={{
+            bgcolor: theme.palette.mode==='dark'? '#0f1115' : '#fafafa',
+            color: theme.palette.mode==='dark'? 'rgba(255,255,255,0.87)' : 'rgba(0,0,0,0.87)',
+            p:0,
+            display:'flex', flexDirection:'row', height:'100%'
+          }}
+        >
+          {guideLoading && <LinearProgress sx={{ position:'absolute', left:0, right:0, top:0 }} />}
+          {!guideLoading && guideError && (
+            <Box sx={{ p:3 }}>
+              <Alert severity="error" sx={{ mb:2 }}>{guideError}</Alert>
+              <Button variant="outlined" startIcon={<RefreshIcon />} onClick={()=> { setGuideContent(''); openGuide(); }}>Riprova</Button>
+            </Box>
+          )}
+          {!guideLoading && !guideError && (
+            <>
+              <Box sx={{ width:280, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', bgcolor: theme.palette.mode==='dark'? '#11171d':'#f1f3f5', p:1, overflowY:'auto' }}>
+                <TextField size="small" label="Cerca" value={guideSearch} onChange={e=> setGuideSearch(e.target.value)} sx={{ mb:1 }} />
+                {guideSource && <Chip size="small" label={guideSource.replace(/^.*\/storage\//,'storage/')} sx={{ mb:1 }} />}
+                {/* Cheatsheet rapido */}
+                <Typography variant="caption" fontWeight="bold" sx={{ mb:0.5, mt:1 }}>Cheatsheet Rapido</Typography>
+                <Table size="small" sx={{ mb:1, '& td, & th': { py:0.25, px:0.5, fontSize:11 } }}>
+                  <TableBody>
+                    {REGEX_CHEATSHEET.map(item => (
+                      <TableRow key={item.syntax} hover sx={{ cursor:'pointer' }} onClick={() => navigator.clipboard.writeText(item.example)}>
+                        <TableCell sx={{ fontFamily:'monospace', fontWeight:'bold' }}>{item.syntax}</TableCell>
+                        <TableCell>
+                          <Tooltip title={`Copia: ${item.example}`}>
+                            <span>{item.desc}</span>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <Divider sx={{ my:1 }} />
+                <Button size="small" variant="outlined" startIcon={<FileOpenIcon />} sx={{ mb:1 }} onClick={()=> {
+                  const fname = guideSource.split('/').slice(-1)[0];
+                  if (fname) {
+                    if (availableFiles.includes(fname)) { openFileEditor(fname); setGuideOpen(false); }
+                    else {
+                      (async ()=> {
+                        const fr = await apiService.listAvailablePipelineFiles();
+                        if (fr.success && fr.data?.files?.includes(fname)) { openFileEditor(fname); setGuideOpen(false); }
+                        else setError('File guida non presente nella lista editing');
+                      })();
+                    }
+                  }
+                }}>Apri nel File Editor</Button>
+                <Box sx={{ flex:1, overflow:'auto' }}>
+                  {guideToc.map(item => (
+                    <Box key={item.id} sx={{ pl:(item.level-1)*1.2, py:0.25 }}>
+                      <Button onClick={() => {
+                        const el = guideContainerRef.current?.querySelector('#'+item.id);
+                        if (el && guideContainerRef.current) {
+                          guideContainerRef.current.scrollTo({ top: (el as HTMLElement).offsetTop - 60, behavior:'smooth' });
+                        }
+                      }} size="small" variant={activeGuideHeading===item.id? 'contained':'text'} color={activeGuideHeading===item.id? 'primary':'inherit'} sx={{ justifyContent:'flex-start', textTransform:'none', fontSize:12, width:'100%' }}>{item.title}</Button>
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
+              <Box ref={guideContainerRef} sx={{ flex:1, overflow:'auto', px:3, py:2, maxWidth: 1150, mx:'auto', '& h1': { mt:2, fontSize:'1.9rem' }, '& h2': { mt:3 }, '& h3': { mt:2 }, '& code': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', px:0.6, py:0.25, borderRadius:0.5, fontSize:'0.85em' }, '& pre': { bgcolor: theme.palette.mode==='dark'? '#1e2530':'#eceff1', p:1.5, borderRadius:1, overflow:'auto' } }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkSlugLocal]} components={renderers}>{filteredGuideMarkdown}</ReactMarkdown>
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ bgcolor: theme.palette.mode==='dark'? '#101418':'#f5f5f5' }}>
+          <Button startIcon={<CloseIcon />} onClick={()=> setGuideOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* History Dialog */}
+      <Dialog open={historyDialogOpen} onClose={() => setHistoryDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Storico Modifiche Pipeline</DialogTitle>
+        <DialogContent dividers>
+          {historyLoading && <LinearProgress sx={{ mb:2 }} />}
+          {!historyLoading && historyData.length === 0 && (
+            <Typography color="text.secondary">Nessuna modifica registrata</Typography>
+          )}
+          {!historyLoading && historyData.length > 0 && (
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Data</TableCell>
+                  <TableCell>Azione</TableCell>
+                  <TableCell>Dettagli</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {historyData.map((entry, idx) => (
+                  <TableRow key={idx}>
+                    <TableCell sx={{ whiteSpace:'nowrap', fontSize:12 }}>
+                      {new Date(entry.timestamp).toLocaleString('it-IT')}
+                    </TableCell>
+                    <TableCell>
+                      <Chip size="small" label={entry.action} color={
+                        entry.action.includes('add') ? 'success' :
+                        entry.action.includes('delete') ? 'error' :
+                        entry.action.includes('update') ? 'warning' : 'default'
+                      } />
+                    </TableCell>
+                    <TableCell sx={{ fontSize:12 }}>
+                      {entry.before?.topic && <span>Topic: {entry.before.topic}</span>}
+                      {entry.after?.topic && !entry.before?.topic && <span>Topic: {entry.after.topic}</span>}
+                      {entry.before?.pattern && (
+                        <Typography variant="caption" sx={{ display:'block', fontFamily:'monospace', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis' }}>
+                          {entry.before.pattern.substring(0, 50)}...
+                        </Typography>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button startIcon={<CloseIcon />} onClick={() => setHistoryDialogOpen(false)}>Chiudi</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Import Dialog */}
+      <Dialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Importa Configurazione Pipeline</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2}>
+            <Alert severity="info">
+              Seleziona un file JSON con la struttura: {`{ "routes": [...], "files": {...} }`}
+            </Alert>
+            <FormControlLabel
+              control={<Switch checked={importMerge} onChange={e => setImportMerge(e.target.checked)} />}
+              label="Unisci con configurazione esistente (invece di sostituire)"
+            />
+            <Button variant="outlined" component="label" startIcon={<UploadIcon />}>
+              Seleziona File JSON
+              <input type="file" accept=".json" hidden onChange={handleImportFile} />
+            </Button>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setImportDialogOpen(false)}>Annulla</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Preview RAG Context Dialog */}
+      <Dialog open={previewDialogOpen} onClose={() => setPreviewDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Preview Contesto RAG</DialogTitle>
+        <DialogContent dividers>
+          {previewLoading && <LinearProgress sx={{ mb:2 }} />}
+          {!previewLoading && previewData && (
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="subtitle2" color="text.secondary">Topic:</Typography>
+                <Chip label={previewData.topic} />
+              </Box>
+              {previewData.exists ? (
+                <>
+                  <Box>
+                    <Typography variant="subtitle2" color="text.secondary">File associato:</Typography>
+                    <Typography variant="body2" sx={{ fontFamily:'monospace' }}>{previewData.filename}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Lunghezza contenuto: {previewData.content_length} caratteri
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="subtitle2" color="text.secondary">Anteprima contenuto:</Typography>
+                    <Box sx={{ bgcolor: theme.palette.mode==='dark' ? '#1e2530' : '#f5f5f5', p:2, borderRadius:1, fontFamily:'monospace', fontSize:13, whiteSpace:'pre-wrap', maxHeight:300, overflow:'auto' }}>
+                      {previewData.preview}
+                    </Box>
+                  </Box>
+                  <Alert severity="info">
+                    Questo contenuto verrà inviato al LLM quando un utente pone una domanda che matcha questo topic.
+                  </Alert>
+                </>
+              ) : (
+                <Alert severity="warning">
+                  {previewData.message || 'File non trovato'}
+                  {previewData.filename && (
+                    <Typography variant="body2" sx={{ mt:1 }}>
+                      File previsto: <code>{previewData.filename}</code>
+                    </Typography>
+                  )}
+                </Alert>
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          {previewData?.exists && previewData.filename && (
+            <Button onClick={() => { openFileEditor(previewData.filename!); setPreviewDialogOpen(false); }} startIcon={<FileOpenIcon />}>
+              Apri nel File Editor
+            </Button>
+          )}
+          <Button startIcon={<CloseIcon />} onClick={() => setPreviewDialogOpen(false)}>Chiudi</Button>
         </DialogActions>
       </Dialog>
     </Stack>

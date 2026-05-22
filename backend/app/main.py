@@ -14,19 +14,27 @@ from .chat import router as chat_router
 from .tts import router as tts_router
 from .transcribe import router as asr_router
 from .admin import router as admin_router
+from .admin import ensure_default_ai_provider
 from .auth_routes import router as auth_router
 from .conversation_routes import router as conversation_router
+from .admin_conversations import router as admin_conversations_router
 from .search_routes import router as search_router
 from .admin_panel import router as admin_panel_router
 from .file_processing import router as file_processing_router
 from .rag_routes import router as rag_router
-from .rag_admin import router as rag_admin_router
+from .forms_routes import router as forms_router, admin_router as forms_admin_router
 from .survey_routes import router as survey_router
 from .welcome_guides import router as welcome_guides_router
+from .data_tables_routes import router as data_tables_router
 from .personalities import load_personalities
 from .welcome_guides import list_welcome_messages
 from .prompts import load_system_prompts, load_summary_prompt
 from .logging_utils import get_system_logger, log_system
+from .health_routes import router as health_router
+from .database import db_manager as _dbm
+from .queries_routes import router as queries_router
+from .backup import router as backup_router
+from .web_sources_routes import router as web_sources_router, search_router as web_search_router
 
 # Carica le variabili di ambiente dal file .env (path esplicito) e log mascherato
 _env_path = Path(__file__).resolve().parent.parent / '.env'
@@ -46,6 +54,31 @@ print('[env] Loaded .env at', _env_path.exists(), 'OPENAI_API_KEY=', _mask(os.ge
 async def lifespan(app: FastAPI):
     # On startup
     import os as _os
+    # Attach shared db_manager and run a health ping early
+    try:
+        app.state.db_manager = _dbm
+        _ping = _dbm.ping()
+        if not _ping.get('ok'):
+            print(f"[startup][DB] Health ping FAILED backend={_ping.get('backend')} error={_ping.get('error')}")
+        else:
+            print(f"[startup][DB] Health ping OK backend={_ping.get('backend')}")
+    except Exception as _e:
+        print(f"[startup][DB] Initialization error: {_e}")
+    # Seed default provider/model if needed
+    try:
+        ensure_default_ai_provider(seed=True)
+    except Exception as _e:
+        print(f"[startup] default provider seed skipped: {_e}")
+    # Seed default admin user (idempotente)
+    try:
+        from .seed_admin import seed_admin as _seed_admin
+        email = os.getenv('DEFAULT_ADMIN_EMAIL', 'ai4educ@gmail.com')
+        password = os.getenv('DEFAULT_ADMIN_PASSWORD', 'admin123!')
+        overwrite_flag = os.getenv('DEFAULT_ADMIN_OVERWRITE', '0').lower() in ('1','true','yes','on')
+        _seed_admin(email, password, overwrite_password=overwrite_flag)
+        log_system(20, f"Default admin ensured for {email} overwrite={overwrite_flag}")
+    except Exception as _e:
+        print(f"[startup] default admin seed skipped: {_e}")
     if _os.environ.get("WHISPER_WARMUP", "1").lower() in ("1","true","yes","on"):
         try:
             from .transcribe import whisper_service
@@ -134,10 +167,165 @@ except Exception as _e:
 
 # Eager bootstrap prompts (seed -> runtime) all'avvio
 try:
+    # 1) Ensure runtime prompt files exist (copy from seed if first run)
     _ = load_system_prompts()
     _ = load_summary_prompt()
+    # 2) Optional: import seed content from JSON if configured
+    try:
+        seed_json_path = os.getenv('SEED_CONTENT_JSON')
+        if seed_json_path and os.path.exists(seed_json_path):
+            import json as _json
+            print(f"[seed] Importing seed from {seed_json_path}")
+            with open(seed_json_path, 'r', encoding='utf-8') as _sf:
+                seed_data = _json.load(_sf)
+            # System prompts
+            try:
+                from .prompts import save_system_prompts
+                if isinstance(seed_data.get('system_prompts'), dict):
+                    if os.getenv('SEED_CONTENT_OVERWRITE', 'false').lower() in ('1','true','yes','on'):
+                        save_system_prompts(seed_data['system_prompts'])
+                    else:
+                        # merge: upsert all prompts; keep existing active unless provided
+                        from .prompts import load_system_prompts as _lsp, upsert_system_prompt as _usp
+                        cur = _lsp()
+                        for p in seed_data['system_prompts'].get('prompts', []) or []:
+                            pid = p.get('id')
+                            name = p.get('name') or pid
+                            text = p.get('text') or ''
+                            if pid and text is not None:
+                                _usp(name=name, text=text, prompt_id=pid, set_active=False)
+                        if seed_data['system_prompts'].get('active_id'):
+                            from .prompts import set_active_system_prompt
+                            try:
+                                set_active_system_prompt(seed_data['system_prompts']['active_id'])
+                            except Exception:
+                                pass
+            except Exception as _e:
+                print(f"[seed] system_prompts import skipped: {_e}")
+            # Summary prompts
+            try:
+                from .prompts import save_summary_prompts, load_summary_prompts as _lsump, upsert_summary_prompt as _usump, set_active_summary_prompt as _setsum
+                if isinstance(seed_data.get('summary_prompts'), dict):
+                    if os.getenv('SEED_CONTENT_OVERWRITE', 'false').lower() in ('1','true','yes','on'):
+                        save_summary_prompts(seed_data['summary_prompts'])
+                    else:
+                        cur = _lsump()
+                        for p in seed_data['summary_prompts'].get('prompts', []) or []:
+                            pid = p.get('id')
+                            name = p.get('name') or pid
+                            text = p.get('text') or ''
+                            if pid and text is not None:
+                                _usump(name=name, text=text, prompt_id=pid, set_active=False)
+                        if seed_data['summary_prompts'].get('active_id'):
+                            try:
+                                _setsum(seed_data['summary_prompts']['active_id'])
+                            except Exception:
+                                pass
+            except Exception as _e:
+                print(f"[seed] summary_prompts import skipped: {_e}")
+            # Welcome/Guides
+            try:
+                from .welcome_guides import apply_seed as _wg_apply
+                wg_seed = {k: seed_data.get(k) for k in ('welcome','guides') if k in seed_data}
+                if wg_seed:
+                    _wg_apply(wg_seed, overwrite=os.getenv('SEED_CONTENT_OVERWRITE','false').lower() in ('1','true','yes','on'))
+            except Exception as _e:
+                print(f"[seed] welcome/guides import skipped: {_e}")
+    except Exception as _e:
+        print(f"[seed] JSON import error: {_e}")
+    # 3) Ensure default system prompt exists (env-overridable) even on existing installs
+    try:
+        from .prompts import upsert_system_prompt
+        # Read defaults from env; allow overriding the shipped text
+        _sp_id = os.getenv('DEFAULT_SYSTEM_PROMPT_ID', 'default')
+        _sp_name = os.getenv('DEFAULT_SYSTEM_PROMPT_NAME', 'Assistente')
+        _sp_text_env = os.getenv('DEFAULT_SYSTEM_PROMPT_TEXT')
+        _sp_set_active = os.getenv('DEFAULT_SYSTEM_PROMPT_SET_ACTIVE', 'false').lower() in ('1','true','yes','on')
+        default_prompt_text = (
+            "# Prompt di sistema\n\n"
+            "Sei un assistente virtuale generico. Usa un tono cordiale e conciso, poni domande per chiarire le esigenze e offri indicazioni pratiche quando opportuno.\n\n"
+            "# Regole\n\n"
+            "- Rispondi esclusivamente in italiano.\n"
+            "- Mantieni un linguaggio semplice e comprensibile.\n"
+            "- Evita di inventare informazioni e chiarisci eventuali limiti.\n"
+            "- Incoraggia l'utente a definire obiettivi concreti e proponi prossimi passi realistici."
+        )
+        # Idempotent upsert; activation flag from env (default False)
+        upsert_system_prompt(
+            name=_sp_name,
+            text=(_sp_text_env if (_sp_text_env and _sp_text_env.strip()) else default_prompt_text),
+            prompt_id=_sp_id,
+            set_active=_sp_set_active
+        )
+    except Exception as _e:
+        print(f"Default prompt ensure skipped: {_e}")
+    # 4) Optionally upsert a summary prompt variant from env and set active if requested
+    try:
+        from .prompts import upsert_summary_prompt, set_active_summary_prompt
+        _sum_id = os.getenv('DEFAULT_SUMMARY_PROMPT_ID')
+        _sum_name = os.getenv('DEFAULT_SUMMARY_PROMPT_NAME')
+        _sum_text = os.getenv('DEFAULT_SUMMARY_PROMPT_TEXT')
+        _sum_set_active = os.getenv('DEFAULT_SUMMARY_PROMPT_SET_ACTIVE', 'false').lower() in ('1','true','yes','on')
+        if _sum_id and _sum_name and _sum_text and _sum_text.strip():
+            res = upsert_summary_prompt(_sum_name, _sum_text, _sum_id, _sum_set_active)
+            if _sum_set_active and res and res.get('id'):
+                try:
+                    set_active_summary_prompt(res['id'])
+                except Exception:
+                    pass
+    except Exception as _e:
+        print(f"Summary prompt ensure skipped: {_e}")
 except Exception as e:
     print(f"Prompt bootstrap error: {e}")
+
+# Seed default assistant personality in Postgres (idempotent)
+try:
+    from .database import USING_POSTGRES, db_manager
+    if USING_POSTGRES:
+        # compute provider/model from admin config
+        try:
+            from .admin import load_config
+            cfg = load_config()
+            provider = (cfg.get('default_provider') or 'openrouter').lower()
+            model = cfg.get('ai_providers', {}).get(provider, {}).get('selected_model') or 'gpt-oss-20b:free'
+        except Exception:
+            provider = 'openrouter'
+            model = 'gpt-oss-20b:free'
+        # Environment overrides for personality defaults
+        _p_id = os.getenv('DEFAULT_PERSONALITY_ID', 'assistant')
+        _p_name = os.getenv('DEFAULT_PERSONALITY_NAME', 'Assistente')
+        provider = os.getenv('DEFAULT_PERSONALITY_PROVIDER', provider) or provider
+        model = os.getenv('DEFAULT_PERSONALITY_MODEL', model) or model
+        _p_welcome = os.getenv('DEFAULT_PERSONALITY_WELCOME_ID') or None
+        _p_guide = os.getenv('DEFAULT_PERSONALITY_GUIDE_ID') or None
+        set_default_flag = os.getenv('DEFAULT_PERSONALITY_SET_DEFAULT', 'false').lower() in ('1','true','yes','on')
+        _p_active = os.getenv('DEFAULT_PERSONALITY_ACTIVE', 'true').lower() in ('1','true','yes','on')
+        # Upsert default assistant personality
+        from .personalities import upsert_personality
+        upsert_personality(
+            name=_p_name,
+            system_prompt_id=os.getenv('DEFAULT_SYSTEM_PROMPT_ID', 'default'),
+            provider=provider,
+            model=model,
+            welcome_message=_p_welcome,
+            guide_id=_p_guide,
+            context_window=None,
+            temperature=0.3,
+            personality_id=_p_id,
+            set_default=set_default_flag,
+            avatar=None,
+            tts_provider=None,
+            tts_voice=None,
+            active=_p_active,
+            enabled_pipeline_topics=None,
+            enabled_rag_groups=None,
+            enabled_data_tables=None,
+            starter_prompts=None,
+            max_tokens=None
+        )
+        print("[seed] Assistant personality ensured (no default change)")
+except Exception as e:
+    print(f"Default personality seed skipped: {e}")
 
 # Modello per il feedback
 class FeedbackData(BaseModel):
@@ -155,13 +343,21 @@ app.include_router(asr_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(conversation_router, prefix="/api")
+app.include_router(admin_conversations_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(admin_panel_router, prefix="/api")
 app.include_router(file_processing_router, prefix="/api")
 app.include_router(rag_router, prefix="/api")
-app.include_router(rag_admin_router)  # already prefixed with /api/rag
 app.include_router(survey_router, prefix="/api")
 app.include_router(welcome_guides_router, prefix="/api")
+app.include_router(data_tables_router, prefix="/api")
+app.include_router(forms_router, prefix="/api")
+app.include_router(forms_admin_router, prefix="/api")
+app.include_router(health_router, prefix="/api")
+app.include_router(queries_router, prefix="/api")
+app.include_router(backup_router, prefix="/api")
+app.include_router(web_sources_router, prefix="/api")
+app.include_router(web_search_router, prefix="/api")
 
 @app.get("/api/config/public")
 async def get_public_config():
@@ -182,7 +378,16 @@ async def get_public_config():
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         enabled_providers = [p for p, s in config.get('ai_providers', {}).items() if s.get('enabled')]
+        # TTS abilitati esplicitamente
         enabled_tts_providers = [p for p, s in config.get('tts_providers', {}).items() if s.get('enabled')]
+        # Auto-abilitazione se presente API key ambiente anche se non ancora marcato enabled nel file
+        tts_env_map = {
+            'elevenlabs': 'ELEVENLABS_API_KEY',
+            'openai': 'OPENAI_API_KEY'
+        }
+        for prov, env_var in tts_env_map.items():
+            if prov not in enabled_tts_providers and os.getenv(env_var):
+                enabled_tts_providers.append(prov)
         enabled_asr_providers = [p for p, s in config.get('asr_providers', {}).items() if s.get('enabled')]
         ui_cfg = config.get('ui_settings', {}) or {}
         # Normalize visibility flags defaults True
@@ -198,6 +403,7 @@ async def get_public_config():
             "default_asr": config.get('default_asr', 'openai'),
             "ui_settings": {
                 "arena_public": ui_cfg.get('arena_public', False),
+                "survey_results_public": ui_cfg.get('survey_results_public', False),
                 "contact_email": ui_cfg.get('contact_email'),
                 "research_project": ui_cfg.get('research_project'),
                 "repository_url": ui_cfg.get('repository_url'),
@@ -292,6 +498,12 @@ async def get_public_personalities():
                     "guide_content": _guides.get(p.get("guide_id")) if p.get("guide_id") else None,
                     "context_window": p.get("context_window"),
                     "temperature": p.get("temperature"),
+                    "enabled_forms": p.get("enabled_forms") or [],
+                    "enabled_data_tables": p.get("enabled_data_tables") or [],
+                    "starter_prompts": p.get("starter_prompts") or [],
+                    # UI visibility flags
+                    "show_pipeline_topics": p.get("show_pipeline_topics", True),
+                    "show_source_docs": p.get("show_source_docs", True),
                 }
                 for p in data.get("personalities", []) if p.get('active', True)
             ]
@@ -358,6 +570,25 @@ async def get_feedback_stats():
         return {"error": f"Errore nel recupero statistiche: {str(e)}"}
 
 @app.post("/api/chat/end-session")
-async def end_session():
-    # in questa versione non manteniamo stato server-side
-    return {"ok": True}
+async def end_session(session_id: str | None = None):
+    """Cancella la memoria della sessione specificata"""
+    from .memory import get_memory
+    try:
+        memory = get_memory()
+        if session_id:
+            memory.clear_session(session_id)
+        return {"ok": True, "session_cleared": session_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/chat/clear-session")
+async def clear_session(session_id: str):
+    """Endpoint esplicito per resettare la cronologia di una sessione (nuova chat)"""
+    from .memory import get_memory
+    try:
+        memory = get_memory()
+        memory.clear_session(session_id)
+        return {"ok": True, "message": f"Session {session_id} cleared"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

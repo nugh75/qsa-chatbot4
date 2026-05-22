@@ -182,7 +182,7 @@ const FileUpload: React.FC<FileUploadProps> = ({
       {processedFiles.length > 0 && (
         <Box sx={{ mt: 2 }}>
           <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1, display: 'block' }}>
-            📎 File caricati ({processedFiles.length}):
+            File caricati ({processedFiles.length}):
           </Typography>
           
           {processedFiles.map((file) => (

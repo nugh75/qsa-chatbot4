@@ -162,19 +162,10 @@ const SimpleSearch: React.FC<SimpleSearchProps> = ({
 
   // Decrittazione risultato
   const decryptResult = useCallback(async (result: SearchResult) => {
-    try {
-      const title = await cryptoService.decrypt(result.title_encrypted);
-      let content = '';
-      
-      if (result.content_encrypted) {
-        content = await cryptoService.decrypt(result.content_encrypted);
-      }
-
-      return { title, content };
-    } catch (error) {
-      console.error('Decryption error:', error);
-      return { title: 'Errore decrittazione', content: '' };
-    }
+  // Encryption disabled: treat server fields as plaintext
+  const title = result.title_encrypted || '';
+  const content = result.content_encrypted || '';
+  return { title, content };
   }, [cryptoService]);
 
   const handleResultClick = (result: SearchResult) => {
@@ -192,28 +183,10 @@ const SimpleSearch: React.FC<SimpleSearchProps> = ({
   // Componente per singolo risultato
   const ResultItem: React.FC<{ result: SearchResult }> = ({ result }) => {
     const [decrypted, setDecrypted] = useState<{ title: string; content: string } | null>(null);
-    const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-      decryptResult(result).then(data => {
-        setDecrypted(data);
-        setLoading(false);
-      });
+      decryptResult(result).then(data => setDecrypted(data));
     }, [result]);
-
-    if (loading) {
-      return (
-        <ListItem>
-          <ListItemIcon>
-            <CircularProgress size={20} />
-          </ListItemIcon>
-          <ListItemText 
-            primary="Caricamento..." 
-            secondary="Decrittazione in corso"
-          />
-        </ListItem>
-      );
-    }
 
     const isCurrentConversation = result.conversation_id === selectedConversationId;
 

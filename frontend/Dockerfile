@@ -9,9 +9,15 @@ RUN npm ci || npm install
 # Copy sources
 COPY . .
 
-# Allow optional override at build time: docker build --build-arg VITE_BACKEND_URL=https://cb.ai4educ.org .
+# Build arguments for multi-site configuration
 ARG VITE_BACKEND_URL
+ARG VITE_BACKEND_TARGET
+ARG VITE_SITE_NAME=default
+
+# Set environment variables for build
 ENV VITE_BACKEND_URL=${VITE_BACKEND_URL}
+ENV VITE_BACKEND_TARGET=${VITE_BACKEND_TARGET}
+ENV VITE_SITE_NAME=${VITE_SITE_NAME}
 
 # Build production bundle
 RUN npm run build
@@ -21,11 +27,21 @@ FROM nginx:1.27-alpine AS runtime
 
 WORKDIR /usr/share/nginx/html
 
-# Copy built assets
-COPY --from=build /app/dist ./
+# Ensure modern MIME types are recognized (e.g. .mjs for JS modules)
+RUN sed -i 's|application/javascript[[:space:]]\+js;|application/javascript                           js mjs;|' /etc/nginx/mime.types
 
-# Custom nginx config (expects file provided alongside Dockerfile)
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy built assets (using the site-specific dist directory)
+ARG VITE_SITE_NAME=default
+COPY --from=build /app/dist-${VITE_SITE_NAME} ./
+
+# Custom nginx config (site-specific with dynamic backend)
+ARG VITE_BACKEND_TARGET
+ENV BACKEND_TARGET=${VITE_BACKEND_TARGET}
+
+# Copy nginx template and process it with envsubst
+COPY nginx-multi.conf.template /tmp/nginx-multi.conf.template
+RUN envsubst '${BACKEND_TARGET}' < /tmp/nginx-multi.conf.template > /etc/nginx/conf.d/default.conf && \
+    rm /tmp/nginx-multi.conf.template
 
 EXPOSE 5175
 

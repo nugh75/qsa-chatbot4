@@ -223,3 +223,74 @@ def public_welcome_and_guide():
             guide_active = g
             break
     return {"welcome": welcome_active, "guide": guide_active}
+
+
+# --- Seed import helpers (programmatic) ---
+def apply_seed(data_seed: dict, overwrite: bool = False) -> None:
+    """Apply a seed structure to welcome/guides storage.
+
+    data_seed shape (partial allowed):
+      {
+        "welcome": {"active_id": str|None, "messages": [{id,title,content}, ...]},
+        "guides": {"active_id": str|None, "guides": [{id,title,content}, ...]}
+      }
+
+    - overwrite=False (default): merge items by id; keep existing ones; do not change active unless provided.
+    - overwrite=True: replace entire sections if provided in seed; otherwise leave untouched.
+    """
+    if not isinstance(data_seed, dict):
+        return
+    data = _load()
+
+    # Welcome
+    if "welcome" in data_seed and isinstance(data_seed["welcome"], dict):
+        seed_w = data_seed["welcome"]
+        cur_w = data.get("welcome", {"active_id": None, "messages": []})
+        if overwrite:
+            data["welcome"] = {
+                "active_id": seed_w.get("active_id"),
+                "messages": seed_w.get("messages", [])
+            }
+        else:
+            msgs = {m.get("id"): m for m in cur_w.get("messages", []) if isinstance(m, dict) and m.get("id")}
+            for m in seed_w.get("messages", []) or []:
+                mid = m.get("id")
+                if not mid:
+                    continue
+                if mid in msgs:
+                    # update fields
+                    msgs[mid].update({k: v for k, v in m.items() if k in ("title","content") and v is not None})
+                else:
+                    msgs[mid] = m
+            new_messages = list(msgs.values())
+            new_active = cur_w.get("active_id")
+            if seed_w.get("active_id") is not None:
+                new_active = seed_w.get("active_id")
+            data["welcome"] = {"active_id": new_active, "messages": new_messages}
+
+    # Guides
+    if "guides" in data_seed and isinstance(data_seed["guides"], dict):
+        seed_g = data_seed["guides"]
+        cur_g = data.get("guides", {"active_id": None, "guides": []})
+        if overwrite:
+            data["guides"] = {
+                "active_id": seed_g.get("active_id"),
+                "guides": seed_g.get("guides", [])
+            }
+        else:
+            guides_map = {g.get("id"): g for g in cur_g.get("guides", []) if isinstance(g, dict) and g.get("id")}
+            for g in seed_g.get("guides", []) or []:
+                gid = g.get("id")
+                if not gid:
+                    continue
+                if gid in guides_map:
+                    guides_map[gid].update({k: v for k, v in g.items() if k in ("title","content") and v is not None})
+                else:
+                    guides_map[gid] = g
+            new_guides = list(guides_map.values())
+            new_active_g = cur_g.get("active_id")
+            if seed_g.get("active_id") is not None:
+                new_active_g = seed_g.get("active_id")
+            data["guides"] = {"active_id": new_active_g, "guides": new_guides}
+
+    _save(data)

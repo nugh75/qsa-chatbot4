@@ -4,6 +4,22 @@
 .env.development.local
 .env.test.local
 .env.production.local
+.env.agrusti
+.env.counselorbot
+.env.dragoni
+.env.edurag
+.env.margottini
+.env.pef
+# Ignore any environment variant like .env.something
+.env.*
+# (Keep a template if present)
+!.env.example
+
+# Explicit environment patterns per subproject
+backend/.env*
+backend/.env.*
+frontend/.env*
+frontend/.env.*
 
 # Python
 __pycache__/
@@ -126,6 +142,7 @@ backend/piper_models/
 # Current model/cache locations
 backend/models/
 backend/storage/
+runtime-data/
 # Common large artifacts
 *.pt
 *.onnx

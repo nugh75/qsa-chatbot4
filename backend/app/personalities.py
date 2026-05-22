@@ -6,16 +6,205 @@ from pathlib import Path
 import shutil
 import logging
 from typing import Dict, List, Optional
+from .database import db_manager, USING_POSTGRES
 
-SEED_PERSONALITIES_DIR = Path('/app/data')  # seed read-only
-# Runtime storage: puntiamo alla directory montata persistente /app/storage
-# Evita il precedente mismatch (/app/backend/storage) utilizzando il path assoluto persistente.
+"""Gestione delle personalities (seed vs runtime).
+
+Standard 2025-09:
+    Seed versionati (lowercase): backend/config/seed/personalities.json
+    Runtime persistente: /app/storage/personalities/personalities.json
+
+Compat legacy rimossa: eliminati fallback /app/data. Solo seed lowercase e runtime persistente.
+"""
+
+SEED_BASE = Path(__file__).resolve().parent.parent / 'config' / 'seed'
+# Runtime storage base (rimane invariato)
 RUNTIME_BASE = Path('/app/storage')
 RUNTIME_PERSONALITIES_DIR = RUNTIME_BASE / 'personalities'
-PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "PERSONALITIES.json"
-TOPIC_DESCRIPTIONS_FILE = Path('/app/data/SYSTEM_PROMPTS.json')  # riusa file esistente per descrizioni se presenti
+# Replace old constant usage
+SEED_PERSONALITIES_DIR = SEED_BASE
+# Lowercase runtime file
+PERSONALITIES_FILE = RUNTIME_PERSONALITIES_DIR / "personalities.json"
+TOPIC_DESCRIPTIONS_FILE = SEED_BASE / 'system_prompts.json'
+# Legacy fallback list
+LEGACY_PERSONALITIES_CANDIDATES: list[Path] = []  # legacy support rimosso
 
 _cached_topic_descriptions = None
+
+def _ensure_personality_schema():
+    """Ensure `personalities` table and required columns exist on Postgres.
+    - Creates the table if missing (idempotent)
+    - Ensures enabled_data_tables and enabled_forms columns exist
+    No-op on SQLite.
+    """
+    if not USING_POSTGRES:
+        return
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            # Check if table exists
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'personalities'
+            """)
+            has_table = bool(cur.fetchone())
+            if not has_table:
+                # Minimal schema aligned with backend/app/scripts/postgres_create_missing.sql
+                ddl = """
+                CREATE TABLE IF NOT EXISTS personalities (
+                  id TEXT PRIMARY KEY,
+                  name TEXT NOT NULL,
+                  system_prompt_id TEXT NOT NULL,
+                  provider TEXT NOT NULL,
+                  model TEXT NOT NULL,
+                  tts_provider TEXT,
+                  tts_voice TEXT,
+                  avatar TEXT,
+                  welcome_message TEXT,
+                  guide_id TEXT,
+                  context_window INTEGER,
+                  temperature DOUBLE PRECISION,
+                  max_tokens INTEGER,
+                  active BOOLEAN NOT NULL DEFAULT TRUE,
+                  enabled_pipeline_topics JSONB,
+                  enabled_rag_groups JSONB,
+                  enabled_mcp_servers JSONB,
+                  enabled_data_tables JSONB DEFAULT '[]'::jsonb,
+                  enabled_forms JSONB DEFAULT '[]'::jsonb,
+                  starter_prompts JSONB DEFAULT '[]'::jsonb,
+                  hide_rag_links BOOLEAN DEFAULT FALSE,
+                  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+                db_manager.exec(cur, ddl)
+                # Partial unique index to allow only one default
+                db_manager.exec(cur, """
+                DO $$ BEGIN
+                  IF NOT EXISTS (
+                    SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uniq_one_default_personality'
+                  ) THEN
+                    CREATE UNIQUE INDEX uniq_one_default_personality ON personalities((is_default)) WHERE is_default IS TRUE;
+                  END IF;
+                END $$;
+                """)
+                conn.commit()
+            # Ensure optional JSON/BOOL columns exist
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'enabled_data_tables'
+            """)
+            exists = cur.fetchone()
+            if not exists:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_data_tables JSONB DEFAULT '[]'::jsonb")
+            # Ensure enabled_forms column exists as well
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'enabled_forms'
+            """)
+            exists2 = cur.fetchone()
+            if not exists2:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN enabled_forms JSONB DEFAULT '[]'::jsonb")
+            # Ensure hide_rag_links column exists
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'hide_rag_links'
+            """)
+            exists_hide_rag = cur.fetchone()
+            if not exists_hide_rag:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN hide_rag_links BOOLEAN DEFAULT FALSE")
+            # Show/hide flags for UI visibility
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'show_pipeline_topics'
+            """)
+            exists3 = cur.fetchone()
+            if not exists3:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN show_pipeline_topics BOOLEAN NOT NULL DEFAULT TRUE")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'show_source_docs'
+            """)
+            exists4 = cur.fetchone()
+            if not exists4:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN show_source_docs BOOLEAN NOT NULL DEFAULT TRUE")
+            # Ensure starter_prompts column exists
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'starter_prompts'
+            """)
+            exists5 = cur.fetchone()
+            if not exists5:
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN starter_prompts JSONB DEFAULT '[]'::jsonb")
+            # Webhook support columns
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_url'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_url TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_enabled'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_enabled BOOLEAN DEFAULT FALSE")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_timeout'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_timeout INTEGER DEFAULT 60")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_auth_header'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_auth_header TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'webhook_include_history'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN webhook_include_history BOOLEAN DEFAULT TRUE")
+            # Delegation rules column
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegate_rules'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegate_rules JSONB DEFAULT '[]'::jsonb")
+            # AI-driven delegation columns
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegation_instructions'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegation_instructions TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'delegation_targets'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN delegation_targets JSONB DEFAULT '[]'::jsonb")
+            # Fallback model columns for provider failover
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'fallback_provider'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN fallback_provider TEXT DEFAULT NULL")
+            db_manager.exec(cur, """
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'personalities' AND column_name = 'fallback_model'
+            """)
+            if not cur.fetchone():
+                db_manager.exec(cur, "ALTER TABLE personalities ADD COLUMN fallback_model TEXT DEFAULT NULL")
+            conn.commit()
+    except Exception:
+        # Best-effort; if DDL not permitted, subsequent calls may still fail gracefully upstream
+        pass
 
 def load_topic_descriptions() -> dict:
     global _cached_topic_descriptions
@@ -40,13 +229,15 @@ def load_topic_descriptions() -> dict:
 
 def _bootstrap_personalities():
     RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
-    seed_file = SEED_PERSONALITIES_DIR / 'PERSONALITIES.json'
-    if not PERSONALITIES_FILE.exists() and seed_file.exists():
-        try:
-            shutil.copy2(seed_file, PERSONALITIES_FILE)
-            logging.info('[personalities] Copiato seed PERSONALITIES.json nel runtime')
-        except Exception as e:
-            logging.warning(f'[personalities] Impossibile copiare seed PERSONALITIES.json: {e}')
+    # Se manca il runtime e c'è seed standard lo copia
+    if not PERSONALITIES_FILE.exists():
+        seed_std = SEED_BASE / 'personalities.json'
+        if seed_std.exists():
+            try:
+                shutil.copy2(seed_std, PERSONALITIES_FILE)
+                logging.info('[personalities] Copiato seed personalities.json nel runtime (source=%s)', seed_std)
+            except Exception as e:
+                logging.warning('[personalities] Impossibile copiare seed personalities.json: %s', e)
 
 
 def _slugify(name: str) -> str:
@@ -56,21 +247,86 @@ def _slugify(name: str) -> str:
     return s or "default"
 
 
+def _personality_id_exists(personality_id: str) -> bool:
+    if not personality_id:
+        return False
+    _ensure_personality_schema()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT 1 FROM personalities WHERE id = ? LIMIT 1", (personality_id,))
+        return cur.fetchone() is not None
+
+
+def _generate_unique_personality_id(base_slug: str) -> str:
+    slug = base_slug or "personalita"
+    candidate = slug
+    suffix = 2
+    while _personality_id_exists(candidate):
+        candidate = f"{slug}-{suffix}"
+        suffix += 1
+    return candidate
+
+
 def load_personalities() -> Dict:
-    _bootstrap_personalities()
-    try:
-        if PERSONALITIES_FILE.exists():
-            data = json.loads(PERSONALITIES_FILE.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and "personalities" in data:
-                return data
-    except Exception:
-        logging.warning('[personalities] Errore caricamento PERSONALITIES.json', exc_info=True)
-    return {"default_id": None, "personalities": []}
+    if not USING_POSTGRES:
+        raise RuntimeError('Postgres richiesto: personalities sono gestite esclusivamente via DB')
+    _ensure_personality_schema()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT * FROM personalities ORDER BY name")
+        rows = cur.fetchall()
+        default_id = None
+        items: List[Dict] = []
+        for r in rows:
+            d = dict(r)
+            for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules','delegation_targets']:
+                v = d.get(k)
+                if isinstance(v, (bytes, str)):
+                    try:
+                        d[k] = json.loads(v) if v else []
+                    except Exception:
+                        d[k] = []
+            if d.get('is_default'):
+                default_id = d.get('id')
+            items.append({
+                'id': d.get('id'),
+                'name': d.get('name'),
+                'system_prompt_id': d.get('system_prompt_id'),
+                'provider': d.get('provider'),
+                'model': d.get('model'),
+                'avatar': d.get('avatar'),
+                'tts_provider': d.get('tts_provider'),
+                'tts_voice': d.get('tts_voice'),
+                'welcome_message': d.get('welcome_message'),
+                'guide_id': d.get('guide_id'),
+                'context_window': d.get('context_window'),
+                'temperature': d.get('temperature'),
+                'max_tokens': d.get('max_tokens'),
+                'active': bool(d.get('active', True)),
+                'enabled_pipeline_topics': d.get('enabled_pipeline_topics') or [],
+                'enabled_rag_groups': d.get('enabled_rag_groups') or [],
+                'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
+                'enabled_data_tables': d.get('enabled_data_tables') or [],
+                'enabled_forms': d.get('enabled_forms') or [],
+                'starter_prompts': d.get('starter_prompts') or [],
+                'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
+                'show_source_docs': bool(d.get('show_source_docs', True)),
+                'webhook_url': d.get('webhook_url'),
+                'webhook_enabled': bool(d.get('webhook_enabled', False)),
+                'webhook_timeout': d.get('webhook_timeout') or 60,
+                'webhook_auth_header': d.get('webhook_auth_header'),
+                'webhook_include_history': bool(d.get('webhook_include_history', True)),
+                'delegate_rules': d.get('delegate_rules') or [],
+                'delegation_instructions': d.get('delegation_instructions'),
+                'delegation_targets': d.get('delegation_targets') or [],
+                'fallback_provider': d.get('fallback_provider'),
+                'fallback_model': d.get('fallback_model'),
+            })
+        return {'default_id': default_id, 'personalities': items}
 
 
 def save_personalities(data: Dict) -> None:
-    RUNTIME_PERSONALITIES_DIR.mkdir(parents=True, exist_ok=True)
-    PERSONALITIES_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    raise RuntimeError('save_personalities non supportato: usare DB Postgres')
 
 
 def upsert_personality(
@@ -91,86 +347,245 @@ def upsert_personality(
     enabled_pipeline_topics: Optional[List[str]] = None,
     enabled_rag_groups: Optional[List[int]] = None,
     enabled_mcp_servers: Optional[List[str]] = None,
+    enabled_data_tables: Optional[List[str]] = None,
+    enabled_forms: Optional[List[str]] = None,
     max_tokens: Optional[int] = None,
+    show_pipeline_topics: Optional[bool] = None,
+    show_source_docs: Optional[bool] = None,
+    hide_rag_links: Optional[bool] = None,
+    starter_prompts: Optional[List[str]] = None,
+    webhook_url: Optional[str] = None,
+    webhook_enabled: Optional[bool] = None,
+    webhook_timeout: Optional[int] = None,
+    webhook_auth_header: Optional[str] = None,
+    webhook_include_history: Optional[bool] = None,
+    delegate_rules: Optional[List[Dict]] = None,
+    delegation_instructions: Optional[str] = None,
+    delegation_targets: Optional[List[Dict]] = None,
+    fallback_provider: Optional[str] = None,
+    fallback_model: Optional[str] = None,
 ) -> Dict:
-    data = load_personalities()
+    if not USING_POSTGRES:
+        raise RuntimeError('Postgres richiesto: upsert_personality usa il DB')
+    _ensure_personality_schema()
     if personality_id is None:
         personality_id = _slugify(name)
-    # Update or insert
-    found = False
-    for p in data["personalities"]:
-        if p["id"] == personality_id:
-            p.update({
-                "name": name,
-                "system_prompt_id": system_prompt_id,
-                "provider": provider,
-                "model": model,
-                "avatar": avatar if avatar is not None else p.get("avatar"),
-                "tts_provider": tts_provider if tts_provider is not None else p.get("tts_provider"),
-                "tts_voice": tts_voice if tts_voice is not None else p.get("tts_voice"),
-                # welcome_message is stored as id referencing welcome_guides; keep previous value if not provided
-                "welcome_message": welcome_message if welcome_message is not None else p.get("welcome_message"),
-                # guide association (id) similar to welcome_message
-                "guide_id": guide_id if guide_id is not None else p.get("guide_id"),
-                "context_window": context_window if context_window is not None else p.get("context_window"),
-                "temperature": temperature if temperature is not None else p.get("temperature"),
-                "max_tokens": max_tokens if max_tokens is not None else p.get("max_tokens"),
-                "active": active if active is not None else p.get("active", True),
-                "enabled_pipeline_topics": enabled_pipeline_topics if enabled_pipeline_topics is not None else p.get("enabled_pipeline_topics", []),
-                "enabled_rag_groups": enabled_rag_groups if enabled_rag_groups is not None else p.get("enabled_rag_groups", []),
-                "enabled_mcp_servers": enabled_mcp_servers if enabled_mcp_servers is not None else p.get("enabled_mcp_servers", []),
-            })
-            found = True
-            break
-    if not found:
-        data["personalities"].append({
-            "id": personality_id,
-            "name": name,
-            "system_prompt_id": system_prompt_id,
-            "provider": provider,
-            "model": model,
-            "avatar": avatar,
-            "tts_provider": tts_provider,
-            "tts_voice": tts_voice,
-            "welcome_message": welcome_message,
-            "guide_id": guide_id,
-            "context_window": context_window,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "active": active,
-            "enabled_pipeline_topics": enabled_pipeline_topics or [],
-            "enabled_rag_groups": enabled_rag_groups or [],
-            "enabled_mcp_servers": enabled_mcp_servers or [],
-        })
-    if set_default:
-        data["default_id"] = personality_id
-    save_personalities(data)
+    e_topics = json.dumps(enabled_pipeline_topics or [])
+    e_groups = json.dumps(enabled_rag_groups or [])
+    e_mcp = json.dumps(enabled_mcp_servers or [])
+    e_tables = json.dumps(enabled_data_tables or [])
+    e_forms = json.dumps(enabled_forms or [])
+    s_prompts = json.dumps(starter_prompts or [])
+    d_rules = json.dumps(delegate_rules or [])
+    d_targets = json.dumps(delegation_targets or [])
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, """
+            INSERT INTO personalities (
+                id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
+                welcome_message, guide_id, context_window, temperature, max_tokens, active,
+                enabled_pipeline_topics, enabled_rag_groups, enabled_mcp_servers, enabled_data_tables, enabled_forms,
+                show_pipeline_topics, show_source_docs, hide_rag_links, starter_prompts,
+                webhook_url, webhook_enabled, webhook_timeout, webhook_auth_header, webhook_include_history,
+                delegate_rules, delegation_instructions, delegation_targets,
+                fallback_provider, fallback_model, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                system_prompt_id = EXCLUDED.system_prompt_id,
+                provider = EXCLUDED.provider,
+                model = EXCLUDED.model,
+                tts_provider = EXCLUDED.tts_provider,
+                tts_voice = EXCLUDED.tts_voice,
+                avatar = EXCLUDED.avatar,
+                welcome_message = EXCLUDED.welcome_message,
+                guide_id = EXCLUDED.guide_id,
+                context_window = EXCLUDED.context_window,
+                temperature = EXCLUDED.temperature,
+                max_tokens = EXCLUDED.max_tokens,
+                active = EXCLUDED.active,
+                enabled_pipeline_topics = EXCLUDED.enabled_pipeline_topics,
+                enabled_rag_groups = EXCLUDED.enabled_rag_groups,
+                enabled_mcp_servers = EXCLUDED.enabled_mcp_servers,
+                enabled_data_tables = EXCLUDED.enabled_data_tables,
+                enabled_forms = EXCLUDED.enabled_forms,
+                show_pipeline_topics = EXCLUDED.show_pipeline_topics,
+                show_source_docs = EXCLUDED.show_source_docs,
+                hide_rag_links = EXCLUDED.hide_rag_links,
+                starter_prompts = EXCLUDED.starter_prompts,
+                webhook_url = EXCLUDED.webhook_url,
+                webhook_enabled = EXCLUDED.webhook_enabled,
+                webhook_timeout = EXCLUDED.webhook_timeout,
+                webhook_auth_header = EXCLUDED.webhook_auth_header,
+                webhook_include_history = EXCLUDED.webhook_include_history,
+                delegate_rules = EXCLUDED.delegate_rules,
+                delegation_instructions = EXCLUDED.delegation_instructions,
+                delegation_targets = EXCLUDED.delegation_targets,
+                fallback_provider = EXCLUDED.fallback_provider,
+                fallback_model = EXCLUDED.fallback_model,
+                updated_at = NOW()
+        """, (
+            personality_id, name, system_prompt_id, provider, model, tts_provider, tts_voice, avatar,
+            welcome_message, guide_id, context_window, temperature, max_tokens, bool(active),
+            e_topics, e_groups, e_mcp, e_tables, e_forms,
+            True if show_pipeline_topics is None else bool(show_pipeline_topics),
+            True if show_source_docs is None else bool(show_source_docs),
+            False if hide_rag_links is None else bool(hide_rag_links),
+            s_prompts,
+            webhook_url or None,
+            False if webhook_enabled is None else bool(webhook_enabled),
+            webhook_timeout or 60,
+            webhook_auth_header or None,
+            True if webhook_include_history is None else bool(webhook_include_history),
+            d_rules,
+            delegation_instructions or None,
+            d_targets,
+            fallback_provider or None,
+            fallback_model or None,
+            False
+        ))
+        if set_default:
+            db_manager.exec(cur, "UPDATE personalities SET is_default = FALSE WHERE is_default = TRUE")
+            db_manager.exec(cur, "UPDATE personalities SET is_default = TRUE, updated_at = NOW() WHERE id = ?", (personality_id,))
+        conn.commit()
     return {"id": personality_id}
 
 
 def delete_personality(personality_id: str) -> None:
-    data = load_personalities()
-    before = len(data.get("personalities", []))
-    data["personalities"] = [p for p in data.get("personalities", []) if p["id"] != personality_id]
-    if len(data["personalities"]) == before:
-        raise ValueError("Personalità non trovata")
-    if data.get("default_id") == personality_id:
-        data["default_id"] = data["personalities"][0]["id"] if data["personalities"] else None
-    save_personalities(data)
+    if not USING_POSTGRES:
+        raise RuntimeError('Postgres richiesto: delete_personality usa il DB')
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT is_default FROM personalities WHERE id = ?", (personality_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Personalità non trovata")
+        was_default = bool(row[0]) if isinstance(row, (tuple, list)) else bool(row.get('is_default', False))
+        db_manager.exec(cur, "DELETE FROM personalities WHERE id = ?", (personality_id,))
+        if was_default:
+            db_manager.exec(cur, "UPDATE personalities SET is_default = TRUE WHERE id = (SELECT id FROM personalities ORDER BY created_at LIMIT 1)")
+        conn.commit()
 
 
 def set_default_personality(personality_id: str) -> None:
-    data = load_personalities()
-    ids = {p["id"] for p in data.get("personalities", [])}
-    if personality_id not in ids:
-        raise ValueError("Personalità non trovata")
-    data["default_id"] = personality_id
-    save_personalities(data)
+    if not USING_POSTGRES:
+        raise RuntimeError('Postgres richiesto: set_default_personality usa il DB')
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT 1 FROM personalities WHERE id = ?", (personality_id,))
+        if not cur.fetchone():
+            raise ValueError("Personalità non trovata")
+        db_manager.exec(cur, "UPDATE personalities SET is_default = FALSE WHERE is_default = TRUE")
+        db_manager.exec(cur, "UPDATE personalities SET is_default = TRUE, updated_at = NOW() WHERE id = ?", (personality_id,))
+        conn.commit()
 
 
 def get_personality(personality_id: str) -> Optional[Dict]:
-    data = load_personalities()
-    for p in data.get("personalities", []):
-        if p["id"] == personality_id:
-            return p
-    return None
+    if not USING_POSTGRES:
+        raise RuntimeError('Postgres richiesto: get_personality usa il DB')
+    _ensure_personality_schema()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        db_manager.exec(cur, "SELECT * FROM personalities WHERE id = ?", (personality_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ['enabled_pipeline_topics','enabled_rag_groups','enabled_mcp_servers','enabled_data_tables','enabled_forms','starter_prompts','delegate_rules']:
+            if k in d and isinstance(d[k], (bytes, str)):
+                try:
+                    d[k] = json.loads(d[k]) if d[k] else []
+                except Exception:
+                    d[k] = []
+        return {
+            'id': d.get('id'),
+            'name': d.get('name'),
+            'system_prompt_id': d.get('system_prompt_id'),
+            'provider': d.get('provider'),
+            'model': d.get('model'),
+            'avatar': d.get('avatar'),
+            'tts_provider': d.get('tts_provider'),
+            'tts_voice': d.get('tts_voice'),
+            'welcome_message': d.get('welcome_message'),
+            'guide_id': d.get('guide_id'),
+            'context_window': d.get('context_window'),
+            'temperature': d.get('temperature'),
+            'max_tokens': d.get('max_tokens'),
+            'active': bool(d.get('active', True)),
+            'enabled_pipeline_topics': d.get('enabled_pipeline_topics') or [],
+            'enabled_rag_groups': d.get('enabled_rag_groups') or [],
+            'enabled_mcp_servers': d.get('enabled_mcp_servers') or [],
+            'enabled_data_tables': d.get('enabled_data_tables') or [],
+            'enabled_forms': d.get('enabled_forms') or [],
+            'show_pipeline_topics': bool(d.get('show_pipeline_topics', True)),
+            'show_source_docs': bool(d.get('show_source_docs', True)),
+            'starter_prompts': d.get('starter_prompts') or [],
+            'webhook_url': d.get('webhook_url'),
+            'webhook_enabled': bool(d.get('webhook_enabled', False)),
+            'webhook_timeout': d.get('webhook_timeout') or 60,
+            'webhook_auth_header': d.get('webhook_auth_header'),
+            'webhook_include_history': bool(d.get('webhook_include_history', True)),
+            'delegate_rules': d.get('delegate_rules') or [],
+        }
+
+
+def duplicate_personality(
+    source_id: str,
+    *,
+    new_name: Optional[str] = None,
+    new_id: Optional[str] = None,
+    set_default: bool = False,
+) -> Dict:
+    existing = get_personality(source_id)
+    if not existing:
+        raise ValueError('Personalità di origine non trovata')
+
+    name = (new_name or '').strip()
+    if not name:
+        base_name = existing.get('name') or source_id
+        name = f"{base_name} (copia)"
+
+    provided_id = (new_id or '').strip()
+    if provided_id:
+        candidate_id = _slugify(provided_id)
+        if _personality_id_exists(candidate_id):
+            raise ValueError('Esiste già una personalità con questo id')
+    else:
+        base_slug = _slugify(name)
+        if not base_slug:
+            base_slug = _slugify(existing.get('id') or 'personalita')
+        candidate_id = _generate_unique_personality_id(base_slug)
+
+    res = upsert_personality(
+        name=name,
+        system_prompt_id=existing.get('system_prompt_id', ''),
+        provider=existing.get('provider', 'local'),
+        model=existing.get('model', ''),
+        welcome_message=existing.get('welcome_message'),
+        guide_id=existing.get('guide_id'),
+        context_window=existing.get('context_window'),
+        temperature=existing.get('temperature'),
+        personality_id=candidate_id,
+        set_default=set_default,
+        avatar=existing.get('avatar'),
+        tts_provider=existing.get('tts_provider'),
+        tts_voice=existing.get('tts_voice'),
+        active=existing.get('active', True),
+        enabled_pipeline_topics=existing.get('enabled_pipeline_topics'),
+        enabled_rag_groups=existing.get('enabled_rag_groups'),
+        enabled_mcp_servers=existing.get('enabled_mcp_servers'),
+        enabled_data_tables=existing.get('enabled_data_tables'),
+        enabled_forms=existing.get('enabled_forms'),
+        max_tokens=existing.get('max_tokens'),
+        show_pipeline_topics=existing.get('show_pipeline_topics'),
+        show_source_docs=existing.get('show_source_docs'),
+        starter_prompts=existing.get('starter_prompts'),
+        webhook_url=existing.get('webhook_url'),
+        webhook_enabled=existing.get('webhook_enabled'),
+        webhook_timeout=existing.get('webhook_timeout'),
+        webhook_auth_header=existing.get('webhook_auth_header'),
+        webhook_include_history=existing.get('webhook_include_history'),
+        delegate_rules=existing.get('delegate_rules'),
+    )
+    res['name'] = name
+    return res

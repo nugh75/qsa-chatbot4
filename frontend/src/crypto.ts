@@ -4,175 +4,50 @@
  */
 
 export class ChatCrypto {
-  private userKey: CryptoKey | null = null;
+  // Client-side encryption disabled: no key is needed, keep API for compatibility
   private encoder = new TextEncoder();
   private decoder = new TextDecoder();
 
-  /**
-   * Deriva una chiave crittografica dalla password dell'utente
-   */
-  async deriveKeyFromPassword(password: string, email: string, extractable: boolean = false): Promise<CryptoKey> {
-    // Usa email come salt per consistenza tra dispositivi
-    const salt = this.encoder.encode(email);
-    
-    // Importa password come chiave per PBKDF2
-    const passwordKey = await crypto.subtle.importKey(
-      'raw',
-      this.encoder.encode(password),
-      'PBKDF2',
-      false,
-      ['deriveKey']
-    );
-
-    // Deriva chiave AES-256-GCM
-    const key = await crypto.subtle.deriveKey(
-      {
-        name: 'PBKDF2',
-        salt: salt,
-        iterations: 100000,
-        hash: 'SHA-256'
-      },
-      passwordKey,
-      { name: 'AES-GCM', length: 256 },
-      extractable,
-      ['encrypt', 'decrypt']
-    );
-
-    this.userKey = key;
-    return key;
+  async deriveKeyFromPassword(_password: string, _email: string, _extractable: boolean = false): Promise<CryptoKey | null> {
+    // No-op: encryption disabled
+    return null as any;
   }
 
-  /**
-   * Esporta la chiave corrente in formato raw (base64) per sessionStorage
-   */
   async exportCurrentKeyRaw(): Promise<string> {
-    if (!this.userKey) throw new Error('User key not initialized');
-    // Se la chiave non è estraibile, questa chiamata fallirà: è voluto per sicurezza
-    const raw = await crypto.subtle.exportKey('raw', this.userKey);
-    const bytes = new Uint8Array(raw);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    return btoa(binary);
+    throw new Error('Client-side encryption disabled');
   }
 
-  /**
-   * Importa una chiave AES-GCM da base64 raw e la imposta come chiave utente
-   */
-  async importKeyFromRaw(base64: string): Promise<void> {
-    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-    const key = await crypto.subtle.importKey(
-      'raw',
-      bytes,
-      { name: 'AES-GCM' },
-      true,
-      ['encrypt', 'decrypt']
-    );
-    this.userKey = key;
+  async importKeyFromRaw(_base64: string): Promise<void> {
+    // No-op
+    return;
   }
 
   /**
    * Genera hash della chiave utente (compatibile con backend)
    */
   async generateUserKeyHash(password: string, email: string): Promise<string> {
-    const salt = this.encoder.encode(email);
-    const passwordBuffer = this.encoder.encode(password);
-    
-    // Usa PBKDF2 per generare hash consistente con backend
-    const passwordKey = await crypto.subtle.importKey(
-      'raw',
-      passwordBuffer,
-      'PBKDF2',
-      false,
-      ['deriveBits']
-    );
-
-    const keyBits = await crypto.subtle.deriveBits(
-      {
-        name: 'PBKDF2',
-        salt: salt,
-        iterations: 100000,
-        hash: 'SHA-256'
-      },
-      passwordKey,
-      256
-    );
-
-    // Converti in hex
-    const keyArray = new Uint8Array(keyBits);
-    return Array.from(keyArray).map(b => b.toString(16).padStart(2, '0')).join('');
+  // With encryption disabled we keep a deterministic hash for compatibility using simple SHA-256
+  const salt = this.encoder.encode(email);
+  const data = this.encoder.encode(password + '|' + email);
+  const buffer = await crypto.subtle.digest('SHA-256', data);
+  const keyArray = new Uint8Array(buffer);
+  return Array.from(keyArray).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
   /**
    * Cripta un messaggio
    */
   async encryptMessage(message: string): Promise<string> {
-    if (!this.userKey) {
-      throw new Error('User key not initialized. Call deriveKeyFromPassword first.');
-    }
-
-    const messageData = this.encoder.encode(message);
-    const iv = crypto.getRandomValues(new Uint8Array(12)); // GCM raccomanda 12 byte IV
-
-    const encrypted = await crypto.subtle.encrypt(
-      {
-        name: 'AES-GCM',
-        iv: iv
-      },
-      this.userKey,
-      messageData
-    );
-
-    // Combina IV + dati crittografati
-    const combined = new Uint8Array(iv.length + encrypted.byteLength);
-    combined.set(iv);
-    combined.set(new Uint8Array(encrypted), iv.length);
-
-    // Ritorna base64
-    return btoa(String.fromCharCode(...combined));
+    // Encryption disabled: return plaintext directly
+    return message;
   }
 
   /**
    * Decripta un messaggio
    */
   async decryptMessage(encryptedMessage: string): Promise<string> {
-    if (!this.userKey) {
-      throw new Error('User key not initialized. Call deriveKeyFromPassword first.');
-    }
-
-    try {
-      // Decodifica base64
-      // Verifica pattern base64 (grezzo) per evitare eccezioni
-      const base64Pattern = /^[A-Za-z0-9+/=]+$/;
-      if (!base64Pattern.test(encryptedMessage) || encryptedMessage.length < 24) {
-        // Probabilmente non cifrato: restituisci come testo in chiaro
-        return encryptedMessage;
-      }
-      let combined: Uint8Array;
-      try {
-        combined = Uint8Array.from(atob(encryptedMessage), c => c.charCodeAt(0));
-      } catch (e) {
-        // Non base64 valido – ritorna originale
-        return encryptedMessage;
-      }
-      
-      // Estrai IV (primi 12 byte) e dati crittografati
-      const iv = combined.slice(0, 12);
-      const encryptedData = combined.slice(12);
-
-      const decrypted = await crypto.subtle.decrypt(
-        {
-          name: 'AES-GCM',
-          iv: iv
-        },
-        this.userKey,
-        encryptedData
-      );
-
-  return this.decoder.decode(decrypted);
-    } catch (error) {
-  // Invece di generare errore blocco UI, restituiamo placeholder
-  return '[Messaggio non decrittabile]';
-    }
+  // Encryption disabled: assume input is plaintext and return it
+  return encryptedMessage;
   }
 
   /**
@@ -189,14 +64,16 @@ export class ChatCrypto {
    * Verifica se la chiave è inizializzata
    */
   isKeyInitialized(): boolean {
-    return this.userKey !== null;
+  // With encryption disabled, consider key not required
+  return false;
   }
 
   /**
    * Pulisce la chiave dalla memoria
    */
   clearKey(): void {
-    this.userKey = null;
+  // No-op when encryption disabled
+  return;
   }
 }
 
@@ -207,35 +84,61 @@ export class CredentialManager {
   private static readonly TOKEN_KEY = 'qsa_access_token';
   private static readonly REFRESH_KEY = 'qsa_refresh_token';
   private static readonly USER_KEY = 'qsa_user_info';
+  private static readonly S_TOKEN_KEY = 'qsa_access_token'; // same keys in session scope
+  private static readonly S_REFRESH_KEY = 'qsa_refresh_token';
+  private static readonly S_USER_KEY = 'qsa_user_info';
 
   /**
    * Salva token di autenticazione
    */
-  static saveTokens(accessToken: string, refreshToken: string, userInfo: any): void {
-    localStorage.setItem(this.TOKEN_KEY, accessToken);
-    localStorage.setItem(this.REFRESH_KEY, refreshToken);
-    localStorage.setItem(this.USER_KEY, JSON.stringify(userInfo));
+  static saveTokens(accessToken: string, refreshToken: string, userInfo: any, remember?: boolean): void {
+    // Se 'remember' non è specificato, preserva lo storage esistente: usa local se già presente, altrimenti session se presente, altrimenti local
+    const targetLocal = ((): boolean => {
+      if (typeof remember === 'boolean') return remember;
+      const hasLocal = !!localStorage.getItem(this.TOKEN_KEY);
+      const hasSession = !!sessionStorage.getItem(this.S_TOKEN_KEY);
+      if (hasLocal) return true;
+      if (hasSession) return false;
+      return true; // default
+    })();
+    if (targetLocal) {
+      localStorage.setItem(this.TOKEN_KEY, accessToken);
+      localStorage.setItem(this.REFRESH_KEY, refreshToken);
+      localStorage.setItem(this.USER_KEY, JSON.stringify(userInfo));
+      // Pulisci sessione per evitare ambiguità
+      sessionStorage.removeItem(this.S_TOKEN_KEY);
+      sessionStorage.removeItem(this.S_REFRESH_KEY);
+      sessionStorage.removeItem(this.S_USER_KEY);
+    } else {
+      sessionStorage.setItem(this.S_TOKEN_KEY, accessToken);
+      sessionStorage.setItem(this.S_REFRESH_KEY, refreshToken);
+      sessionStorage.setItem(this.S_USER_KEY, JSON.stringify(userInfo));
+      // Pulisci local per non “ricordare” oltre la sessione
+      localStorage.removeItem(this.TOKEN_KEY);
+      localStorage.removeItem(this.REFRESH_KEY);
+      localStorage.removeItem(this.USER_KEY);
+    }
   }
 
   /**
    * Recupera access token
    */
   static getAccessToken(): string | null {
-    return localStorage.getItem(this.TOKEN_KEY);
+    return localStorage.getItem(this.TOKEN_KEY) || sessionStorage.getItem(this.S_TOKEN_KEY);
   }
 
   /**
    * Recupera refresh token
    */
   static getRefreshToken(): string | null {
-    return localStorage.getItem(this.REFRESH_KEY);
+    return localStorage.getItem(this.REFRESH_KEY) || sessionStorage.getItem(this.S_REFRESH_KEY);
   }
 
   /**
    * Recupera info utente
    */
   static getUserInfo(): any | null {
-    const userInfo = localStorage.getItem(this.USER_KEY);
+    const userInfo = localStorage.getItem(this.USER_KEY) || sessionStorage.getItem(this.S_USER_KEY);
     return userInfo ? JSON.parse(userInfo) : null;
   }
 
@@ -250,16 +153,22 @@ export class CredentialManager {
    * Pulisce credenziali (logout)
    */
   static clearCredentials(): void {
+    // Rimuovi da entrambi gli storage
     localStorage.removeItem(this.TOKEN_KEY);
     localStorage.removeItem(this.REFRESH_KEY);
     localStorage.removeItem(this.USER_KEY);
+    sessionStorage.removeItem(this.S_TOKEN_KEY);
+    sessionStorage.removeItem(this.S_REFRESH_KEY);
+    sessionStorage.removeItem(this.S_USER_KEY);
   }
 
   /**
    * Aggiorna access token
    */
   static updateAccessToken(newToken: string): void {
+    // Aggiorna in entrambi per sicurezza; quello effettivo sarà letto con priorità local->session
     localStorage.setItem(this.TOKEN_KEY, newToken);
+    sessionStorage.setItem(this.S_TOKEN_KEY, newToken);
   }
 }
 

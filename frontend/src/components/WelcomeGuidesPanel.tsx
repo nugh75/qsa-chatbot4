@@ -5,14 +5,21 @@ import { apiService } from '../apiService';
 
 interface WGItem { id: string; title?: string|null; content: string }
 
-const WelcomeGuidesPanel: React.FC = () => {
+interface WelcomeGuidesPanelProps {
+  mode?: 'both' | 'guide' | 'welcome';
+}
+
+const WelcomeGuidesPanel: React.FC<WelcomeGuidesPanelProps> = ({ mode = 'both' }) => {
+  const showWelcome = mode === 'both' || mode === 'welcome';
+  const showGuides = mode === 'both' || mode === 'guide';
+  const defaultKind: 'welcome' | 'guide' = showWelcome ? 'welcome' : 'guide';
   const [welcome, setWelcome] = useState<WGItem[]>([]);
   const [guides, setGuides] = useState<WGItem[]>([]);
   const [activeWelcome, setActiveWelcome] = useState<string|null>(null);
   const [activeGuide, setActiveGuide] = useState<string|null>(null);
   const [loading, setLoading] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [kind, setKind] = useState<'welcome'|'guide'>('welcome');
+  const [kind, setKind] = useState<'welcome'|'guide'>(defaultKind);
   const [editId, setEditId] = useState<string|null>(null);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -83,10 +90,7 @@ const WelcomeGuidesPanel: React.FC = () => {
                 {activeId===it.id && <Chip size="small" color="success" label="attivo" />}
               </Stack>} secondary={<Typography variant="caption" sx={{ whiteSpace:'pre-wrap' }}>{it.content.slice(0,160)}{it.content.length>160?'…':''}</Typography>} />
               <ListItemSecondaryAction>
-                {/* Rimosso pulsante attiva per welcome/guide: l'associazione avviene nella personalità */}
-                {k==='guide' && (
-                  <Tooltip title="Attiva"><span><IconButton size="small" onClick={()=> handleActivate(k,it.id)} disabled={activeId===it.id}><CheckIcon fontSize="small" /></IconButton></span></Tooltip>
-                )}
+                <Tooltip title="Attiva"><span><IconButton size="small" onClick={()=> handleActivate(k,it.id)} disabled={activeId===it.id}><CheckIcon fontSize="small" /></IconButton></span></Tooltip>
                 <Tooltip title="Modifica"><IconButton size="small" onClick={()=> openEdit(k,it)}><EditIcon fontSize="small" /></IconButton></Tooltip>
                 <Tooltip title="Elimina"><IconButton size="small" onClick={()=> handleDelete(k,it.id)}><DeleteIcon fontSize="small" /></IconButton></Tooltip>
               </ListItemSecondaryAction>
@@ -100,11 +104,13 @@ const WelcomeGuidesPanel: React.FC = () => {
   return (
     <Box>
       <Typography variant="body2" sx={{ mb:2 }}>
-        Gestisci molteplici messaggi di benvenuto e guide di onboarding. Il primo creato diventa attivo automaticamente se non esiste ancora un attivo.
+        {mode === 'both'
+          ? 'Gestisci molteplici messaggi di benvenuto e guide di onboarding. Il primo creato diventa attivo automaticamente se non esiste ancora un attivo.'
+          : 'Gestisci le guide di onboarding. La prima creata diventa attiva automaticamente se non esiste ancora un attivo.'}
       </Typography>
       <Stack direction={{ xs:'column', md:'row' }} spacing={2}>
-        {listBlock('Welcome Messages', welcome, activeWelcome, 'welcome')}
-        {listBlock('Guides', guides, activeGuide, 'guide')}
+        {showWelcome && listBlock('Welcome Messages', welcome, activeWelcome, 'welcome')}
+        {showGuides && listBlock('Guide', guides, activeGuide, 'guide')}
       </Stack>
       <Dialog open={dialogOpen} onClose={()=> setDialogOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>{editId ? 'Modifica' : 'Nuovo'} {kind === 'welcome' ? 'Welcome' : 'Guida'}</DialogTitle>

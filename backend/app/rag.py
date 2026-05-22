@@ -1,12 +1,13 @@
 from pathlib import Path
 import json
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple, Any
 from functools import lru_cache
 
 from .rag_engine import rag_engine
 from .rag_routes import get_user_context
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
+RAG_STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage" / "rag_data"
+PIPELINE_FILES_DIR = Path(__file__).resolve().parent.parent / "storage" / "pipeline_files"
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
 
 @lru_cache(maxsize=1)
@@ -20,10 +21,56 @@ def load_files_mapping() -> Dict[str, str]:
 def refresh_files_cache():
     load_files_mapping.cache_clear()  # type: ignore[attr-defined]
 
-def load_text(name: str) -> str:
+def _resolve_topic_file(name: str) -> Dict[str, Any]:
     file_map = load_files_mapping()
-    fp = DATA_DIR / file_map[name]
-    return fp.read_text(encoding="utf-8")
+    if name not in file_map:
+        raise KeyError(f"Topic '{name}' non presente in pipeline_config.json")
+    filename = file_map[name]
+    pipeline_path = PIPELINE_FILES_DIR / filename
+    rag_path = RAG_STORAGE_DIR / filename
+    return {
+        "topic": name,
+        "filename": filename,
+        "pipeline_path": str(pipeline_path),
+        "rag_path": str(rag_path),
+        "source": None,
+        "exists": None,
+    }
+
+def load_text_with_meta(name: str) -> Tuple[str, Dict[str, Any]]:
+    meta = _resolve_topic_file(name)
+    filename = meta["filename"]
+    pipeline_path = Path(meta["pipeline_path"])
+    rag_path = Path(meta["rag_path"])
+    if pipeline_path.exists():
+        # Best-effort mirror to rag_data for legacy path usage.
+        try:
+            RAG_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            if (not rag_path.exists()) or pipeline_path.stat().st_mtime > rag_path.stat().st_mtime:
+                rag_path.write_bytes(pipeline_path.read_bytes())
+                meta["synced_to_rag"] = True
+            else:
+                meta["synced_to_rag"] = False
+        except Exception:
+            meta["synced_to_rag"] = None
+        meta["source"] = "pipeline_files"
+        meta["exists"] = True
+        text = pipeline_path.read_text(encoding="utf-8")
+        meta["chars"] = len(text)
+        return text, meta
+    if rag_path.exists():
+        meta["source"] = "rag_data"
+        meta["exists"] = True
+        text = rag_path.read_text(encoding="utf-8")
+        meta["chars"] = len(text)
+        return text, meta
+    meta["source"] = "missing"
+    meta["exists"] = False
+    raise FileNotFoundError(f"File topic '{filename}' non trovato in pipeline_files o rag_data")
+
+def load_text(name: str) -> str:
+    text, _meta = load_text_with_meta(name)
+    return text
 
 def get_context(topic: Optional[str], query: str = "", personality_enabled_groups: Optional[List[int]] = None) -> str:
     """
@@ -79,6 +126,10 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         
         # Se la personalità ha gruppi specifici abilitati, usa quelli come filtro
         if personality_enabled_groups is not None:
+            # Se la lista è vuota esplicitamente, significa RAG disabilitato per questa personalità
+            if len(personality_enabled_groups) == 0:
+                print(f"[RAG] RAG esplicitamente disabilitato per questa personalità (enabled_rag_groups=[])")
+                return ""
             # Interseca i gruppi selezionati dall'utente con quelli abilitati per la personalità
             if user_selected_groups:
                 selected_groups = [g for g in user_selected_groups if g in personality_enabled_groups]
@@ -88,9 +139,14 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         else:
             # Fallback al comportamento precedente
             selected_groups = user_selected_groups
-        
+
         if not selected_groups:
             # Auto-selezione gruppi (fallback) se utente non ha scelto nulla
+            # Ma solo se la personalità non ha esplicitamente configurato i gruppi
+            if personality_enabled_groups is not None:
+                # La personalità ha configurato gruppi specifici ma l'intersezione è vuota
+                print(f"[RAG] Nessun gruppo disponibile dopo intersezione con gruppi personalità")
+                return ""
             try:
                 all_groups = rag_engine.get_groups()
                 # Prendi solo gruppi con almeno 1 documento
@@ -131,7 +187,7 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
         if context_parts:
             context = "\n".join(context_parts)
             header = f"[CONTESTO RAG - {len(context_parts)} documenti rilevanti trovati]\n\n"
-            footer = "\n[ISTRUZIONI: Quando usi informazioni da queste fonti, cita il nome del file usando il formato: [📄 nome_file.pdf](download_link) ]"
+            footer = "\n[ISTRUZIONI: Quando utilizzi informazioni da queste fonti, cita il nome del file usando il formato: [DOC nome_file.pdf] senza aggiungere link.]"
             assembled = header + context + footer
             print(f"[RAG] Contesto assemblato con {len(context_parts)} fonti, lunghezza={len(assembled)}")
             return assembled
@@ -144,50 +200,34 @@ def get_rag_context(query: str, session_id: str = "default", max_results: int = 
 
 def format_response_with_citations(response: str, search_results: List[Dict]) -> str:
     """
-    Aggiunge link di download ai file citati nella risposta
-    
+    Adatta eventuali citazioni della risposta al formato `[DOC nome_file]`.
+    I dettagli completi delle fonti sono ora gestiti dal pannello delle fonti RAG.
+
     Args:
         response: Risposta dell'LLM
-        search_results: Risultati della ricerca RAG
-        
+        search_results: Risultati della ricerca RAG (usati solo per verificare i nomi file)
+
     Returns:
-        Risposta con link ai file sorgente
+        Risposta con citazioni normalizzate, senza appendere sezioni aggiuntive
     """
     if not search_results:
         return response
-    
-    # Mappa file citati
-    file_links = {}
-    for result in search_results:
-        filename = result.get("original_filename", result.get("filename", ""))
-        document_id = result.get("document_id")
-        if filename and document_id:
-            # Link placeholder - in futuro implementeremo download reale
-            download_link = f"/api/rag/download/{document_id}"
-            file_links[filename] = download_link
-    
-    # Cerca pattern di citazioni nel response e aggiungi link
+
     import re
-    
-    # Pattern per citazioni: [ filename]
-    # Pattern più flessibile per citazioni come [filename.pdf] o [ filename.pdf ]
-    citation_pattern = r'\[\s*([^\]]+?)\s*\]'
-    
-    def replace_citation(match):
+
+    known_filenames = {
+        result.get("original_filename", result.get("filename", ""))
+        for result in search_results
+        if result.get("original_filename") or result.get("filename")
+    }
+
+    # Pattern per citazioni ereditate: [  filename]
+    citation_pattern = r"\[ \s+([^\]]+)\]"
+
+    def replace_citation(match) -> str:
         filename = match.group(1).strip()
-        if filename in file_links:
-            # Restituisce un link markdown. Usa il nome file originale per il testo del link.
-            return f"[{filename}]({file_links[filename]})"
-        return match.group(0)  # Return original if no link found
-    
-    response_with_links = re.sub(citation_pattern, replace_citation, response)
-    
-    # Se non ci sono citazioni esplicite ma abbiamo risultati, aggiungi sezione fonti
-    # Controlla se sono stati effettivamente creati dei link. Se no, aggiungi la sezione.
-    if not re.search(r'\(.*/api/rag/download/.*\)', response_with_links) and file_links:
-        sources_section = "\n\n**Fonti consultate:**\n"
-        for filename, link in file_links.items():
-            sources_section += f"- [{filename}]({link})\n"
-        response_with_links += sources_section
-    
-    return response_with_links
+        if filename and filename in known_filenames:
+            return f"[DOC {filename}]"
+        return match.group(0)
+
+    return re.sub(citation_pattern, replace_citation, response)

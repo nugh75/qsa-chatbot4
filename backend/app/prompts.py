@@ -5,35 +5,45 @@ from typing import Optional
 import shutil
 import logging
 
-"""Gestione del prompt di sistema con distinzione tra seed (read-only) e runtime (scrivibile).
+"""Gestione dei system/summary prompts.
 
-Seed:   /app/data (montato read-only da docker-compose)
-Runtime:/app/storage/prompts (volume scrivibile persistente)
+Standard attuale (2025-09):
+    Seed versionati: backend/config/seed (lowercase)
+    Runtime persistente: /app/storage/prompts e /app/storage/summary
 
-Questo permette di aggiornare i prompt senza rebuild e mantenere un file seed
-versionato come riferimento iniziale.
+File principali:
+    - system_prompts.json (runtime + seed)
+    - summary_prompt.md (seed sorgente iniziale) -> migrazione in summary_prompts.json (runtime multi)
+    - summary_prompts.json (runtime multi-varianti)
+
+Compat legacy rimossa: eliminati fallback /app/data e varianti uppercase seed. Il sistema usa solo
+seed lowercase in backend/config/seed e runtime persistente in /app/storage.
 """
 
-SEED_DIR = Path('/app/data')  # percorso seed esplicito nel container
+SEED_DIR = Path(__file__).resolve().parent.parent / 'config' / 'seed'
 RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "prompts"
 SUMMARY_RUNTIME_DIR = Path(__file__).resolve().parent.parent / "storage" / "summary"
 
 # Il DATA_DIR usato dal resto delle funzioni punta al runtime.
 DATA_DIR = RUNTIME_DIR
 
-SYSTEM_PROMPTS_JSON = DATA_DIR / "SYSTEM_PROMPTS.json"
-SUMMARY_PROMPTS_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPTS.json"
-LEGACY_SUMMARY_MD = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"
-LEGACY_SUMMARY_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.json"
+# Aggiorna percorso runtime system prompts (lowercase)
+SYSTEM_PROMPTS_JSON = DATA_DIR / "system_prompts.json"
+SUMMARY_PROMPTS_JSON = SUMMARY_RUNTIME_DIR / "summary_prompts.json"
+LEGACY_SUMMARY_MD = SUMMARY_RUNTIME_DIR / "summary_prompt.md"  # lowercase nuovo
+LEGACY_SUMMARY_JSON = SUMMARY_RUNTIME_DIR / "summary_prompt.json"
+LEGACY_OLD_UPPER_MD = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.md"  # legacy
+LEGACY_OLD_UPPER_JSON = SUMMARY_RUNTIME_DIR / "SUMMARY_PROMPT.json"  # legacy
 
 # File legacy e nuovo nome per il prompt singolo di default (seed)
 LEGACY_SINGLE_PROMPT_CANDIDATES = [
-    "system-prompt.md",  # nuovo nome
-    "CLAUDE.md",         # legacy
+    "system-prompt.md",
+    "claude.md",
+    "CLAUDE.md",
 ]
 
 DEFAULT_SYSTEM_TEXT = (
-    "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+    "Sei un assistente virtuale generico. Rispondi in italiano con tono cordiale e conciso, facendo domande per chiarire le esigenze dell'utente."
 )
 
 def _slugify(name: str) -> str:
@@ -52,14 +62,16 @@ def _bootstrap_runtime():
     """
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Copia SYSTEM_PROMPTS.json se mancante nel runtime ma presente nel seed
-    seed_json = SEED_DIR / "SYSTEM_PROMPTS.json"
-    if not SYSTEM_PROMPTS_JSON.exists() and seed_json.exists():
+    seed_candidates = [
+        SEED_DIR / 'system_prompts.json',
+    ]
+    seed_json = next((p for p in seed_candidates if p.exists()), None)
+    if seed_json and not SYSTEM_PROMPTS_JSON.exists():
         try:
             shutil.copy2(seed_json, SYSTEM_PROMPTS_JSON)
-            logging.info("[prompts] Copiato seed SYSTEM_PROMPTS.json nel runtime")
+            logging.info("[prompts] Copiato seed system_prompts.json nel runtime (source=%s)", seed_json)
         except Exception as e:
-            logging.warning(f"[prompts] Impossibile copiare SYSTEM_PROMPTS.json seed: {e}")
+            logging.warning(f"[prompts] Impossibile copiare system_prompts.json seed: {e}")
 
     # Copia seed summary solo se nessuna struttura multi presente (gestito da migrazione successiva)
     # Manteniamo il file seed intatto; la migrazione lo leggerà se necessario.
@@ -84,12 +96,11 @@ def _load_legacy_text() -> str:
                 return candidate_runtime.read_text(encoding="utf-8")
             except Exception:
                 pass
-    # Seed
     for name in LEGACY_SINGLE_PROMPT_CANDIDATES:
         candidate_seed = SEED_DIR / name
         if candidate_seed.exists():
             try:
-                return candidate_seed.read_text(encoding="utf-8")
+                return candidate_seed.read_text(encoding='utf-8')
             except Exception:
                 pass
     return DEFAULT_SYSTEM_TEXT
@@ -204,22 +215,21 @@ def save_system_prompt(text: str) -> None:
 #############################
 
 DEFAULT_SUMMARY_TEXT = (
-    "Sei un assistente che genera un REPORT di una conversazione tra utente e counselorbot. "
-    "Obiettivo: produrre un riassunto strutturato in italiano che includa: \n"
+    "Sei un assistente che genera un report strutturato della conversazione in italiano. "
+    "Includi: \n"
     "1. Titolo breve descrittivo (max 12 parole).\n"
     "2. Obiettivo dichiarato o implicito dell'utente.\n"
     "3. Punti chiave emersi (bullet sintetici).\n"
-    "4. Eventuali fattori cognitivi/affettivi menzionati.\n"
-    "5. Progressi o cambiamenti durante il dialogo.\n"
-    "6. Suggerimenti concreti per il prossimo passo (max 5).\n"
-    "7. Tono generale e stato emotivo percepito.\n\n"
+    "4. Eventuali ostacoli o leve utili citate.\n"
+    "5. Prossimi passi suggeriti (max 5).\n"
+    "6. Tono generale percepito.\n\n"
     "Regole: Non inventare dettagli assenti. Mantieni tono professionale, empatico e sintetico."
 )
 
 def _migrate_legacy_summary_prompt():
     """Migra vecchio file singolo SUMMARY_PROMPT (md/json) alla struttura multi JSON.
 
-    Esegue una sola volta se SUMMARY_PROMPTS.json non esiste.
+    Esegue una sola volta se summary_prompts.json non esiste.
     """
     if SUMMARY_PROMPTS_JSON.exists():
         return
@@ -258,7 +268,7 @@ def _migrate_legacy_summary_prompt():
                 LEGACY_SUMMARY_JSON.rename(LEGACY_SUMMARY_JSON.with_suffix('.json.legacy'))
         except Exception:
             pass
-        logging.info("[summary-prompts] Migrazione completata -> SUMMARY_PROMPTS.json (len=%d)", len(legacy_text))
+        logging.info("[summary-prompts] Migrazione completata -> summary_prompts.json (len=%d)", len(legacy_text))
     except Exception as e:
         logging.error(f"[summary-prompts] Errore scrittura struttura migrata: {e}")
 
@@ -270,7 +280,7 @@ def load_summary_prompts() -> dict:
             data = json.loads(SUMMARY_PROMPTS_JSON.read_text(encoding='utf-8'))
             # Validazione minima
             if not isinstance(data, dict) or 'prompts' not in data:
-                raise ValueError('Struttura SUMMARY_PROMPTS.json non valida')
+                raise ValueError('Struttura summary_prompts.json non valida')
             return data
     except Exception as e:
         logging.error(f"[summary-prompts] Errore load: {e}")
@@ -287,7 +297,11 @@ def load_summary_prompt() -> str:
     for p in data.get('prompts', []):
         if p.get('id') == active:
             txt = p.get('text', DEFAULT_SUMMARY_TEXT)
-            return txt or DEFAULT_SUMMARY_TEXT
+            final_text = txt or DEFAULT_SUMMARY_TEXT
+            print(f"[DEBUG] Loaded summary prompt id='{active}' length={len(final_text)}")
+            print(f"[DEBUG] Summary prompt preview: {final_text[:200]}...")
+            return final_text
+    print(f"[DEBUG] No active summary prompt found, using default")
     return DEFAULT_SUMMARY_TEXT
 
 def save_summary_prompt(text: str) -> None:
@@ -345,13 +359,16 @@ def delete_summary_prompt(prompt_id: str) -> None:
 
 def reset_summary_prompt_from_seed() -> str:
     """Reset basato su seed file, sostituisce (o crea) il prompt 'default' e lo rende attivo."""
-    seed_file = SEED_DIR / 'SUMMARY_PROMPT.md'
+    seed_candidates = [
+        SEED_DIR / 'summary_prompt.md'
+    ]
+    seed_file = next((p for p in seed_candidates if p.exists()), None)
     text = DEFAULT_SUMMARY_TEXT
-    if seed_file.exists():
+    if seed_file and seed_file.exists():
         try:
             text = seed_file.read_text(encoding='utf-8')
         except Exception as e:
-            logging.warning(f"[summary-prompts] Errore lettura seed per reset: {e}")
+            logging.warning(f"[summary-prompts] Errore lettura seed per reset (%s): %s", seed_file, e)
     data = load_summary_prompts()
     # Cerca default
     found = False

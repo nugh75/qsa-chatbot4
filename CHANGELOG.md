@@ -2,15 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
-## v0.5.1 - 2025-09-01
+## v0.5.2 - 2025-09-01
+
+### Added
+- Pulsante icona "Guida Admin" nella toolbar del pannello amministrazione (accesso rapido alla documentazione).
+- Guida Amministratore completa (21 sezioni) con istruzioni per ogni tab: Provider, Prompt, Personalità, Pipeline Regex, Contenuti, RAG, RAG Admin, Feedback, Usage, Utenti, Dispositivi, Welcome/Guide, Log, Sicurezza, Performance, SOP, Troubleshooting, Checklist, Roadmap, Convenzioni.
+- Funzionalità guida: indice (TOC) sticky con evidenziazione sezione attiva (scroll spy), ricerca interna full‑text con highlight dinamico, controllo dimensione caratteri (+ / − / reset), anchor id generati per ogni heading tramite plugin slug locale.
+- Evidenziazione risultati ricerca con stile dedicato e reset pulito al cambio query.
 
 ### Changed
-- **Frontend**: The "Topic e Fonti" (Topics and Sources) section in the chat is now collapsible to improve user experience.
-- **Frontend**: The "Topic e Fonti" section now displays document IDs instead of filenames, providing a clearer reference to the source documents.
-- **Backend**: Removed the automatic "Fonti consultate" (Sources consulted) section that was appended to the chatbot's response when no explicit citations were found. This gives more control over the output.
+- Migliorata leggibilità guida: contrasto, larghezza massima contenuto, spaziatura, scala tipografica, stile blockquote e code block uniformati al tema.
+- Chat/Arena nella toolbar admin passati a pulsanti solo icona (UI più compatta).
+- Sostituita dipendenza esterna di slug remark (versione problematica) con implementazione interna leggera per stabilizzare build e rimuovere warning tipizzazione.
 
 ### Fixed
-- **Frontend**: The list of sources now correctly displays unique document IDs, sorted by relevance, and no longer shows individual data chunks.
+- Il pulsante Guida inizialmente non apriva il contenuto (rimosso meccanismo di evento personalizzato in favore di stato locale diretto).
+- Errori di build dovuti a versione non risolvibile del plugin heading slug esterno (risolti eliminando la dipendenza e introducendo plugin locale).
+- Evitati duplicati di wrapper/fragment che causavano errore JSX nella prima integrazione del dialog.
+
+### Technical Notes
+- Il plugin locale genera id normalizzando testo heading (minuscolo, sostituzione spazi/punteggiatura) senza introdurre nuove dipendenze.
+- La guida root `ADMIN_GUIDE.md` ora è la fonte primaria; la copia in storage viene sovrascritta su mtime più recente.
+
+### IT (Sintesi)
+- Aggiunta guida amministratore completa con TOC, ricerca, highlight, zoom font.
+- Migliorata leggibilità e stabilizzata toolchain (rimosso plugin slug esterno).
+- Risolto problema apertura dialog guida.
+
+### EN (Brief)
+- Added full Admin Guide with sticky TOC, search highlighting, font scaling.
+- Improved readability & removed external slug plugin for stable builds.
+- Fixed guide dialog open logic.
+
+### Next (Ideas)
+- Deep linking via URL hash + pulsante copia link heading.
+- Persistenza scala font e ultima query (localStorage).
+- Esportazione PDF / stampa ottimizzata (CSS print styles).
+- Accessibilità: ARIA landmarks e annunci live per risultati ricerca.
+
+### Tag & Release
+Esempio comandi (aggiorna branch/tag se necessario):
+```
+git add CHANGELOG.md ADMIN_GUIDE.md
+git commit -m "chore: release v0.5.2"
+git tag -a v0.5.2 -m "Release v0.5.2"
+git push origin HEAD --tags
+```
+
+## v0.5.1 - 2025-09-01
+
+### Added
+- RAG source downloads with `download_url` and original filename exposure.
+- Chunk labels (`chunk_label`) surfaced in both streaming and non-stream chat responses.
+- Unified `source_docs` message payload replacing legacy separate arrays.
+- Document preview dialog fed by aggregated chunks via `doc://` links.
+- Markdown normalization + `remark-breaks` for soft line breaks and improved formatting of the sources metadata blocks.
+
+### Changed
+- Removed all emoji decorations in frontend; standardized on SVG (MUI) icons.
+- Updated docs (AGENTS, ISTRUZIONI, ARCHITECTURE) bilingual sections (EN first then IT).
+
+### Fixed
+- Missing propagation of chunk metadata in streaming responses.
+- Inconsistent clickable source filenames due to absent `stored_filename` mapping.
+
+### Migration Notes
+- Frontend now expects `message.source_docs?.rag_chunks` not legacy `rag_results`.
+- Update any external integrations consuming chat JSON accordingly.
+
+### IT (Sintesi)
+- Aggiunti download fonti RAG, etichette chunk, normalizzazione Markdown, rimosse emoji.
+- Unificato `source_docs`; corretti metadata mancanti nello streaming.
 
 ## v0.5.0 - 2025-08-31
 
@@ -173,4 +235,3 @@ git push origin master --tags
 - To push this release and tag to your remote:
   - `git push origin master --tags`
 - If running in dev, start backend and frontend as usual, then open `/admin` and login with an admin user.
-

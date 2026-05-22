@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: help deps pre-commit-install backend frontend dev stop test docker-up docker-down docker-rebuild docker-rebuild-clean docker-rebuild-models lint format models
+.PHONY: help deps pre-commit-install backend frontend dev stop test docker-up docker-down docker-rebuild lint format models
 
 help:
 	@echo "Common tasks:"
@@ -11,11 +11,9 @@ help:
 	@echo "  make dev                 # Start both via ./start.sh"
 	@echo "  make stop                # Stop both via ./stop.sh"
 	@echo "  make test                # Run API+DB test script"
-	@echo "  make docker-up           # docker-compose up --build"
-	@echo "  make docker-down         # docker-compose down"
-	@echo "  make docker-rebuild      # Rebuild containers without cache"
-	@echo "  make docker-rebuild-clean # Full clean rebuild (down -v, prune, no models)"
-	@echo "  make docker-rebuild-models # Full clean rebuild (down -v, prune, WITH models)"
+	@echo "  make docker-up INSTANCE=pef     # build + up -d istanza (default pef)"
+	@echo "  make docker-down INSTANCE=pef   # ferma istanza"
+	@echo "  make docker-rebuild INSTANCE=pef # rebuild senza cache + up -d"
 	@echo "  make lint                # Run pre-commit on all files"
 	@echo "  make format              # Format Python and Frontend sources"
  	@echo "  make models              # Download Whisper/Piper/Embeddings models"
@@ -46,20 +44,17 @@ stop:
 test:
 	python3 test_chat_save.py
 
+# Istanza target (override: make docker-up INSTANCE=poggi)
+INSTANCE ?= pef
+
 docker-up:
-	docker-compose up --build
+	cd instances/$(INSTANCE) && docker compose up --build -d
 
 docker-down:
-	docker-compose down
+	cd instances/$(INSTANCE) && docker compose down
 
 docker-rebuild:
-	docker-compose build --no-cache && docker-compose up
-
-docker-rebuild-clean:
-	./rebuild_docker.sh
-
-docker-rebuild-models:
-	./rebuild_docker.sh --models
+	cd instances/$(INSTANCE) && docker compose build --no-cache && docker compose up -d
 
 lint:
 	pre-commit run --all-files

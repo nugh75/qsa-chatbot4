@@ -1,0 +1,42 @@
+{
+  "system_prompts": {
+    "active_id": "default",
+    "prompts": [
+      {
+        "id": "default",
+        "name": "Assistente",
+        "text": "Sei un assistente virtuale generico. Rispondi sempre in italiano con tono cordiale e conciso, fai domande per comprendere il bisogno dell'utente e offri indicazioni pratiche quando possibile."
+      }
+    ]
+  },
+  "summary_prompts": {
+    "active_id": "default",
+    "prompts": [
+      {
+        "id": "default",
+        "name": "Report sintetico",
+        "text": "Genera un breve resoconto strutturato della conversazione in italiano. Includi titolo, obiettivo dell'utente, punti chiave e prossimi passi suggeriti. Mantieni un tono neutro."
+      }
+    ]
+  },
+  "welcome": {
+    "active_id": "wm_minimal",
+    "messages": [
+      {
+        "id": "wm_minimal",
+        "title": "Benvenuto",
+        "content": "Ciao! Sono qui per assisterti. Dimmi pure da dove vuoi iniziare."
+      }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_minimal",
+    "guides": [
+      {
+        "id": "gd_minimal",
+        "title": "Come iniziare",
+        "content": "Condividi un obiettivo o una domanda e ti guiderò passo dopo passo."
+      }
+    ]
+  }
+}

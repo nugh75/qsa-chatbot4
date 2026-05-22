@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import type { PersonalityEntry } from './types/admin'
-import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText } from '@mui/material'
+import type { PersonalityEntry, SystemPromptEntry } from './types/admin'
+import type Msg from './types/message'
+import type { SourceDocs } from './types/message'
+import { Container, Box, Paper, Typography, TextField, IconButton, Stack, Select, MenuItem, Avatar, Tooltip, Drawer, Button, Alert, Dialog, DialogTitle, DialogContent, DialogActions, Collapse, Card, CardContent, Chip, FormControl, CircularProgress, Link, Menu, ListItemIcon, ListItemText, LinearProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import PersonIcon from '@mui/icons-material/Person'
-// VolumeUpIcon removed from inline usage (handled by HeaderBar)
 import MicIcon from '@mui/icons-material/Mic'
 import StopIcon from '@mui/icons-material/Stop'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
@@ -31,23 +32,31 @@ import LoginDialog from './components/LoginDialog'
 import FileUpload, { ProcessedFile } from './components/FileUpload'
 import FileManagerCompact from './components/FileManagerCompact'
 import ChatToolbar from './components/ChatToolbar'
+import FormRunnerDialog from './components/FormRunnerDialog'
+import FormResultRenderer from './components/FormResultRenderer'
 import VoiceRecordingAnimation from './components/VoiceRecordingAnimation'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import { CredentialManager } from './crypto'
 import { createApiService } from './types/api'
-import NewRAGAdminPanel from './components/NewRAGAdminPanel'
+import { apiService } from './apiService'
+import AdminPanel from './AdminPanel'
 import { ThemeProvider } from '@mui/material/styles'
 import { appTheme } from './theme'
 import RAGContextSelector from './components/RAGContextSelector'
 import SurveyForm from './SurveyForm'
-// (SurveyLink rimosso: inline link custom)
 import SurveyResults from './SurveyResults'
+import { QualitativeFeedbackDialog } from './components/QualitativeFeedbackDialog'
 import { authFetch } from './utils/authFetch'
 import ReactMarkdown from 'react-markdown'
+import { prepareChatMarkdown, toPlainText } from './utils/markdownPipeline'
+import { buildDocumentAggregate, detectPreviewType, fetchTextTruncated, normalizeDocName } from './utils/ragPreview'
+import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import { useTheme, useMediaQuery } from '@mui/material'
 import MobileChatBar from './components/MobileChatBar'
 import HeaderBar from './components/HeaderBar'
 import SiteFooter from './components/SiteFooter'
+import PdfViewer from './components/PdfViewer'
 
 // Tipo minimo per dati estratti (placeholder se non definito altrove)
 type ExtractedData = {
@@ -63,27 +72,20 @@ type RAGResult = {
   similarity?: number
   preview?: string
   content?: string
-  file_url?: string | null
 }
 
-// Nuova struttura fonti consolidata dal backend (source_docs)
-type SourceDocs = {
-  rag_chunks?: { chunk_id?: any; document_id?: any; chunk_index?: number; filename?: string; similarity?: number; preview?: string; content?: string; file_url?: string | null }[]
-  pipeline_topics?: { name: string; description?: string | null }[]
-  rag_groups?: { id: any; name: string }[]
-}
+// SourceDocs moved to shared types (`./types/message`)
 
-type Msg = { 
-  role:'user'|'assistant'|'system', 
-  content:string, 
-  ts:number,
-  topic?: string,
-  // Nuova chiave unificata
-  source_docs?: SourceDocs | null
-  // (Campi legacy rimossi: rag_results, pipeline_topics, rag_group_names)
-}
+/* Msg type imported from ./types/message */
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005')
+
+const createChatSessionId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `session_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
 
 // Componente per box dati estratti espandibile
 const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: number}> = ({extractedData, messageIndex}) => {
@@ -159,7 +161,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
             {extractedData.images && extractedData.images.length > 0 && (
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 'bold', color: '#9c27b0' }}>
-                  🖼️ Descrizioni Immagini
+                  Descrizioni Immagini
                 </Typography>
                 {extractedData.images.map((img: { image_num: number; source: string; full_description: string }, idx: number) => (
                   <Box key={idx} sx={{ mb: 1.5, p: 1.5, bgcolor: '#ffffff', borderRadius: 1, border: '1px solid #e0e0e0' }}>
@@ -182,7 +184,7 @@ const ExtractedDataBox: React.FC<{extractedData: ExtractedData, messageIndex: nu
 
 // Componente App interno che usa AuthContext
 const AppContent: React.FC = () => {
-  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus } = useAuth();
+  const { user, crypto, isAuthenticated, isLoading, login, logout, needsCryptoReauth, mustChangePassword, checkAuthStatus, impersonatedUser, isGuest } = useAuth();
   const [forcePwdOpen, setForcePwdOpen] = useState(false)
   const [forceNewPwd, setForceNewPwd] = useState('')
   const [forceNewPwd2, setForceNewPwd2] = useState('')
@@ -194,28 +196,37 @@ const AppContent: React.FC = () => {
       try { return JSON.parse(saved) }
       catch { localStorage.removeItem('chat_messages') }
     }
-    // Placeholder provvisorio; sarà sostituito se esiste un welcome attivo
-    return [{role:'assistant', content:'Caricamento messaggio di benvenuto…', ts:Date.now()}]
+    // Nessun welcome message - chat vuota all'avvio
+    return []
   })
-  const [welcomeLoaded, setWelcomeLoaded] = useState(false)
+  const [welcomeLoaded, setWelcomeLoaded] = useState(true) // sempre true, welcome disabilitato
   const [activeGuide, setActiveGuide] = useState<string|undefined>()
   const [input,setInput] = useState('')
   const [provider,setProvider] = useState<'local'|'gemini'|'claude'|'openai'|'openrouter'|'ollama'>('local')
   const [personalities, setPersonalities] = useState<PersonalityEntry[]>([])
+  const [systemPromptMap, setSystemPromptMap] = useState<Partial<Record<string, SystemPromptEntry>>>({})
   const [selectedPersonalityId, setSelectedPersonalityId] = useState<string>('')
   const [error,setError] = useState<string|undefined>()
   const [loading,setLoading] = useState(false)
-  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'|'piper'>('edge')
+  const [ttsProvider, setTtsProvider] = useState<'edge'|'elevenlabs'|'openai'|'piper'|'coqui'>('edge')
   const [ttsVoice, setTtsVoice] = useState<string | undefined>(undefined)
   const [playingMessageIndex, setPlayingMessageIndex] = useState<number | null>(null)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
+  // Whisper async model loading states
+  const [whisperModalOpen, setWhisperModalOpen] = useState(false)
+  const [whisperStage, setWhisperStage] = useState<'downloading'|'loading'|null>(null)
+  const [whisperProgress, setWhisperProgress] = useState<number>(0)
+  const [whisperModel, setWhisperModel] = useState<string>('small')
+  const [pendingAudioBlob, setPendingAudioBlob] = useState<Blob|null>(null)
+  const whisperPollRef = React.useRef<number|undefined>(undefined)
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null)
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null)
   const [feedback, setFeedback] = useState<{[key: number]: 'like' | 'dislike'}>({})
   const [copiedMessage, setCopiedMessage] = useState<number | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [chatSessionId, setChatSessionId] = useState<string>(() => createChatSessionId())
   const [showLoginDialog, setShowLoginDialog] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
@@ -235,6 +246,13 @@ const AppContent: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingAssistantIndex, setStreamingAssistantIndex] = useState<number | null>(null)
   const [showSurvey, setShowSurvey] = useState(false)
+  const [showQualitativeFeedback, setShowQualitativeFeedback] = useState(false)
+  const [showAttachments, setShowAttachments] = useState(false)
+  const [showFormDialog, setShowFormDialog] = useState(false)
+  const [targetFormId, setTargetFormId] = useState<string|null>(null)
+  const [showLoginBanner, setShowLoginBanner] = useState(true)
+  // Traccia file già annunciati in chat per non duplicare il riepilogo
+  const announcedUploadIdsRef = React.useRef<Set<string>>(new Set())
   const theme = useTheme()
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
   const isVerySmall = useMediaQuery('(max-width:420px)')
@@ -248,68 +266,302 @@ const AppContent: React.FC = () => {
   const [previewType, setPreviewType] = useState<'pdf' | 'markdown' | 'text' | null>(null)
   const [previewTitle, setPreviewTitle] = useState<string>('')
   const [previewContent, setPreviewContent] = useState<string>('')
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null) // object URL for pdf
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null) // object URL for inline rendering (e.g. PDF blob)
+  const [previewSourceHref, setPreviewSourceHref] = useState<string | null>(null)
+  const [previewDownloadName, setPreviewDownloadName] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewAllowDownload, setPreviewAllowDownload] = useState<boolean>(true)
+  const [previewAllowPreview, setPreviewAllowPreview] = useState<boolean>(true)
+
+  const buildAuthRequestInit = (init?: RequestInit): RequestInit => {
+    const token = CredentialManager.getAccessToken()
+    const headers = new Headers(init?.headers || {})
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+    return {
+      ...init,
+      headers,
+      credentials: init?.credentials ?? 'include'
+    }
+  }
+
+  const fetchWithAuth = (url: string, init?: RequestInit) => fetch(url, buildAuthRequestInit(init))
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewMode, setPreviewMode] = useState<'aggregated' | 'original'>('aggregated')
+  const previewAggregateRef = React.useRef<{ type: typeof previewType; content: string; url: string | null } | null>(null)
+  const previewOriginalRef = React.useRef<{ type: typeof previewType; content: string; url: string | null } | null>(null)
   // Filtro similarità minima per visualizzare chunk/documenti (0 = disattivato)
   const [minRagSimilarity, setMinRagSimilarity] = useState<number>(0)
 
-  // Build aggregated content for a document name from rag chunks
-  const normalizeDocName = (raw: string): string => {
-    return raw
-      .toLowerCase()
-      .replace(/%20/g,' ')
-      .replace(/[\s_-]+/g,' ') // uniforma separatori
-      .replace(/\.pdf$|\.md$|\.markdown$|\.txt$/,'')
-      .trim()
-  }
-  const buildDocumentAggregate = (name: string, ragChunks?: SourceDocs['rag_chunks']): string => {
-    if (!ragChunks) return ''
-    const decoded = decodeURIComponent(name)
-    const target = normalizeDocName(decoded)
-    const related = ragChunks.filter(c => {
-      const fn = c.filename || ''
-      const base = fn.split('/').pop() || fn
-      const cleaned = normalizeDocName(base.split('_').pop() || base)
-      return cleaned && (cleaned === target || cleaned.includes(target) || target.includes(cleaned))
-    })
-    if (!related.length) return ''
-    related.sort((a,b)=> (a.chunk_index||0) - (b.chunk_index||0))
-    return related.map(c => `### Chunk ${c.chunk_index}\n${c.content || c.preview || ''}` ).join('\n\n')
+  useEffect(() => {
+    if ((!isAuthenticated && !isGuest) || !user?.is_admin) {
+      setSystemPromptMap({})
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { apiService } = await import('./apiService')
+        const res = await apiService.listSystemPrompts()
+        if (!cancelled && res.success && res.data) {
+          const entries = Array.isArray(res.data.prompts) ? res.data.prompts : []
+          const map: Partial<Record<string, SystemPromptEntry>> = {}
+          entries.forEach(entry => {
+            if (entry && entry.id) {
+              map[entry.id] = entry
+            }
+          })
+          setSystemPromptMap(map)
+        }
+      } catch {
+        if (!cancelled) {
+          setSystemPromptMap({})
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, user?.is_admin])
+
+  // Build aggregated content for a document name from rag chunks (moved to utils)
+
+  // (doc:// link injection is handled by prepareChatMarkdown)
+
+  const buildDispositionHref = (href: string, disposition: 'inline' | 'attachment') => {
+    try {
+      const url = new URL(href, window.location.origin)
+      url.searchParams.set('disposition', disposition)
+      if (typeof window !== 'undefined' && url.origin === window.location.origin) {
+        return url.pathname + url.search + url.hash
+      }
+      return url.toString()
+    } catch {
+      const cleaned = href
+        .replace(/([?&])disposition=[^&#]*/g, '$1')
+        .replace(/&&+/g, '&')
+        .replace(/\?&/, '?')
+        .replace(/[?&]$/, '')
+      const separator = cleaned.includes('?') ? '&' : '?'
+      return `${cleaned}${separator}disposition=${disposition}`
+    }
   }
 
-  // Inject links for bare [📄 filename] citations (no existing (url))
-  const injectDocLinks = (md: string, ragChunks?: SourceDocs['rag_chunks']): string => {
-    if (!md) return md
-    const normSet = new Set((ragChunks||[]).map(c => {
-      const fn = c.filename || ''
-      const base = fn.split('/').pop() || fn
-      return normalizeDocName(base.split('_').pop() || base)
-    }))
-    return md.replace(/\[📄\s+([^\]\(]+?)\](?!\()/g, (match, inner) => {
-      const raw = inner.trim()
-      const norm = normalizeDocName(raw)
-      const has = Array.from(normSet).some(f => f && (f === norm || f.includes(norm) || norm.includes(f)))
-      if (!has) return match
-      return `[📄 ${raw}](doc://${encodeURIComponent(raw)})`
-    })
+  const isExternalHref = (href: string) => {
+    try {
+      const url = new URL(href, window.location.origin)
+      return url.origin !== window.location.origin
+    } catch {
+      return false
+    }
+  }
+
+  const handleDownloadOriginal = async () => {
+    if (!previewSourceHref) return
+    if (isExternalHref(previewSourceHref)) {
+      window.open(previewSourceHref, '_blank', 'noopener')
+      return
+    }
+    const targetHref = previewAllowDownload
+      ? buildDispositionHref(previewSourceHref, 'attachment')
+      : buildDispositionHref(previewSourceHref, 'inline')
+    try {
+      const response = await fetchWithAuth(targetHref)
+      if (!response.ok) {
+        if (response.status === 403) {
+          setPreviewError('Accesso non consentito per questo documento')
+          return
+        }
+        if (response.status === 401) {
+          setPreviewError('Autenticazione richiesta per scaricare il documento')
+          return
+        }
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      if (previewAllowDownload) {
+        const anchor = document.createElement('a')
+        anchor.href = objectUrl
+        anchor.target = '_blank'
+        anchor.rel = 'noopener'
+        anchor.download = (previewDownloadName || 'documento').replace(/\s+/g, '_')
+        document.body.appendChild(anchor)
+        anchor.click()
+        document.body.removeChild(anchor)
+      } else {
+        window.open(objectUrl, '_blank', 'noopener')
+      }
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 5000)
+    } catch (err: any) {
+      console.warn('[preview] fallback download', err)
+      if (err?.message?.includes('HTTP')) {
+        setPreviewError(err.message)
+      } else {
+        window.open(targetHref, '_blank')
+      }
+    }
+  }
+
+  const showAggregatedSnapshot = () => {
+    const snapshot = previewAggregateRef.current
+    if (!snapshot) return
+    setPreviewType(snapshot.type)
+    setPreviewContent(snapshot.content)
+    setPreviewUrl(snapshot.url || null)
+    setPreviewMode('aggregated')
+    setPreviewLoading(false)
+  }
+
+  const handleViewOriginal = async () => {
+    if (!previewSourceHref) return
+    if (isExternalHref(previewSourceHref)) {
+      window.open(previewSourceHref, '_blank', 'noopener')
+      return
+    }
+    if (!previewAllowPreview) {
+      setPreviewError('Anteprima originale non consentita per questo documento')
+      return
+    }
+    if (!previewAggregateRef.current) {
+      previewAggregateRef.current = {
+        type: previewType,
+        content: previewContent,
+        url: previewUrl
+      }
+    }
+    if (previewOriginalRef.current) {
+      const cached = previewOriginalRef.current
+      setPreviewType(cached.type)
+      setPreviewContent(cached.content)
+      setPreviewUrl(cached.url || null)
+      setPreviewMode('original')
+      setPreviewError(null)
+      return
+    }
+
+    setPreviewMode('original')
+    setPreviewLoading(true)
+    setPreviewError(null)
+
+    try {
+      const inlineHref = buildDispositionHref(previewSourceHref, 'inline')
+      const type = detectPreviewType(previewSourceHref)
+      let content = ''
+      let objectUrl: string | null = null
+      if (type === 'pdf') {
+        const res = await fetchWithAuth(inlineHref)
+        if (!res.ok) {
+          if (res.status === 403) {
+            setPreviewError('Anteprima non consentita per questo documento')
+            showAggregatedSnapshot()
+            return
+          }
+          throw new Error(`HTTP ${res.status}`)
+        }
+        const blob = await res.blob()
+        objectUrl = URL.createObjectURL(blob)
+        setPreviewUrl(objectUrl)
+        setPreviewContent('')
+      } else {
+        content = await fetchTextTruncated(inlineHref, 200*1024, buildAuthRequestInit())
+        setPreviewContent(content)
+        setPreviewUrl(null)
+      }
+      setPreviewType(type)
+      previewOriginalRef.current = { type, content, url: objectUrl }
+    } catch (err: any) {
+      console.warn('[preview] errore caricamento originale', err)
+      setPreviewError(err?.message || 'Errore durante il caricamento del file originale')
+      showAggregatedSnapshot()
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  const handleBackToAggregated = () => {
+    showAggregatedSnapshot()
   }
 
   const openPreviewForLink = async (href: string, title: string, ragChunksForContext?: SourceDocs['rag_chunks']) => {
     console.debug('[preview] openPreviewForLink', { href, title, chunkCount: ragChunksForContext?.length })
+    const downloadMatch = href.match(/\/api\/rag\/download\/([^/?#]+)/)
+    const isDocProtocol = href.startsWith('doc://')
+    setPreviewMode(isDocProtocol ? 'aggregated' : 'original')
+    if (previewAggregateRef.current?.url) {
+      URL.revokeObjectURL(previewAggregateRef.current.url)
+    }
+    previewAggregateRef.current = null
+    if (previewOriginalRef.current?.url) {
+      URL.revokeObjectURL(previewOriginalRef.current.url)
+    }
+    previewOriginalRef.current = null
+    if (!href.startsWith('doc://') && downloadMatch && ragChunksForContext && ragChunksForContext.length) {
+      const docId = decodeURIComponent(downloadMatch[1])
+      const relatedChunk = ragChunksForContext.find(c => c.document_id !== undefined && String(c.document_id) === docId)
+      if (relatedChunk && relatedChunk.filename) {
+        const derivedTitle = relatedChunk.filename.split('/').pop() || relatedChunk.filename
+        const proxyHref = `doc://${encodeURIComponent(derivedTitle)}`
+        await openPreviewForLink(proxyHref, derivedTitle, ragChunksForContext)
+        return
+      }
+    }
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl)
       setPreviewUrl(null)
     }
     setPreviewOpen(true)
-    setPreviewTitle(title || href)
+    const safeTitle = title || href
+    setPreviewTitle(safeTitle)
+    setPreviewSourceHref(null)
+    setPreviewAllowDownload(true)
+    setPreviewAllowPreview(true)
+    const deriveDownloadName = () => {
+      if (!href) return safeTitle
+      if (href.startsWith('doc://')) {
+        return decodeURIComponent(href.slice('doc://'.length)) || safeTitle
+      }
+      try {
+        const url = new URL(href, window.location.origin)
+        const segments = url.pathname.split('/').filter(Boolean)
+        if (segments.length) return decodeURIComponent(segments[segments.length - 1])
+      } catch {
+        /* ignore parse errors */
+      }
+      return safeTitle
+    }
+    setPreviewDownloadName(deriveDownloadName())
     setPreviewLoading(true)
     setPreviewError(null)
     setPreviewContent('')
     try {
-      if (href.startsWith('doc://')) {
+      if (isDocProtocol) {
         const name = href.slice('doc://'.length)
         const agg = buildDocumentAggregate(name, ragChunksForContext)
+        const normalizedTarget = normalizeDocName(decodeURIComponent(name))
+        if (ragChunksForContext && ragChunksForContext.length) {
+          const relatedChunk = ragChunksForContext.find(c => {
+            const fn = c.filename || ''
+            const base = fn.split('/').pop() || fn
+            const cleanedFull = normalizeDocName(base)
+            const cleanedPartial = normalizeDocName(base.split('_').pop() || base)
+            return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === normalizedTarget || cleaned.includes(normalizedTarget) || normalizedTarget.includes(cleaned)))
+          })
+          if (relatedChunk) {
+            const originalUrl = relatedChunk.original_filename
+            const fallbackUrl = relatedChunk.filename
+            const hasOriginalUrl = typeof originalUrl === 'string' && /^https?:\/\//i.test(originalUrl)
+            const hasFallbackUrl = typeof fallbackUrl === 'string' && /^https?:\/\//i.test(fallbackUrl)
+            const candidateHref = relatedChunk.download_url || (relatedChunk.document_id ? `/api/rag/download/${relatedChunk.document_id}` : null)
+            const finalHref = hasOriginalUrl ? originalUrl : (hasFallbackUrl ? fallbackUrl : candidateHref)
+            if (finalHref) {
+              setPreviewSourceHref(finalHref)
+              setPreviewAllowDownload(relatedChunk.allow_download !== false)
+              setPreviewAllowPreview(relatedChunk.allow_preview !== false)
+            }
+          }
+        }
         if (!agg) {
           // Fallback: mostra elenco chunk candidati per debug
           const candidates = (ragChunksForContext||[]).filter(c=>{
@@ -318,32 +570,36 @@ const AppContent: React.FC = () => {
             const cleaned = normalizeDocName(base.split('_').pop() || base)
             return cleaned.includes(normalizeDocName(decodeURIComponent(name)))
           })
+          const fallbackContent = `# ${decodeURIComponent(name)}\n\nNessun aggregato completo trovato.\n\nChunk candidati trovati: ${candidates.length}\n\n` + candidates.map(c=>`### Chunk ${c.chunk_index} (${c.filename})\n${c.preview || c.content || '(vuoto)'}\n`).join('\n')
           setPreviewType('markdown')
-          setPreviewContent(`# ${decodeURIComponent(name)}\n\nNessun aggregato completo trovato.\n\nChunk candidati trovati: ${candidates.length}\n\n` + candidates.map(c=>`### Chunk ${c.chunk_index} (${c.filename})\n${c.preview || c.content || '(vuoto)'}\n`).join('\n'))
+          setPreviewContent(fallbackContent)
+          previewAggregateRef.current = { type: 'markdown', content: fallbackContent, url: null }
         } else {
+          const aggregateContent = `# ${decodeURIComponent(name)}\n\n${agg}`
           setPreviewType('markdown')
-          setPreviewContent(`# ${decodeURIComponent(name)}\n\n${agg}`)
+          setPreviewContent(aggregateContent)
+          previewAggregateRef.current = { type: 'markdown', content: aggregateContent, url: null }
         }
       } else {
-        const lower = href.toLowerCase()
-        let type: 'pdf' | 'markdown' | 'text' = 'text'
-        if (lower.endsWith('.pdf')) type = 'pdf'
-        else if (lower.endsWith('.md') || lower.endsWith('.markdown')) type = 'markdown'
-        else if (lower.endsWith('.txt')) type = 'text'
-        else if (/\/api\/rag\/download\//.test(href)) type = 'pdf'
+        const type = detectPreviewType(href)
         setPreviewType(type)
-        const res = await fetch(href)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setPreviewSourceHref(href)
+        let objectUrl: string | null = null
+        let content = ''
         if (type === 'pdf') {
+          const res = await fetchWithAuth(href)
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
+          objectUrl = url
           setPreviewUrl(url)
+          setPreviewContent('')
         } else {
-          const text = await res.text()
-          const max = 200 * 1024
-          const truncated = text.length > max ? text.slice(0, max) + '\n\n[contenuto troncato]' : text
-          setPreviewContent(truncated)
+          content = await fetchTextTruncated(href, 200*1024, buildAuthRequestInit())
+          setPreviewContent(content)
+          setPreviewUrl(null)
         }
+        previewOriginalRef.current = { type, content, url: objectUrl }
       }
     } catch (e: any) {
       console.warn('[preview] error', e)
@@ -359,83 +615,31 @@ const AppContent: React.FC = () => {
       URL.revokeObjectURL(previewUrl)
       setPreviewUrl(null)
     }
+    if (previewOriginalRef.current?.url) {
+      URL.revokeObjectURL(previewOriginalRef.current.url)
+    }
+    previewOriginalRef.current = null
+    if (previewAggregateRef.current?.url) {
+      URL.revokeObjectURL(previewAggregateRef.current.url)
+    }
+    previewAggregateRef.current = null
+    setPreviewMode('aggregated')
     setPreviewType(null)
     setPreviewContent('')
     setPreviewError(null)
+    setPreviewSourceHref(null)
+    setPreviewDownloadName(null)
   }
 
   // Helpers markdown (reinserted here so they're in scope before usage)
-  const sanitizeMarkdownToPlainText = (input: string): string => {
-    let text = input
-    text = text.replace(/```[\s\S]*?```/g, ' ')
-    text = text.replace(/`([^`]+)`/g, '$1')
-    text = text.replace(/!\[([^\]]*)\]\([^\)]*\)/g, '$1')
-    text = text.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '$1')
-    text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    text = text.replace(/^\s{0,3}>\s?/gm, '')
-    text = text.replace(/^\s{0,3}[-*+]\s+/gm, '')
-    text = text.replace(/^\s{0,3}\d+\.\s+/gm, '')
-    text = text.replace(/^\s*\|?\s*:?[-]{2,}:?\s*(\|\s*:?[-]{2,}:?\s*)+\|?\s*$/gm, '')
-    text = text.replace(/^\s*[-]{3,}\s*$/gm, '')
-    text = text.replace(/\|/g, ' • ')
-    text = text.replace(/<[^>]+>/g, '')
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1')
-    text = text.replace(/\*([^*]+)\*/g, '$1')
-    text = text.replace(/__([^_]+)__/g, '$1')
-    text = text.replace(/_([^_]+)_/g, '$1')
-    text = text.replace(/[ \t\f\v]+/g, ' ')
-    text = text.replace(/\n{3,}/g, '\n\n')
-    return text.trim()
-  }
+  // (plain-text conversion moved to utils/markdownPipeline.ts)
 
-  const normalizeMarkdownForDisplay = (md: string): string => {
-    if (!md) return md
-    let out = md.replace(/```[a-zA-Z]*\n([\s\S]*?)\n```/g, (match, inner) => {
-      const lines = inner.split('\n')
-      for (let i = 0; i < lines.length - 1; i++) {
-        if (lines[i].includes('|')) {
-          const sep = lines[i + 1]?.trim() || ''
-          if (/^[:\-| ]+$/.test(sep) && sep.includes('-')) {
-            return inner
-          }
-        }
-      }
-      return match
-    })
-    const lines = out.split('\n')
-    const converted: string[] = []
-    for (let i = 0; i < lines.length; i++) {
-      const cur = lines[i]
-      const nxt = lines[i + 1] || ''
-      if (/^\s*-{2,}(?:\s+-{2,})+\s*$/.test(nxt)) {
-        const headers = cur.trim().split(/\s{2,}/).filter(Boolean)
-        const seps = nxt.trim().split(/\s{2,}/).filter(Boolean)
-        if (headers.length >= 2 && seps.length === headers.length) {
-          const headerRow = `| ${headers.join(' | ')} |`
-          const sepRow = `| ${seps.map(() => '---').join(' | ')} |`
-          const bodyRows: string[] = []
-          let j = i + 2
-          while (j < lines.length) {
-            const row = lines[j]
-            if (!row.trim()) break
-            const cols = row.trim().split(/\s{2,}/).filter(Boolean)
-            if (cols.length === headers.length) {
-              bodyRows.push(`| ${cols.join(' | ')} |`)
-              j++
-            } else {
-              break
-            }
-          }
-          converted.push(headerRow, sepRow, ...bodyRows)
-          i = j - 1
-          continue
-        }
-      }
-      converted.push(cur)
-    }
-    out = converted.join('\n')
-    return out
-  }
+  // (markdown normalization handled by utils/markdownPipeline.ts)
+
+  // Migliora ulteriormente le tabelle markdown:
+  // - Aggiunge riga separatrice se manca (caso: modello produce solo header + righe dati senza ---)
+  // - Normalizza spazi superflui attorno alle pipes
+  
 
   // Provider mappings
   const providerLabels: Record<string, string> = {
@@ -451,7 +655,8 @@ const AppContent: React.FC = () => {
     'edge': 'Edge',
     'elevenlabs': 'ElevenLabs',
     'openai': 'OpenAI',
-    'piper': 'Piper'
+    'piper': 'Piper',
+    'coqui': 'Coqui'
   }
 
   const asrLabels: Record<string, string> = {
@@ -460,10 +665,25 @@ const AppContent: React.FC = () => {
   }
   useEffect(()=>{ localStorage.setItem('chat_messages', JSON.stringify(messages)) },[messages])
 
+  // (Removed) previously used DOM event flow for structured form results. FormRunnerDialog now calls back via onPostStructured.
+
+  // (Rimossa) Bolla iniziale "Ho caricato X file" – manteniamo solo il riepilogo dettagliato
+
   // Avatar assistente: fisso (rimuoviamo avatar legati alla personalità)
   // Avatar dinamico: se personalità ha avatar_url usa quello, altrimenti fallback statico
   const selectedPersonality = personalities.find(p=> p.id === selectedPersonalityId)
   const assistantAvatarSrc = selectedPersonality?.avatar_url || '/volto.png'
+  const adminPersonalityInfo = React.useMemo(() => {
+    if (!user?.is_admin || !selectedPersonality) return null
+    const promptId = selectedPersonality.system_prompt_id || ''
+    const promptEntry = promptId ? systemPromptMap[promptId] : undefined
+    const provider = selectedPersonality.provider || '-'
+    const model = selectedPersonality.model || '-'
+    const promptName = promptEntry?.name || promptId || '-'
+    const textRaw = promptEntry?.text?.trim()
+    const promptText = textRaw && textRaw.length > 0 ? promptEntry?.text || '-' : '-'
+    return { provider, model, systemPromptName: promptName || '-', systemPromptText: promptText }
+  }, [selectedPersonality, systemPromptMap, user?.is_admin])
 
   // Carica configurazione pubblica e welcome/guide attivi
   useEffect(() => {
@@ -498,29 +718,15 @@ const AppContent: React.FC = () => {
             setAsrProvider(defAsr as any)
           }
         }
-        // Fetch welcome + guide attivi (solo se non già persistiti in localStorage o non caricati)
-        try {
-          const wg = await apiService.getPublicWelcomeGuide()
-          if (wg.success && wg.data) {
-            const welcomeText = wg.data.welcome?.content
-            const guideText = wg.data.guide?.content
-            setActiveGuide(guideText)
-            setMessages(prev => {
-              // Se l'utente ha già iniziato una conversazione non sovrascrivere
-              if (prev.length > 1 || (prev[0] && prev[0].content && prev[0].content !== 'Caricamento messaggio di benvenuto…')) return prev
-              if (welcomeText) {
-                return [{ role:'assistant', content: welcomeText, ts: Date.now() }]
-              }
-              return prev
-            })
-          }
-        } catch(e){ /* ignora */ }
+        // Welcome message disabilitato - nessun messaggio di benvenuto
         // Load personalities after config
         const pers = await apiService.getPersonalities()
         if (pers.success && pers.data) {
           setPersonalities(pers.data.personalities || [])
           const defId = pers.data.default_id || (pers.data.personalities?.[0]?.id || '')
-          if (defId) setSelectedPersonalityId(defId)
+          if (defId) {
+            setSelectedPersonalityId(defId)
+          }
           // If a default personality exists, prefer its provider
           const def = (pers.data.personalities || []).find(p => p.id === defId)
           if (def && response?.data?.enabled_providers?.includes(def.provider)) {
@@ -532,19 +738,13 @@ const AppContent: React.FC = () => {
           if (def?.tts_voice) {
             setTtsVoice(def.tts_voice)
           }
-          // Se la chat è allo stato iniziale, sostituisci welcome con quello della personalità
-          if (def && messages.length <= 1 && messages[0].content === 'Caricamento messaggio di benvenuto…') {
-            const welcomeText = def.welcome_message_content || def.welcome_message
-            if (welcomeText) {
-              setMessages([{ role:'assistant', content: welcomeText, ts: Date.now() }])
-            }
-          }
+          // Welcome message disabilitato
         }
       } catch (error) {
         console.error('Error loading config:', error)
       }
     }
-  loadConfig().finally(()=> setWelcomeLoaded(true))
+  loadConfig()
   }, [])
 
   // Disabilitato: non aprire più il dialog di cambio password forzato
@@ -555,23 +755,25 @@ const AppContent: React.FC = () => {
   useEffect(()=>{
     const handler = ()=>{
       localStorage.removeItem('chat_messages')
-      navigator.sendBeacon(`${BACKEND}/api/chat/end-session`)
+      // Invia sessionId per pulire la memoria del backend
+      navigator.sendBeacon(`${BACKEND}/api/chat/end-session?session_id=${encodeURIComponent(chatSessionId)}`)
     }
     window.addEventListener('beforeunload', handler)
     return ()=> window.removeEventListener('beforeunload', handler)
-  },[])
+  },[chatSessionId])
 
   // Funzione di logout personalizzata che azzera l'interfaccia
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    // Prima pulisci la sessione corrente nel backend
+    try {
+      await fetch(`${BACKEND}/api/chat/clear-session?session_id=${encodeURIComponent(chatSessionId)}`, { method: 'POST' })
+    } catch { /* ignore */ }
+
     // Chiama il logout del contesto auth
     logout();
-    
-    // Azzera tutto lo stato dell'interfaccia
-    setMessages([{
-      role: 'assistant', 
-      content: 'Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\n\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\n\nHo visto che hai completato il QSA – che esperienza interessante!\n\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C\'è qualcosa che ti ha colpito o sorpreso nei risultati?', 
-      ts: Date.now()
-    }]);
+
+    // Azzera tutto lo stato dell'interfaccia - chat vuota
+    setMessages([]);
     setInput('');
     setError(undefined);
     setLoading(false);
@@ -585,19 +787,67 @@ const AppContent: React.FC = () => {
     setShowLoginDialog(false);
     setShowSearch(false);
     setAttachedFiles([]);
-    
+
     // Pulisci localStorage
     localStorage.removeItem('chat_messages');
+    setChatSessionId(createChatSessionId());
   };
 
   const handleFilesProcessed = (files: ProcessedFile[]) => {
     setAttachedFiles(files);
   };
 
-  const send = async ()=>{
-    const text = input.trim()
-    if(!text) return
-  const next: Msg[] = [...messages, {role:'user' as const, content:text, ts:Date.now()}]
+  // Quando vengono aggiunti nuovi PDF/TXT, inserisci un messaggio di riepilogo con toggle testo completo
+  useEffect(() => {
+    if (!attachedFiles || attachedFiles.length === 0) return;
+    const newlyAdded = attachedFiles.filter(f => {
+      const already = announcedUploadIdsRef.current.has(f.id)
+      const ft = (f.file_type || '').toLowerCase()
+      return !already && (ft === 'pdf' || ft === 'txt')
+    })
+    if (newlyAdded.length === 0) return;
+    // segna come annunciati
+    newlyAdded.forEach(f => announcedUploadIdsRef.current.add(f.id))
+    // costruisci riepilogo
+    const summary = newlyAdded.map(f => ({ id: f.id, filename: f.filename, size: f.size, file_type: f.file_type, content: f.content || '' }))
+    setMessages(prev => ([
+      ...prev,
+      {
+        role: 'assistant' as const,
+        content: summary.length === 1 ? `Ho elaborato il file «${summary[0].filename}».` : `Ho elaborato ${summary.length} file.`,
+        ts: Date.now(),
+        uploadSummary: summary,
+        __uploadExpanded: {}
+      }
+    ]))
+  }, [attachedFiles])
+
+  const send = async (textOverride?: string)=>{
+    const text = (textOverride || input).trim()
+    if(!text) {
+      return
+    }
+    // Prepara testo combinato da mostrare nella bolla utente (include testo estratto dagli allegati)
+    const attachmentTextParts = (attachedFiles || [])
+      .filter(f => (f && typeof f.content === 'string' && f.content.trim().length > 0))
+      .map(f => `\n\n[Contenuto di ${f.filename}]:\n${f.content}`)
+    const combinedForDisplay = text + (attachmentTextParts.length ? attachmentTextParts.join('') : '')
+    // Auto-open form dialog when user replies "no" after summary confirmation prompt
+    try {
+      const t = text.toLowerCase()
+      const wantsResubmit = /^(no[\s\.!\)]*|non\s+(va\s+bene|corretto|giusto)|sbagliato|correggi|reinvia)/.test(t)
+      if (wantsResubmit) {
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+        const la = (lastAssistant?.content || '').toLowerCase()
+        const isConfirmationContext = la.includes('i dati sono corretti?') || la.includes('riepilogo del tuo invio') || la.includes('grazie per i dati inviati')
+        if (isConfirmationContext) {
+          setShowFormDialog(true)
+          setInput('')
+          return
+        }
+      }
+    } catch {}
+  const next: Msg[] = [...messages, {role:'user' as const, content: combinedForDisplay, ts:Date.now()}]
   setMessages(next); setInput('')
   setLoading(true); setError(undefined)
     try {
@@ -636,12 +886,10 @@ const AppContent: React.FC = () => {
           const title = text.length > 50 ? text.substring(0, 50) + '...' : text;
           let titleToSend = title;
           
-          // Critta il titolo se abbiamo la chiave crypto
-          if (crypto && crypto.isKeyInitialized()) {
-            titleToSend = await crypto.encryptMessage(title);
-          }
+          // Title sent as plaintext (encryption disabled)
+          titleToSend = title;
 
-          const convResponse = await authFetch(`${BACKEND}/api/conversations`, {
+          const convResponse = await authFetch(`${BACKEND}/api/conversations/`, {
             method: 'POST',
             headers,
             body: JSON.stringify({ 
@@ -660,31 +908,22 @@ const AppContent: React.FC = () => {
           // Continua senza conversation_id per mantenere funzionalità
         }
       } else if (conversationId) {
-        console.log('🔄 Continuo conversazione esistente:', conversationId);
+  console.log('Continuo conversazione esistente:', conversationId);
       }
 
-      // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
-      const messageToSend = text;
+  // Il messaggio viene sempre inviato in chiaro al backend per l'elaborazione LLM
+  // (Non includere qui il testo degli allegati per evitare duplicazioni: il backend li aggiunge al prompt)
+  const messageToSend = text;
       
       // Se l'utente è autenticato, prepara anche la versione crittografata per il database
-      let messageEncrypted = null;
-      if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
-        try {
-          messageEncrypted = await crypto.encryptMessage(text);
-        } catch (cryptoError) {
-          console.warn('Failed to encrypt message for database storage:', cryptoError);
-        }
-      }
-      
+  // No client-side encryption: store/display plaintext
+  let messageEncrypted = null;
       const requestBody: any = { 
         message: messageToSend,  // Messaggio in chiaro per LLM
-        sessionId: 'dev' 
+        sessionId: chatSessionId
       };
       
-      // Aggiungi messaggio crittografato se disponibile
-      if (messageEncrypted) {
-        requestBody.message_encrypted = messageEncrypted;
-      }
+  // No client-side encryption: do not send message_encrypted
       
       // Aggiungi allegati se presenti
       if (attachedFiles.length > 0) {
@@ -695,7 +934,9 @@ const AppContent: React.FC = () => {
             file_type: file.file_type,
             content: file.content
           }
-          if (file.base64_data) att.base64_data = file.base64_data
+          if (file.base64_data) {
+            att.base64_data = file.base64_data
+          }
           return att
         });
       }
@@ -714,13 +955,13 @@ const AppContent: React.FC = () => {
             historySource = messages.slice(-cw)
         }
         // Fallback: al massimo 8 se nessun cw
-        const recentHistory = historySource.slice(- (cw ? cw : 8)).map(msg => ({
+  const recentHistory = historySource.slice(-(cw || 8)).map(msg => ({
             role: msg.role,
             content: msg.content
         }))
         
         requestBody.conversation_history = recentHistory;
-        console.log('📝 Invio cronologia recente:', recentHistory.length, 'messaggi');
+  console.log('Invio cronologia recente:', recentHistory.length, 'messaggi');
       }
       
   // Streaming: crea placeholder messaggio assistant (unica bolla) con testo iniziale
@@ -763,14 +1004,18 @@ const AppContent: React.FC = () => {
 
       while(true){
         const {done, value} = await reader.read()
-        if(done) break
+        if(done) {
+          break
+        }
         buffer += decoder.decode(value, {stream:true})
 
         const parts = buffer.split('\n\n')
         buffer = parts.pop() || ''
         for(const part of parts){
           const line = part.trim()
-            if(!line.startsWith('data:')) continue
+            if(!line.startsWith('data:')) {
+              continue
+            }
             const jsonStr = line.slice(5).trim()
             try {
               const evt = JSON.parse(jsonStr)
@@ -838,7 +1083,9 @@ const AppContent: React.FC = () => {
         })
       })
 
-      if (!response.ok) throw new Error('Errore TTS')
+      if (!response.ok) {
+        throw new Error('Errore TTS')
+      }
       
       const audioBlob = await response.blob()
       const audioUrl = URL.createObjectURL(audioBlob)
@@ -897,17 +1144,34 @@ const AppContent: React.FC = () => {
           formData.append('audio', audioBlob, 'recording.wav')
           formData.append('provider', asrProvider)
 
-          const response = await authFetch(`${BACKEND}/api/transcribe`, {
-            method: 'POST',
-            body: formData
-          })
-
-          if (!response.ok) {
-            throw new Error('Errore nella trascrizione')
+          // Funzione interna per inviare blob e gestire 202
+          const attemptTranscription = async (blob: Blob) => {
+            const fd = new FormData()
+            fd.append('audio', blob, 'recording.wav')
+            fd.append('provider', asrProvider)
+            const resp = await authFetch(`${BACKEND}/api/transcribe`, { method: 'POST', body: fd })
+            if (resp.status === 202) {
+              const data = await resp.json()
+              // Avvia modal progresso
+              setPendingAudioBlob(blob)
+              setWhisperModalOpen(true)
+              setWhisperStage(data.status)
+              setWhisperModel(data.model || asrProvider)
+              setWhisperProgress( data.status === 'loading' ? 90 : 0 )
+              // Avvia polling
+              startWhisperPolling(data.status, data.task_id, data.model || asrProvider, blob)
+              return null
+            }
+            if (!resp.ok) {
+              const errTxt = await resp.text()
+              throw new Error(errTxt || 'Errore nella trascrizione')
+            }
+            const result = await resp.json()
+            return result
           }
 
-          const result = await response.json()
-          if (result.text) {
+          const result = await attemptTranscription(audioBlob)
+          if (result && result.text) {
             setInput(prev => prev + (prev ? ' ' : '') + result.text)
           }
         } catch (error) {
@@ -935,6 +1199,90 @@ const AppContent: React.FC = () => {
       setError(error instanceof Error ? error.message : 'Errore nella registrazione')
       setIsRecording(false)
     }
+  }
+
+  // Polling gestione modello whisper
+  const startWhisperPolling = async (stage: 'downloading'|'loading', taskId: string, model: string, blob: Blob) => {
+    // Cleanup eventuale polling precedente
+    if (whisperPollRef.current) {
+      clearTimeout(whisperPollRef.current)
+    }
+    const tick = async () => {
+      try {
+        if (stage === 'downloading') {
+          // Task download
+          const resp = await authFetch(`${BACKEND}/api/whisper/models/download-tasks/${taskId}`)
+          if (resp.ok) {
+            const data = await resp.json()
+            if (typeof data.progress_pct === 'number') {
+              setWhisperProgress(data.progress_pct)
+            }
+            if (['completed','skipped'].includes(data.status)) {
+              // Passa a loading fase (caricamento in RAM)
+              setWhisperStage('loading')
+              setWhisperProgress(95)
+              // Richiama transcribe per avviare eventuale load
+              if (pendingAudioBlob) {
+                // nuova richiesta -> se ancora 202 loading continueremo polling sotto
+                const fd = new FormData()
+                fd.append('audio', pendingAudioBlob, 'recording.wav')
+                fd.append('provider', asrProvider)
+                const r2 = await authFetch(`${BACKEND}/api/transcribe`, { method:'POST', body: fd })
+                if (r2.status === 202) {
+                  // continue polling via model status
+                } else if (r2.ok) {
+                  const resJson = await r2.json()
+                  if (resJson.text) {
+                    setInput(prev => prev + (prev ? ' ' : '') + resJson.text)
+                  }
+                  finalizeWhisperModal()
+                  return
+                } else {
+                  finalizeWhisperModal()
+                  return
+                }
+              }
+            }
+          }
+        }
+        // Poll stato modello per caricamento in RAM
+        const statusResp = await authFetch(`${BACKEND}/api/whisper/models/${model}/status`)
+        if (statusResp.ok) {
+          const st = await statusResp.json()
+            if (st.loaded) {
+              // Modello pronto: invia trascrizione definitiva
+              if (pendingAudioBlob) {
+                const fd = new FormData()
+                fd.append('audio', pendingAudioBlob, 'recording.wav')
+                fd.append('provider', asrProvider)
+                const finalResp = await authFetch(`${BACKEND}/api/transcribe`, { method:'POST', body: fd })
+                if (finalResp.ok) {
+                  const finalJson = await finalResp.json()
+                  if (finalJson.text) {
+                    setInput(prev => prev + (prev ? ' ' : '') + finalJson.text)
+                  }
+                }
+              }
+              finalizeWhisperModal()
+              return
+            }
+        }
+      } catch (e) {
+        // Ignora errori transitori
+      }
+      whisperPollRef.current = window.setTimeout(tick, 1200)
+    }
+    whisperPollRef.current = window.setTimeout(tick, 1000)
+  }
+
+  const finalizeWhisperModal = () => {
+    if (whisperPollRef.current) clearTimeout(whisperPollRef.current)
+    whisperPollRef.current = undefined
+    setWhisperStage(null)
+    setWhisperProgress(0)
+    setPendingAudioBlob(null)
+    setWhisperModalOpen(false)
+    setIsTranscribing(false)
   }
 
   const stopRecording = () => {
@@ -991,43 +1339,107 @@ const AppContent: React.FC = () => {
   }
   // Routing semplice basato sull'URL (admin handled outside wrapper too but keep safeguard)
   if (window.location.pathname === '/admin') {
-    return <NewRAGAdminPanel />
+    return <AdminPanel />
   }
 
-  const [selectedChunk, setSelectedChunk] = useState<RAGResult|null>(null)
+  const [selectedChunk, setSelectedChunk] = useState<any>(null)
+  
+  // Starter Prompts now come from selectedPersonality
+  // const [starterPrompts, setStarterPrompts] = useState<string[]>([]); - REMOVED
 
+  // Effect to scroll to bottom when messages changeturn ( - Fixed comment from previous step while I'm here
   // --- MAIN RENDER ---
   return (
     <Container maxWidth="md" sx={{ pt: isMobile ? 1 : 2, pb: 6 }}>
       <HeaderBar
         onOpenSidebar={()=> setSidebarOpen(true)}
         isAdmin={!!user?.is_admin}
-        onDownloadChat={messages.length ? ()=>{
-          const blob = new Blob([messages.map(m=>`[${new Date(m.ts).toLocaleString()}] ${m.role}: ${m.content}`).join('\n\n')], { type:'text/plain' })
-          const url = URL.createObjectURL(blob)
-          const a = document.createElement('a')
-          a.href = url
-          a.download = 'chat.txt'
-          document.body.appendChild(a)
-          a.click()
-          document.body.removeChild(a)
-          URL.revokeObjectURL(url)
-        } : undefined}
-        onNewChat={async ()=>{
+        onDownloadPdf={currentConversationId ? async ()=>{
           try {
             const { apiService } = await import('./apiService')
-            const wg = await apiService.getPublicWelcomeGuide()
-            if (wg.success && wg.data?.welcome?.content) {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || wg.data.welcome.content, ts: Date.now() }])
-            } else {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({ role: m.role, content: m.content, timestamp: new Date(m.ts).toISOString() }))
+            let blob: Blob
+            try {
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'pdf')
+            } catch (e) {
+              console.warn('[export] POST pdf fallback GET', e)
+              blob = await apiService.downloadConversationPdf(currentConversationId)
             }
-          } catch {
-            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-          }
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.pdf`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
+        } : undefined}
+        onDownloadTxt={currentConversationId ? async ()=>{
+          try {
+            const { apiService } = await import('./apiService')
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({ role: m.role, content: m.content, timestamp: new Date(m.ts).toISOString() }))
+            let blob: Blob
+            try {
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'txt')
+            } catch (e) {
+              console.warn('[export] POST txt fallback GET', e)
+              blob = await apiService.downloadConversationTxt(currentConversationId)
+            }
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.txt`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
+        } : undefined}
+        onDownloadReport={currentConversationId ? async ()=>{
+          try {
+            const { apiService } = await import('./apiService')
+            // Costruisci la history plaintext corrente (esclude eventuali messaggi system e placeholder streaming)
+            const history = messages
+              .filter(m => m.role === 'user' || m.role === 'assistant')
+              .map(m => ({
+                role: m.role,
+                content: m.content,
+                // timestamp ISO per futura estensione (il backend lo ignora se non usato)
+                timestamp: new Date(m.ts).toISOString()
+              }))
+            let blob: Blob
+            try {
+              // Tenta prima il nuovo endpoint POST con history in chiaro
+              blob = await apiService.downloadConversationWithReportPost(currentConversationId, history, 'zip')
+            } catch (e) {
+              console.warn('[export] POST export-with-report fallito, fallback GET legacy', e)
+              // Fallback al metodo legacy (GET) – potrebbe produrre report vuoto se DB ha ciphertext
+              blob = await apiService.downloadConversationWithReport(currentConversationId)
+            }
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `conversation_${currentConversationId}.zip`
+            document.body.appendChild(a)
+            a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+          } catch(e){ console.error(e) }
+        } : undefined}
+        onNewChat={async ()=>{
+          // Prima pulisci la sessione corrente nel backend
+          try {
+            await fetch(`${BACKEND}/api/chat/clear-session?session_id=${encodeURIComponent(chatSessionId)}`, { method: 'POST' })
+          } catch { /* ignore */ }
+
+          // Pulisci localStorage
+          localStorage.removeItem('chat_messages');
+
+          // Genera nuovo sessionId
+          const newSessionId = createChatSessionId();
+          setChatSessionId(newSessionId);
+
+          // Chat vuota - nessun messaggio di benvenuto
+          setMessages([]);
           setCurrentConversationId(null);
         }}
         onShowGuide={async ()=> {
@@ -1036,7 +1448,9 @@ const AppContent: React.FC = () => {
             try {
               const { apiService } = await import('./apiService')
               const wg = await apiService.getPublicWelcomeGuide()
-              if (wg.success) setActiveGuide(wg.data?.guide?.content)
+              if (wg.success) {
+                setActiveGuide(wg.data?.guide?.content)
+              }
             } catch { /* ignore */ } finally { setGuideLoading(false) }
           }
           setShowHelp(true)
@@ -1047,9 +1461,13 @@ const AppContent: React.FC = () => {
         onLogin={()=> setShowLoginDialog(true)}
         onLogout={handleLogout}
         dense={isMobile}
-  personalities={personalities}
-  selectedPersonalityId={selectedPersonalityId}
-  onChangePersonality={(id)=> setSelectedPersonalityId(id)}
+        personalities={personalities}
+        selectedPersonalityId={selectedPersonalityId}
+        onChangePersonality={(id)=> setSelectedPersonalityId(id)}
+        adminPersonalityInfo={adminPersonalityInfo}
+        onOpenFeedback={() => setShowQualitativeFeedback(true)}
+        onOpenSurvey={() => setShowSurvey(true)}
+        userEmail={user?.email}
       />
       {/* Avviso rilogin per crittografia */}
       {needsCryptoReauth && (
@@ -1064,25 +1482,30 @@ const AppContent: React.FC = () => {
       
   {/* Removed legacy top bar (menu + avatar + duplicate title) now merged into HeaderBar */}
 
-      {!isAuthenticated && (
-        <Alert severity="info" sx={{ mb: 2 }}>
+      {!isAuthenticated && showLoginBanner && (
+        <Alert 
+          severity="info" 
+          sx={{ mb: 2 }}
+          onClose={() => setShowLoginBanner(false)}
+        >
           <Box display="flex" alignItems="center" sx={{ gap: 1 }}>
             <Typography sx={{ lineHeight: 1.4 }}>
-              Accedi per salvare le conversazioni e usare la crittografia end-to-end
+              Accedi per salvare le conversazioni e riprenderle da altri dispositivi.
             </Typography>
           </Box>
         </Alert>
       )}
 
-  <Paper variant="outlined" sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, position: 'relative', bgcolor: '#fafafa', borderRadius: 2, overflow:'hidden' }}>
+  <Box sx={{ p: isMobile ? 1.5 : 3, minHeight: isMobile ? 'calc(100vh - 280px)' : 520, maxHeight: isMobile ? 'calc(100vh - 200px)' : 700, position: 'relative', overflowY: 'auto' }}>
         {/* messages stack */}
-        <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 6 : 0 }}>
+        <Stack spacing={isMobile ? 2 : 3} sx={{ pb: isMobile ? 22 : 0 }}>
           {messages.map((m,i)=>(
             <Box key={i} display="flex" flexDirection="column" gap={1} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
               {/* Messaggio principale */}
               <Box display="flex" gap={2} justifyContent={m.role === 'user' ? 'flex-end' : 'flex-start'}>
                 {/* Avatar per l'assistente a sinistra */}
-                {m.role === 'assistant' && (
+                {/* Avatar per l'assistente a sinistra - nascosto su mobile */}
+                {m.role === 'assistant' && !isMobile && (
                   <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
                     <ChatAvatar
                       // Forza aggiornamento avatar quando cambia personalità o url
@@ -1095,37 +1518,150 @@ const AppContent: React.FC = () => {
                 )}
                 
                 {/* Bolla del messaggio - aumentata la dimensione */}
-                <Box sx={{ 
-                  maxWidth: '85%',
+                <Box sx={{
+                  // Make bubble wider for structured form results; full width on very small screens
+                  maxWidth: isVerySmall ? '100%' : (m.__formResult ? '92%' : '85%'),
                   bgcolor: m.role === 'assistant' ? '#e3f2fd' : '#1976d2',
                   color: m.role === 'assistant' ? '#000' : '#fff',
                   p: 2,
                   borderRadius: 3,
-                  borderTopLeftRadius: m.role === 'assistant' ? 1 : 3,
-                  borderTopRightRadius: m.role === 'user' ? 1 : 3,
                   boxShadow: '0 2px 6px rgba(0,0,0,0.08)',
                   position: 'relative',
                 }}>
                   <Box sx={{
-                    '& table': { width: '100%', borderCollapse: 'collapse', my: 1 },
+                    // Relax table wrapper sizing for form result content
+                    fontWeight: 400,
+                    '& table': { width: '100%', maxWidth: '100%', borderCollapse: 'collapse', my: 1 },
                     '& th, & td': { border: '1px solid rgba(0,0,0,0.15)', padding: '6px 8px', textAlign: 'left' },
                     '& thead th': { bgcolor: 'rgba(0,0,0,0.04)' },
                     '& code': { bgcolor: 'rgba(0,0,0,0.06)', px: 0.5, py: 0.1, borderRadius: 0.5, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' },
                     '& pre > code': { display: 'block', p: 1, overflowX: 'auto' },
-                    '& p': { m: 0 },
+                    '& p': { m: 0, fontWeight: 400 },
+                    '& strong, & b': { fontWeight: 600 },
+                   // If message is a form result, allow the inner content to expand more horizontally
+                   ...(m.__formResult ? { maxWidth: '100%', '& .markdown-table-wrapper': { overflowX: 'auto' } } : {}),
                   }}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-                      a: ({node, href, children, ...props}) => {
-                        const h = href || ''
-                        const isDoc = /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
-                        if (!isDoc) {
-                          return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
-                        }
-                        return <a href={h} {...props} onClick={(e)=>{ e.preventDefault(); openPreviewForLink(h, (children as any)?.toString?.() || h, m.source_docs?.rag_chunks) }} style={{ cursor:'pointer', textDecoration:'underline' }}>{children}</a>
-                      }
-                    }}>
-                      {injectDocLinks(normalizeMarkdownForDisplay(m.content), m.source_docs?.rag_chunks)}
-                    </ReactMarkdown>
+                    {m.uploadSummary && m.uploadSummary.length > 0 ? (
+                      <Box>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                          Riepilogo caricamento file ({m.uploadSummary.length})
+                        </Typography>
+                        <Stack spacing={1}>
+                          {m.uploadSummary.map(f => {
+                            const expanded = !!m.__uploadExpanded?.[f.id]
+                            const sizeLabel = (bytes: number) => bytes < 1024 ? `${bytes} B` : (bytes < 1024*1024 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1024/1024).toFixed(1)} MB`)
+                            const chars = (f.content || '').length
+                            const preview = (f.content || '').slice(0, 240).replace(/\s+/g,' ').trim()
+                            return (
+                              <Paper key={f.id} variant="outlined" sx={{ p: 1, bgcolor: '#fff' }}>
+                                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                                  <Box>
+                                    <Typography variant="body2" sx={{ fontWeight: 600 }}>{f.filename}</Typography>
+                                    <Stack direction="row" spacing={0.8} sx={{ mt: 0.3 }}>
+                                      <Chip size="small" label={f.file_type.toUpperCase()} variant="outlined" />
+                                      <Chip size="small" label={sizeLabel(f.size)} variant="outlined" />
+                                      <Chip size="small" color="success" label={`${chars} caratteri`} variant="outlined" />
+                                    </Stack>
+                                  </Box>
+                                  <Button size="small" variant="text" onClick={() => {
+                                    setMessages(prev => prev.map((mm, mi) => {
+                                      if (mi !== i) return mm
+                                      const next = { ...(mm as any) }
+                                      next.__uploadExpanded = { ...(mm.__uploadExpanded || {}) }
+                                      next.__uploadExpanded[f.id] = !expanded
+                                      return next
+                                    }))
+                                  }}>
+                                    {expanded ? 'Nascondi' : 'Mostra tutto'}
+                                  </Button>
+                                </Stack>
+                                {!expanded && (
+                                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                                    {preview}{(f.content || '').length > 240 ? '…' : ''}
+                                  </Typography>
+                                )}
+                                {expanded && (
+                                  <Box sx={{ mt: 0.5, p: 1, bgcolor: 'grey.50', borderRadius: 1, maxHeight: 320, overflow: 'auto' }}>
+                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' }}>
+                                      {f.content || '(contenuto non disponibile)'}
+                                    </Typography>
+                                  </Box>
+                                )}
+                              </Paper>
+                            )
+                          })}
+                        </Stack>
+                      </Box>
+                    ) : (
+                      // If message contains structured form result, render it using FormResultRenderer
+                      m.__formResult ? (
+                        <FormResultRenderer payload={m.__formResult} />
+                      ) : (
+                        <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkBreaks]}
+                        components={{
+                          a: ({node, href, children, ...props}) => {
+                            const h = href || ''
+                            const labelText = ((children as any)?.toString?.() || '').trim()
+                            const ragChunks = m.source_docs?.rag_chunks
+                            let matchedDocName: string | null = null
+                            let chunkPreviewHref: string | null = null
+                            if (ragChunks && ragChunks.length) {
+                              const normalizedLabel = normalizeDocName(labelText.replace(/^DOC\s+/i, ''))
+                              if (normalizedLabel) {
+                                const relatedChunk = ragChunks.find(c => {
+                                  const fn = c.filename || ''
+                                  const base = fn.split('/').pop() || fn
+                                  const cleanedFull = normalizeDocName(base)
+                                  const cleanedPartial = normalizeDocName(base.split('_').pop() || base)
+                                  return [cleanedFull, cleanedPartial].some(cleaned => cleaned && (cleaned === normalizedLabel || cleaned.includes(normalizedLabel) || normalizedLabel.includes(cleaned)))
+                                })
+                                if (relatedChunk && relatedChunk.filename) {
+                                  matchedDocName = relatedChunk.filename.split('/').pop() || relatedChunk.filename
+                                  chunkPreviewHref = `doc://${encodeURIComponent(matchedDocName)}`
+                                }
+                              }
+                            }
+                            const isDoc = !!chunkPreviewHref || /^doc:\/\//.test(h) || /\.(pdf|md|markdown|txt)$/i.test(h) || /\/api\/rag\/download\//.test(h)
+                            if (!isDoc) {
+                              return <a href={h} {...props} target="_blank" rel="noopener noreferrer">{children}</a>
+                            }
+                            const effectiveHref = chunkPreviewHref || h
+                            const effectiveTitle = matchedDocName || labelText || h
+                            return (
+                              <a
+                                href={chunkPreviewHref ? '#' : h}
+                                {...props}
+                                onClick={(e)=>{ e.preventDefault(); openPreviewForLink(effectiveHref, effectiveTitle, ragChunks) }}
+                                style={{ cursor:'pointer', textDecoration:'underline' }}
+                              >
+                                {children}
+                              </a>
+                            )
+                          },
+                          table: ({node, ...props}) => (
+                            <Box className="markdown-table-wrapper" sx={{ width:'100%', overflowX:'auto', my:1 }}>
+                              <table {...props} />
+                            </Box>
+                          ),
+                          th: ({node, ...props}) => <th {...props} style={{ ...props.style, background:'rgba(0,0,0,0.04)' }} />,
+                          code: ({inline, className, children, ...props}: any) => {
+                            const txt = String(children)
+                            if (inline) return <code {...props}>{children}</code>
+                            return (
+                              <pre style={{ margin: '8px 0', padding: '8px', background:'rgba(0,0,0,0.06)', borderRadius:4, overflowX:'auto' }}>
+                                <code>{txt}</code>
+                              </pre>
+                            )
+                          },
+                          // Rendi il grassetto come testo normale (il modello a volte genera tutto in grassetto)
+                          strong: ({children, ...props}: any) => <span style={{ fontWeight: 400 }}>{children}</span>,
+                          b: ({children, ...props}: any) => <span style={{ fontWeight: 400 }}>{children}</span>
+                        }}
+                      >
+                        {prepareChatMarkdown(m.content, m.source_docs?.rag_chunks as any)}
+                      </ReactMarkdown>
+                    ))}
                   </Box>
                 
                 {/* Piccole icone in basso per messaggi dell'assistente */}
@@ -1141,7 +1677,7 @@ const AppContent: React.FC = () => {
                     {/* TTS */}
                     <Box 
                       component="button" 
-                      onClick={() => playTTS(sanitizeMarkdownToPlainText(m.content), i)}
+                      onClick={() => playTTS(toPlainText(m.content), i)}
                       sx={{ 
                         background: 'none', 
                         border: 'none', 
@@ -1237,123 +1773,192 @@ const AppContent: React.FC = () => {
                     </Box>
                     </Box>
                     {/* Sezione Fonti (nuova) */}
-                    {m.role==='assistant' && m.source_docs && (m.source_docs.rag_chunks?.length || m.source_docs.pipeline_topics?.length || m.source_docs.rag_groups?.length) && (
-                      <Box sx={{ mt:1.5, p:1.2, bgcolor:'#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
-                        <Typography variant="caption" sx={{ fontWeight:'bold', color:'#1976d2', display:'block', mb:0.5 }}>Topic e Fonti</Typography>
-                        {m.source_docs.rag_chunks?.length ? (
-                          <Box sx={{ mb:0.5 }}>
-                            <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
-                              {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
-                            </Link>
-                          </Box>
-                        ) : null}
-                        <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
-                          {/* Topic pipeline */}
-                          {m.source_docs.pipeline_topics && m.source_docs.pipeline_topics.map((pt,idx)=>(
-                            <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                              <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
-                            </Box>
-                          ))}
-                          {/* Gruppi RAG selezionati */}
-                          {m.source_docs.rag_groups && m.source_docs.rag_groups.length>0 && (
-                            <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                              <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs.rag_groups.map(g=>g.name).join(', ')}
-                            </Box>
-                          )}
-                          {/* Documenti (derivati dai chunk) */}
-                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (()=>{
-                              // Ordina chunk per similarità desc (non mutare origine)
-                              const sorted = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
-                              const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
-                              // Raggruppa per documento calcolando max similarity e numero chunk
-                              const docMap: Record<string,{name:string; chunks:number; maxSim:number}> = {}
-                              filtered.forEach(r=>{
-                                if(!r.filename) return
-                                const base = (r.filename.split('_').pop() || r.filename)
-                                if(!docMap[base]) docMap[base] = { name: base, chunks:0, maxSim: r.similarity||0 }
-                                docMap[base].chunks += 1
-                                if((r.similarity||0) > docMap[base].maxSim) docMap[base].maxSim = (r.similarity||0)
-                              })
-                              const docs = Object.values(docMap).sort((a,b)=> b.maxSim - a.maxSim)
-                              if(!docs.length) return null
-                              return (
-                                <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
-                                  <strong style={{ color:'#1976d2' }}>Documenti ({docs.length}):</strong>{' '}
-                                  {docs.slice(0,6).map((d,idx)=> (
-                                    <React.Fragment key={d.name}>
-                                      {idx>0 && ', '}
-                                      <Tooltip arrow title={`Chunk visibili: ${d.chunks}\nMax similarità: ${(d.maxSim*100).toFixed(1)}%`}>
-                                        <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.7rem', p:0, cursor:'pointer' }} onClick={()=> openPreviewForLink(`doc://${encodeURIComponent(d.name)}`, d.name, m.source_docs?.rag_chunks)}>
-                                          {d.name}
-                                        </Link>
-                                      </Tooltip>
-                                    </React.Fragment>
-                                  ))}
-                                  {docs.length>6 && (
-                                    <Tooltip title={docs.slice(6).map(d=>`${d.name} (${(d.maxSim*100).toFixed(0)}%)`).join(', ')} arrow>
-                                      <Box component="span" sx={{ cursor:'default' }}>, +{docs.length-6}</Box>
-                                    </Tooltip>
-                                  )}
-                                </Box>
-                              )
-                          })()}
-                          {/* Chunk RAG */}
-                          {m.source_docs.rag_chunks && m.source_docs.rag_chunks.length>0 && (
+                    {(() => {
+                      const showTopics = (selectedPersonality as any)?.show_pipeline_topics !== false;
+                      const showSources = (selectedPersonality as any)?.show_source_docs !== false;
+                      const hasDelegation = !!(m.source_docs as any)?.delegation;
+                      const hasSources = !!(m.source_docs && ((showSources && (m.source_docs?.rag_chunks?.length || m.source_docs?.rag_groups?.length || m.source_docs?.data_tables?.length)) || (showTopics && m.source_docs?.pipeline_topics?.length) || hasDelegation));
+                      return m.role==='assistant' && hasSources;
+                    })() && (
+                      <Box sx={{ mt:1.5 }}>
+                        <Paper variant="outlined" sx={{ p:1.1, bgcolor: '#f8fbff', border:'1px solid #d0e3f7', borderRadius:1.5 }}>
+                          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: m.__sourcesExpanded ? 0.5 : 0 }}>
+                            <Typography variant="caption" sx={{ fontWeight:'bold', color:'#1976d2' }}>Topic e Fonti</Typography>
+                            <Button onClick={()=>{
+                              setMessages(prev => prev.map((mm,mi)=> mi===i ? {...mm, __sourcesExpanded: !mm.__sourcesExpanded} : mm));
+                            }} size="small" variant="text" sx={{ fontSize:'0.6rem', minWidth:0, p:0.5 }}>
+                              {m.__sourcesExpanded ? 'Nascondi' : 'Mostra'}
+                            </Button>
+                          </Stack>
+                          {m.__sourcesExpanded && (
                             <Box>
-                                {(()=>{
-                                  const sortedChunks = [...m.source_docs.rag_chunks].sort((a,b)=> (b.similarity||0) - (a.similarity||0))
-                                  const filteredChunks = sortedChunks.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity)
-                                  const total = m.source_docs.rag_chunks.length
-                                  const shown = filteredChunks.length
-                                  return (
-                                    <>
-                                      <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Chunks ({shown}/{total}) ordinati per similarità</Box>
-                                      <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.5 }}>
-                                        {filteredChunks.slice(0,6).map((r,idx)=>{
-                                  const baseName = r.filename ? (r.filename.split('_').pop() || r.filename) : ''
-                                  const simple = baseName.split('.')[0]
-                                  const label = r.filename ? `${simple}:${r.chunk_index}` : `chunk ${r.chunk_index}`
-                                  const preview = (r.preview || '').replace(/\s+/g,' ').trim()
-                                  const shortPrev = preview ? (preview.length>180 ? preview.slice(0,180)+"…" : preview) : ''
-                                  const tip = `Chunk ${r.chunk_index}\nFile: ${baseName}${r.similarity ? `\nSimilarità: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}${r.file_url?`\nURL: ${r.file_url}`:''}`
-                                  return (
-                                    <Tooltip key={`sc-${idx}`} title={<span style={{ whiteSpace:'pre-line', maxWidth:300, display:'block' }}>{tip}</span>} arrow>
-                                      <Chip size="small" label={label} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18, display:'flex', alignItems:'center', gap:0.3 }}
-                                        icon={r.file_url ? <DownloadIcon sx={{ fontSize:10 }} /> : undefined}
-                                        onDelete={r.file_url ? (e)=>{ e.stopPropagation(); window.open(r.file_url!, '_blank'); } : undefined}
-                                        deleteIcon={r.file_url ? <DownloadIcon sx={{ fontSize:12 }} /> : undefined}
-                                      />
-                                    </Tooltip>
-                                  )
-                                        })}
-                                        {filteredChunks.length>6 && (
-                                          <Tooltip title={filteredChunks.slice(6).map(r=>`Chunk ${r.chunk_index}`).join(', ')} arrow>
-                                            <Chip size="small" label={`+${filteredChunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
-                                          </Tooltip>
+                              {m.source_docs?.rag_chunks?.length ? (
+                                <Box sx={{ mb:0.5 }}>
+                                  <Link component="button" type="button" underline="hover" sx={{ fontSize:'0.6rem', opacity:0.8 }} onClick={()=> setMinRagSimilarity(s=> s ? 0 : 0.5)}>
+                                    {minRagSimilarity ? `Filtro similarità ≥ ${(minRagSimilarity*100).toFixed(0)}% (clic per mostrare tutti)` : 'Applica filtro similarità ≥50%'}
+                                  </Link>
+                                </Box>
+                              ) : null}
+                              <Stack spacing={0.75} sx={{ maxWidth: '100%' }}>
+                                {/* Delegazione */}
+                                {(m.source_docs as any)?.delegation && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#9c27b0' }}>Delegato a:</strong> {(m.source_docs as any).delegation.target_personality_name || (m.source_docs as any).delegation.target_personality_id}
+                                    <span style={{ marginLeft: 8, color: '#666', fontSize: '0.65rem' }}>
+                                      ({(m.source_docs as any).delegation.mode === 'full' ? 'risposta completa' : 'risposta combinata'})
+                                    </span>
+                                  </Box>
+                                )}
+                                {/* Topic pipeline */}
+                                {(selectedPersonality as any)?.show_pipeline_topics !== false && m.source_docs?.pipeline_topics && m.source_docs?.pipeline_topics.map((pt,idx)=>(
+                                  <Box key={`pt-${idx}`} sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#ff9800' }}>Topic:</strong> {pt.name}{pt.description? <Tooltip title={<span style={{whiteSpace:'pre-line'}}>{pt.description}</span>} arrow><sup style={{marginLeft:4,cursor:'help',color:'#ff9800'}}>?</sup></Tooltip>:null}
+                                  </Box>
+                                ))}
+                                {/* Gruppi RAG selezionati */}
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.rag_groups?.length ?? 0) > 0) && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#558b2f' }}>Gruppi:</strong> {m.source_docs?.rag_groups?.map(g=>g.name).join(', ')}
+                                  </Box>
+                                )}
+                                {/* Tabelle dati utilizzate */}
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.data_tables?.length ?? 0) > 0) && (
+                                  <Box sx={{ fontSize:'0.7rem', lineHeight:1.3 }}>
+                                    <strong style={{ color:'#6d4c41' }}>Tabelle:</strong>{' '}
+                                    {m.source_docs?.data_tables?.map((t, idx)=> (
+                                      <React.Fragment key={`dt-${t.table_id}`}>
+                                        {idx>0 ? ', ' : ''}
+                                        {t.download_url ? (
+                                          <a href={t.download_url} target="_blank" rel="noreferrer" style={{ textDecoration:'underline' }}>{t.title || t.table_id}</a>
+                                        ) : (
+                                          <span>{t.title || t.table_id}</span>
                                         )}
-                                      </Box>
-                                    </>
-                                  )
+                                      </React.Fragment>
+                                    ))}
+                                  </Box>
+                                )}
+                                {/* Documenti con grouping chunks */}
+                                {(selectedPersonality as any)?.show_source_docs !== false && ((m.source_docs?.rag_chunks?.length ?? 0) > 0) && (()=>{
+                                  const sorted = [...(m.source_docs?.rag_chunks || [])].sort((a,b)=> (b.similarity||0) - (a.similarity||0));
+                                  const filtered = sorted.filter(r=> !minRagSimilarity || (r.similarity || 0) >= minRagSimilarity);
+                                  // Group by document_id if available, else by filename
+                                  const groupsByDoc = {} as Record<string,{document_id:any; stored_filename?:string; filename?:string; original_filename?:string; maxSim:number; chunks:any[]}>;
+                                  filtered.forEach(ch => {
+                                    const key = (ch.document_id || ch.filename || 'unknown') + '';
+                                    if(!groupsByDoc[key]) {
+                                      groupsByDoc[key] = { document_id: ch.document_id, stored_filename: ch.stored_filename, filename: ch.filename, original_filename: ch.original_filename, maxSim: ch.similarity||0, chunks: [] };
+                                    }
+                                    groupsByDoc[key].chunks.push(ch);
+                                    if((ch.similarity||0) > groupsByDoc[key].maxSim) {
+                                      groupsByDoc[key].maxSim = ch.similarity||0;
+                                    }
+                                  });
+                                  const docEntries = Object.values(groupsByDoc).sort((a,b)=> b.maxSim - a.maxSim);
+                                  return (
+                                    <Box>
+                                      <Box sx={{ fontSize:'0.6rem', mb:0.3, color:'#1976d2' }}>Documenti ({docEntries.length}) ordinati per similarità</Box>
+                                      <Stack spacing={0.5}>
+                                        {docEntries.map((d,di)=>{
+                                          const baseName = d.filename ? (d.filename.split('/').pop() || d.filename) : 'Documento'
+                                          const previewHref = `doc://${encodeURIComponent(baseName)}`
+                                          const shouldHideLinks = selectedPersonality?.hide_rag_links === true
+                                          const primaryHref = !shouldHideLinks ? (d.chunks?.[0]?.download_url || (d.document_id ? `/api/rag/download/${d.document_id}` : null)) : null
+
+                                          // Check if this is a web source (original_filename or filename is URL)
+                                          const sourceUrl = d.original_filename || d.filename
+                                          const isWebSource = !!(sourceUrl && (sourceUrl.startsWith('http://') || sourceUrl.startsWith('https://')))
+                                          const displayName = isWebSource && sourceUrl ? (new URL(sourceUrl).hostname) : baseName
+
+                                          return (
+                                            <Paper key={di} variant="outlined" sx={{ p:0.6, bgcolor:'#fff' }}>
+                                              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb:0.3 }}>
+                                                <Box sx={{ display:'flex', alignItems:'center', gap:0.8 }}>
+                                                  <Box sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', display:'flex', alignItems:'center', gap:0.6 }}>
+                                                    {isWebSource ? (
+                                                      <Link
+                                                        href={sourceUrl}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        underline="hover"
+                                                        sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2' }}
+                                                      >
+                                                        {displayName}
+                                                      </Link>
+                                                    ) : (
+                                                      <Link
+                                                        component="button"
+                                                        type="button"
+                                                        underline="hover"
+                                                        sx={{ fontSize:'0.65rem', fontWeight:600, color:'#1976d2', background:'none', border:0, p:0, cursor:'pointer' }}
+                                                        onClick={()=> openPreviewForLink(previewHref, baseName, m.source_docs?.rag_chunks)}
+                                                      >
+                                                        {baseName}
+                                                      </Link>
+                                                    )}
+                                                    {d.maxSim ? <Box component="span" sx={{ fontWeight:400, color:'#555' }}>max {(d.maxSim*100).toFixed(1)}%</Box> : null}
+                                                  </Box>
+                                                  {primaryHref && !isWebSource && (
+                                                    <Tooltip title="Scarica file originale"><IconButton size="small" onClick={()=>{
+                                                      const anchor = document.createElement('a')
+                                                      anchor.href = primaryHref
+                                                      anchor.target = '_blank'
+                                                      anchor.rel = 'noopener'
+                                                      anchor.download = baseName.replace(/\s+/g,'_')
+                                                      document.body.appendChild(anchor)
+                                                      anchor.click()
+                                                      document.body.removeChild(anchor)
+                                                    }} sx={{ p:0.3 }}>
+                                                      <SmallDownloadIcon size={14} />
+                                                    </IconButton></Tooltip>
+                                                  )}
+                                                </Box>
+                                              </Stack>
+                                              <Box sx={{ display:'flex', flexWrap:'wrap', gap:0.4 }}>
+                                                {d.chunks.slice(0,6).map((r,ci)=>{
+                                                  const preview = (r.preview || '').replace(/\s+/g,' ').trim();
+                                                  const shortPrev = preview ? (preview.length>160 ? preview.slice(0,160)+'…' : preview) : '';
+                                                  const tip = `${r.chunk_label || ('Chunk '+r.chunk_index)}${r.similarity? `\nSim: ${(r.similarity*100).toFixed(1)}%` : ''}${shortPrev?`\n---\n${shortPrev}`:''}`;
+                                                  return (
+                                                    <Tooltip key={ci} title={<span style={{ whiteSpace:'pre-line', maxWidth:260, display:'block' }}>{tip}</span>} arrow>
+                                                      <Chip size="small" label={`#${r.chunk_index}`} onClick={()=> setSelectedChunk(r)} sx={{ cursor:'pointer', bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                                    </Tooltip>
+                                                  );
+                                                })}
+                                                {d.chunks.length>6 && (
+                                                  <Tooltip title={d.chunks.slice(6).map(r=>`Chunk ${r.chunk_index}`).join(', ')} arrow>
+                                                    <Chip size="small" label={`+${d.chunks.length-6}`} sx={{ bgcolor:'#fff', border:'1px solid #b3e5fc', fontSize:'0.55rem', height:18 }} />
+                                                  </Tooltip>
+                                                )}
+                                              </Box>
+                                              {/* Etichette chunk retrieval textual summary */}
+                                              <Box sx={{ mt:0.5 }}>
+                                                <Typography component="div" sx={{ fontSize:'0.55rem', color:'#666' }}>
+                                                  {d.chunks.slice(0,6).map((c,i)=> c.chunk_label || `chunk_${c.chunk_index}`).join(' | ')}{d.chunks.length>6? ' | ...':''}
+                                                </Typography>
+                                              </Box>
+                                            </Paper>
+                                          );
+                                        })}
+                                      </Stack>
+                                    </Box>
+                                  );
                                 })()}
+                              </Stack>
                             </Box>
                           )}
-                        </Stack>
+                        </Paper>
                       </Box>
                     )}
                   </Box>
                 )}
               </Box>
               
-              {/* Avatar per l'utente a destra */}
-                {m.role === 'user' && (
-                <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                  {isAuthenticated && userAvatar ? (
-                    <Avatar alt="Tu" src={userAvatar} sx={{ width: 40, height: 40 }} />
-                  ) : (
-                    <Avatar sx={{ width: 40, height: 40, bgcolor: '#1976d2' }}>
-                      <PersonIcon sx={{ fontSize: 24 }} />
-                    </Avatar>
-                  )}
+              {/* Avatar utente a destra - nascosto su mobile */}
+              {m.role === 'user' && !isMobile && (
+                 <Box sx={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main', fontSize: '0.875rem' }}>
+                    {(isAuthenticated && user?.username) ? user.username.charAt(0).toUpperCase() : <PersonIcon sx={{ fontSize: 20 }} />}
+                  </Avatar>
                 </Box>
               )}
             </Box>
@@ -1381,47 +1986,85 @@ const AppContent: React.FC = () => {
               </Box>
             </Box>
           )}
+          
+          {/* Feedback conversazione - visibile solo dopo la prima risposta dell'assistente */}
+          {messages.some(m => m.role === 'assistant') && (
+            <Box sx={{ mt: 0.5, display: 'flex', justifyContent: 'flex-end' }}>
+              <Stack direction="row" spacing={0.5}>
+                <Tooltip title="Mi è piaciuta questa conversazione">
+                  <IconButton
+                    onClick={() => giveFeedback(-1, 'like')}
+                    size="small"
+                    sx={{
+                      color: feedback[-1] === 'like' ? '#4caf50' : '#9e9e9e',
+                      bgcolor: 'transparent',
+                      transition: 'color 0.2s ease',
+                      '&:hover': { color: '#4caf50', bgcolor: 'transparent' }
+                    }}
+                  >
+                    <LikeIcon size={16} />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip title="Non mi è piaciuta questa conversazione">
+                  <IconButton
+                    onClick={() => giveFeedback(-1, 'dislike')}
+                    size="small"
+                    sx={{
+                      color: feedback[-1] === 'dislike' ? '#f44336' : '#9e9e9e',
+                      bgcolor: 'transparent',
+                      transition: 'color 0.2s ease',
+                      '&:hover': { color: '#f44336', bgcolor: 'transparent' }
+                    }}
+                  >
+                    <DislikeIcon size={16} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+            </Box>
+          )}
         </Stack>
-      </Paper>
+      </Box>
 
 
       {/* Feedback conversazione - in basso a destra */}
-      <Box sx={{ mt: 1, mb: 1, display: 'flex', justifyContent: 'flex-end' }}>
-        <Stack direction="row" spacing={1}>
-          <Tooltip title="Mi è piaciuta questa conversazione">
-            <IconButton 
-              onClick={() => giveFeedback(-1, 'like')}
-              size="small" 
-              sx={{ 
-                color: feedback[-1] === 'like' ? '#4caf50' : '#666',
-                bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#f5f5f5',
-                '&:hover': { bgcolor: feedback[-1] === 'like' ? '#e8f5e8' : '#e0e0e0' }
-              }}
-            >
-              <LikeIcon size={16} />
-            </IconButton>
-          </Tooltip>
 
-          <Tooltip title="Non mi è piaciuta questa conversazione">
-            <IconButton 
-              onClick={() => giveFeedback(-1, 'dislike')}
-              size="small" 
-              sx={{ 
-                color: feedback[-1] === 'dislike' ? '#f44336' : '#666',
-                bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#f5f5f5',
-                '&:hover': { bgcolor: feedback[-1] === 'dislike' ? '#ffebee' : '#e0e0e0' }
-              }}
-            >
-              <DislikeIcon size={16} />
-            </IconButton>
-          </Tooltip>
-        </Stack>
-      </Box>
 
       {/* Input Area */}
       {!isMobile && (
   <Paper elevation={2} sx={{ mt: 2, borderRadius: 2 }}>
           <Box sx={{ p: 2 }}>
+            {/* Starter Prompts Desktop - sopra l'input */}
+            {!messages.some(m => m.role === 'user') && !isMobile && !loading && selectedPersonality && selectedPersonality.starter_prompts && selectedPersonality.starter_prompts.length > 0 && (
+              <Box sx={{ mb: 2, display: 'flex', flexWrap: 'wrap', gap: 1, justifyContent: 'flex-start' }}>
+                {selectedPersonality.starter_prompts.map((prompt: string, idx: number) => {
+                  const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
+                  const parts = isCmd ? prompt.split('|') : []
+                  const label = isCmd ? (parts[1] || 'Form') : prompt
+                  const formId = (isCmd && parts[2]) || null
+                  const messageToSend = (isCmd && parts[3]) || null
+                  
+                  return (
+                  <Chip 
+                    key={idx} 
+                    label={label} 
+                    onClick={() => {
+                        if (isCmd) {
+                          if (messageToSend) send(messageToSend)
+                          setTargetFormId(formId)
+                          setShowFormDialog(true)
+                        } else {
+                          send(prompt); 
+                        }
+                    }}  
+                    variant="outlined"
+                    clickable
+                    color="primary"
+                    sx={{ height: 'auto', py: 0.5 }}
+                  />
+                )})}
+              </Box>
+            )}
             <Stack direction="row" spacing={2} alignItems="flex-end">
               <Box position="relative" flex={1}>
                 <TextField 
@@ -1498,8 +2141,26 @@ const AppContent: React.FC = () => {
                 canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
                 isRecording={isRecording}
                 isLoading={loading || isTranscribing || isStreaming}
+                onToggleAttachments={()=> setShowAttachments(o=> !o)}
+                attachmentsCount={attachedFiles.length}
+                attachmentsOpen={showAttachments}
+                onOpenFormDialog={() => { setTargetFormId(null); setShowFormDialog(true) }}
               />
             </Stack>
+            {/* Inline attachments area (collapsed) */}
+            <Collapse in={showAttachments || attachedFiles.length>0} unmountOnExit timeout={220}>
+              <Box sx={{ mt:1.5, borderTop:'1px solid #eee', pt:1 }}>
+                <FileManagerCompact
+                  attachedFiles={attachedFiles}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) { setShowAttachments(false) } }}
+                  maxFiles={3}
+                  disabled={loading}
+                />
+              </Box>
+            </Collapse>
+            
+
+            {/* Optional: Add instructions if also empty */}
           </Box>
           {(isRecording || playingMessageIndex !== null) && (
             <Box sx={{ px: 2, pb: 1 }}>
@@ -1524,35 +2185,54 @@ const AppContent: React.FC = () => {
         </Paper>
       )}
       {isMobile && (
-        <MobileChatBar
-          value={input}
-          onChange={setInput}
-          onSend={send}
-          canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
-          isRecording={isRecording}
-          onStartRecording={startRecording}
-          onStopRecording={stopRecording}
-          disabled={isTranscribing}
-          isLoading={loading || isTranscribing || isStreaming}
-        />
+        <>
+          <Collapse in={showAttachments || attachedFiles.length>0} unmountOnExit timeout={220}>
+            <Box sx={{ position:'fixed', bottom:72, left:0, right:0, px:1, zIndex:(t)=> t.zIndex.appBar }}>
+              <Paper sx={{ p:1, mx:'auto', maxWidth:600, borderRadius:2, border:'1px solid #e0e0e0' }} elevation={3}>
+                <FileManagerCompact
+                  attachedFiles={attachedFiles}
+                  onFilesChange={(files)=> { setAttachedFiles(files); if(files.length===0) { setShowAttachments(false) } }}
+                  maxFiles={3}
+                  disabled={loading}
+                />
+              </Paper>
+            </Box>
+          </Collapse>
+          <MobileChatBar
+            value={input}
+            onChange={setInput}
+            onSend={send}
+            canSend={!!input.trim() && !loading && !isRecording && !isTranscribing && !isStreaming}
+            isRecording={isRecording}
+            onStartRecording={startRecording}
+            onStopRecording={stopRecording}
+            disabled={isTranscribing}
+            isLoading={loading || isTranscribing || isStreaming}
+            onToggleAttachments={()=> setShowAttachments(o=> !o)}
+            attachmentsCount={attachedFiles.length}
+            attachmentsOpen={showAttachments}
+            onOpenFormDialog={() => { setTargetFormId(null); setShowFormDialog(true) }}
+            starterPrompts={(!messages.some(m => m.role === 'user') && selectedPersonality?.starter_prompts) ? selectedPersonality.starter_prompts : []}
+            onPromptClick={(prompt) => {
+               const isCmd = prompt.startsWith('CMD:OPEN_FORM|')
+               const parts = isCmd ? prompt.split('|') : []
+               const formId = (isCmd && parts[2]) || null
+               const messageToSend = (isCmd && parts[3]) || null
+               if (isCmd) {
+                  if (messageToSend) send(messageToSend)
+                  setTargetFormId(formId)
+                  setShowFormDialog(true)
+               } else {
+                  send(prompt)
+               }
+            }}
+            onOpenFeedback={() => setShowQualitativeFeedback(true)}
+            onOpenSurvey={() => setShowSurvey(true)}
+          />
+        </>
       )}
 
-      {/* File Manager */}
-      <Box sx={{ mt: 2 }}>
-        <Box sx={{ display:'flex', alignItems:'center', gap:1, mb: 0.5 }}>
-          <ImageIcon sx={{ color:'text.secondary' }} fontSize="small" />
-          <Typography variant="body2" color="text.secondary">Allegati</Typography>
-          <Tooltip title="Carica PDF o immagini: il chatbot userà i contenuti nelle risposte.">
-            <HelpOutlineIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-          </Tooltip>
-        </Box>
-        <FileManagerCompact
-          attachedFiles={attachedFiles}
-          onFilesChange={setAttachedFiles}
-          maxFiles={3}
-          disabled={loading}
-        />
-      </Box>
+  {/* (Old standalone Allegati section removed: now inline in input area) */}
 
   {/* RAG Context Selector removed per richiesta: la selezione contesti ora integrata nei metadati bubble */}
 
@@ -1562,13 +2242,32 @@ const AppContent: React.FC = () => {
           Hai 30 secondi per dirci se il chatbot ti sta aiutando?
         </Typography>
         <Link component="button" type="button" underline="hover" onClick={()=> setShowSurvey(true)} sx={{ fontSize: '0.875rem', p:0 }}>
-          Compila il questionario anonimo
+          Questionario
         </Link>
         <Typography variant="body2" component="span" sx={{ color:'text.secondary' }}>·</Typography>
-        <Link href="/survey-results" underline="hover" sx={{ fontSize: '0.875rem', p:0 }}>
+        <Link component="button" type="button" underline="hover" onClick={()=> setShowQualitativeFeedback(true)} sx={{ fontSize: '0.875rem', p:0 }}>
+          Feedback
+        </Link>
+        <Typography variant="body2" component="span" sx={{ color:'text.secondary' }}>·</Typography>
+        <Link href="/survey-results" underline="none" sx={{ fontSize: '0.875rem', p:0 }}>
           Vedi risultati
         </Link>
       </Box>
+
+      <FormRunnerDialog
+        open={showFormDialog}
+        onClose={()=> { setShowFormDialog(false); setTargetFormId(null); }}
+        initialFormId={targetFormId || undefined}
+        enabledFormIds={(selectedPersonality as any)?.enabled_forms || []}
+        conversationId={currentConversationId || undefined}
+        personalityId={selectedPersonality?.id || undefined}
+        onPostSummary={(summary: string) => {
+          setMessages(prev => [...prev, { role: 'assistant' as const, content: summary, ts: Date.now() }])
+        }}
+        onConversationReady={(cid: string) => {
+          setCurrentConversationId(cid)
+        }}
+      />
 
   <ConversationSidebar
         open={sidebarOpen}
@@ -1577,49 +2276,80 @@ const AppContent: React.FC = () => {
         onConversationSelect={async (id) => {
           setCurrentConversationId(id);
           setLoading(true);
-          
+
           try {
-            // Carica i messaggi della conversazione selezionata
-            if (isAuthenticated && crypto && crypto.isKeyInitialized()) {
-              const apiService = await import('./apiService').then(m => m.apiService);
-              const response = await apiService.getConversationMessages(id);
-              
+            // Carica i messaggi della conversazione selezionata (senza decriptazione client-side)
+            console.log('[App] Loading conversation messages for:', id);
+            const response = await apiService.getConversationMessages(id, impersonatedUser?.id);
               if (response.success && response.data) {
-                // Decripta e carica i messaggi
-                const decryptedMessages = await Promise.all(
-                  response.data.map(async (msg: any) => {
-                    try {
-                      const decryptedContent = msg.role === 'user' 
-                        ? await crypto.decryptMessage(msg.content_encrypted)
-                        : msg.content_encrypted; // Messaggi assistant in chiaro
-                      
-                      return {
-                        role: msg.role,
-                        content: decryptedContent,
-                        ts: new Date(msg.timestamp).getTime()
-                      };
-                    } catch (error) {
-                      console.warn('Failed to decrypt message:', error);
-                      return {
-                        role: msg.role,
-                        content: '[Messaggio crittografato - Login per decrittare]',
-                        ts: new Date(msg.timestamp).getTime()
-                      };
+              console.log('[App] Loaded messages count:', response.data.length);
+              let normalized: Msg[] = response.data.map((msg: any) => {
+                const ts = new Date(msg.timestamp).getTime();
+                const serverPlain = (typeof msg.content === 'string' ? msg.content : '').trim();
+                // Preferisci il contenuto fornito dal server; se mancante, usa content_encrypted se presente, altrimenti placeholder
+                if (serverPlain) return { role: msg.role, content: serverPlain, ts };
+                if (msg.content_encrypted) return { role: msg.role, content: msg.content_encrypted, ts };
+                return { role: msg.role, content: '[Messaggio non disponibile]', ts };
+              });
+
+              try {
+                // Recupera il welcome pubblico (o della personalità) e prepende alla cronologia se presente
+                const { apiService } = await import('./apiService');
+                const wg = await apiService.getPublicWelcomeGuide();
+                let welcomeText: string | null = null;
+                if (wg.success && wg.data?.welcome?.content) {
+                  welcomeText = wg.data.welcome.content;
+                } else {
+                  const p = personalities.find(pp => pp.id === selectedPersonalityId);
+                  welcomeText = p?.welcome_message || p?.welcome_message_content || null;
+                }
+
+                if (welcomeText) {
+                  const first = normalized[0];
+                  // Determine timestamp: place welcome just before first message if present, otherwise now
+                  let welcomeTs = Date.now();
+                  if (first && typeof first.ts === 'number') {
+                    welcomeTs = Math.max(0, first.ts - 1);
+                  }
+
+                  // If the conversation already contains the public welcome as the first stored message
+                  // and the selected personality provides its own welcome, replace the stored
+                  // public welcome with the personality welcome so users see the configured personality text.
+                  const publicWelcome = wg.success && wg.data?.welcome?.content ? wg.data.welcome.content : null;
+                  const personalityWelcome = selectedPersonality ? (selectedPersonality.welcome_message_content || selectedPersonality.welcome_message) : null;
+
+                  const firstPlain = first && first.content ? toPlainText(first.content).trim().toLowerCase() : '';
+                  const publicPlain = publicWelcome ? toPlainText(publicWelcome).trim().toLowerCase() : '';
+                  const personalityPlain = personalityWelcome ? toPlainText(personalityWelcome).trim().toLowerCase() : '';
+
+                  // Debug info to help diagnose why a stored public welcome isn't being replaced
+                  try {
+                    console.debug('[welcome-debug] first:', first?.content);
+                    console.debug('[welcome-debug] publicWelcome:', publicWelcome);
+                    console.debug('[welcome-debug] personalityWelcome:', personalityWelcome);
+                    console.debug('[welcome-debug] normalized forms:', { firstPlain, publicPlain, personalityPlain });
+                  } catch (e) { /* ignore debug errors */ }
+
+                  if (first && publicPlain && firstPlain === publicPlain && personalityWelcome) {
+                    // replace stored public welcome with personality welcome
+                    normalized[0] = { ...first, content: personalityWelcome, isWelcome: true } as Msg;
+                  } else if (!first || firstPlain !== toPlainText(welcomeText).trim().toLowerCase()) {
+                    normalized = [{ role: 'assistant' as const, content: welcomeText, ts: welcomeTs, isWelcome: true }, ...normalized];
+                  } else {
+                    // Fallback: if first assistant message mentions 'counselorbot' (legacy variants),
+                    // prefer replacing it with the personality welcome when available.
+                    if (first && first.role === 'assistant' && firstPlain.includes('counselorbot') && personalityWelcome) {
+                      normalized[0] = { ...first, content: personalityWelcome, isWelcome: true } as Msg;
                     }
-                  })
-                );
-                
-                setMessages(decryptedMessages);
-              } else {
-                setError('Errore nel caricamento dei messaggi');
+                  }
+                }
+              } catch (e) {
+                // ignore welcome failures
               }
+
+              setMessages(normalized);
             } else {
-              // Utente non autenticato - mostra messaggio generico
-              setMessages([{
-                role: 'assistant' as const,
-                content: 'Questa conversazione è crittografata. Effettua il login per visualizzare i messaggi.',
-                ts: Date.now()
-              }]);
+              setError('Errore nel caricamento dei messaggi');
             }
           } catch (error) {
             console.error('Failed to load conversation messages:', error);
@@ -1631,29 +2361,14 @@ const AppContent: React.FC = () => {
           setSidebarOpen(false);
         }}
         onNewConversation={async () => {
-          try {
-            const { apiService } = await import('./apiService')
-            const wg = await apiService.getPublicWelcomeGuide()
-            if (wg.success && wg.data?.welcome?.content) {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              if (p?.welcome_message) {
-                setMessages([{ role:'assistant', content: p.welcome_message, ts: Date.now() }])
-              } else {
-                setMessages([{ role:'assistant', content: wg.data.welcome.content, ts: Date.now() }])
-              }
-            } else {
-              const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-              setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-            }
-          } catch {
-            const p = personalities.find(pp=>pp.id===selectedPersonalityId)
-            setMessages([{ role:'assistant', content: p?.welcome_message || 'Nuova conversazione iniziata.', ts: Date.now() }])
-          }
+          // Chat vuota - nessun messaggio di benvenuto
+          setMessages([]);
           setCurrentConversationId(null);
           setSidebarOpen(false);
         }}
         userAvatar={userAvatar}
         isAuthenticated={isAuthenticated}
+        userEmail={user?.email}
         onUserAvatarChange={(dataUrl)=> setUserAvatar(dataUrl)}
         drawerWidth={300}
         // Refresh sidebar quando viene creata una nuova conversazione
@@ -1661,7 +2376,7 @@ const AppContent: React.FC = () => {
       />
       
       <LoginDialog
-        open={showLoginDialog}
+        open={showLoginDialog && !isAuthenticated && !isGuest}
         onClose={() => setShowLoginDialog(false)}
         onLoginSuccess={(userInfo, cryptoInstance) => {
           login(userInfo, cryptoInstance);
@@ -1698,7 +2413,7 @@ const AppContent: React.FC = () => {
           )}
           {!guideLoading && activeGuide && (
             <Box sx={{ '& h1,h2,h3':{ mt:2 }, '& p':{ mb:1 } }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeGuide}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{prepareChatMarkdown(activeGuide)}</ReactMarkdown>
             </Box>
           )}
           {!guideLoading && !activeGuide && (
@@ -1809,6 +2524,13 @@ const AppContent: React.FC = () => {
         </DialogContent>
       </Dialog>
 
+      {/* Qualitative Feedback Dialog */}
+      <QualitativeFeedbackDialog
+        open={showQualitativeFeedback}
+        onClose={() => setShowQualitativeFeedback(false)}
+        backendUrl={BACKEND}
+      />
+
       {/* Document Preview Dialog */}
       <Dialog open={previewOpen} onClose={closePreview} fullWidth maxWidth={previewType==='pdf' ? 'lg' : 'md'}>
         <DialogTitle sx={{ pr: 6 }}>
@@ -1827,14 +2549,14 @@ const AppContent: React.FC = () => {
             <Alert severity="error">{previewError}</Alert>
           )}
           {!previewLoading && !previewError && previewType === 'pdf' && previewUrl && (
-            <Box sx={{ width:'100%', height: '100%', '& iframe': { border: 'none' } }}>
-              <iframe src={previewUrl} style={{ width: '100%', height: 480 }} title={previewTitle} />
+            <Box sx={{ width: '100%', height: '100%', minHeight: 480 }}>
+              <PdfViewer sourceUrl={previewUrl} key={previewUrl} />
             </Box>
           )}
           {!previewLoading && !previewError && (previewType === 'markdown' || previewType === 'text') && (
             previewType === 'markdown' ? (
               <Box sx={{ '& h1,& h2,& h3': { mt:2 }, '& pre': { p:1, bgcolor:'#f5f5f5', overflowX:'auto' } }}>
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{previewContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{prepareChatMarkdown(previewContent)}</ReactMarkdown>
               </Box>
             ) : (
               <Box component="pre" sx={{ whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'monospace', fontSize:'0.85rem', m:0 }}>
@@ -1844,7 +2566,7 @@ const AppContent: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          {previewType === 'markdown' && previewContent && previewContent.includes('### Chunk') && (
+          {previewMode === 'aggregated' && previewType === 'markdown' && previewContent && previewContent.includes('### Chunk') && (
             <Button size="small" onClick={()=>{
               const blob = new Blob([previewContent], { type:'text/markdown' })
               const url = URL.createObjectURL(blob)
@@ -1857,14 +2579,54 @@ const AppContent: React.FC = () => {
               setTimeout(()=> URL.revokeObjectURL(url), 2000)
             }}>Scarica aggregato</Button>
           )}
-          {previewType && (
-            <Button size="small" onClick={()=>{ if (previewType==='pdf' && previewUrl) window.open(previewUrl, '_blank'); else window.open(previewTitle, '_blank') }} disabled={previewLoading || !!previewError}>Apri originale</Button>
+          {previewMode === 'aggregated' && previewSourceHref && previewAllowPreview && (
+            <Button size="small" onClick={handleViewOriginal} disabled={previewLoading || !!previewError}>
+              Visualizza originale
+            </Button>
+          )}
+          {previewMode === 'original' && previewAggregateRef.current && (
+            <Button size="small" onClick={handleBackToAggregated} disabled={previewLoading}>
+              Torna ai chunk
+            </Button>
+          )}
+          {previewMode === 'original' && previewSourceHref && previewAllowDownload && (
+            <Button size="small" onClick={handleDownloadOriginal} disabled={previewLoading || !!previewError}>
+              Scarica originale
+            </Button>
           )}
           <Button onClick={closePreview}>Chiudi</Button>
         </DialogActions>
       </Dialog>
 
       <SiteFooter />
+
+      {/* Whisper progress modal */}
+      <Dialog open={whisperModalOpen} onClose={()=>{ /* non chiudere manuale */ }} maxWidth="xs" fullWidth>
+        <DialogTitle>Preparazione modello vocale</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" sx={{ mb:1 }}>
+            {whisperStage === 'downloading' ? 'Download modello Whisper in corso…' : 'Caricamento modello in memoria…'}
+          </Typography>
+          {whisperStage === 'downloading' && (
+            <Box sx={{ display:'flex', alignItems:'center', gap:2 }}>
+              <LinearProgress variant="determinate" value={Math.min(100, Math.max(0, whisperProgress))} sx={{ flex:1 }} />
+              <Typography variant="caption" sx={{ width:38, textAlign:'right' }}>{Math.round(whisperProgress)}%</Typography>
+            </Box>
+          )}
+          {whisperStage === 'loading' && (
+            <Box sx={{ display:'flex', alignItems:'center', gap:2 }}>
+              <LinearProgress variant="indeterminate" sx={{ flex:1 }} />
+              <Typography variant="caption" sx={{ width:58, textAlign:'right' }}>loading</Typography>
+            </Box>
+          )}
+          <Typography variant="caption" color="text.secondary" sx={{ display:'block', mt:1 }}>
+            Modello: {whisperModel} • L'operazione avviene una sola volta: i prossimi audio saranno trascritti immediatamente.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button disabled size="small">Attendere…</Button>
+        </DialogActions>
+      </Dialog>
     </Container>
   );
 };
@@ -1876,7 +2638,7 @@ const AppContent: React.FC = () => {
 export default function App() {
   // Routing semplice basato sull'URL
   if (window.location.pathname === '/admin') {
-    return <NewRAGAdminPanel />
+    return <AdminPanel />
   }
   if (window.location.pathname === '/survey-results') {
     return (

@@ -19,6 +19,14 @@ import os, jwt
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
+# Admin configuration from environment
+ADMIN_EMAILS = [
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+]
+DEFAULT_ADMIN_EMAIL = ADMIN_EMAILS[0] if ADMIN_EMAILS else ""
+
 @router.post("/register", response_model=TokenResponse)
 async def register_user(user_data: UserRegistration):
     """Registrazione nuovo utente"""
@@ -206,7 +214,7 @@ async def force_change_password(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users 
                 SET password_hash = ?, user_key_hash = ?, must_change_password = 0, failed_login_attempts = 0, locked_until = NULL
                 WHERE id = ?
@@ -276,7 +284,7 @@ async def change_password(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 UPDATE users 
                 SET password_hash = ?, user_key_hash = ?
                 WHERE id = ?
@@ -286,7 +294,7 @@ async def change_password(
         # Clear must_change_password flag
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("UPDATE users SET must_change_password = 0 WHERE id = ?", (current_user["id"],))
+            db_manager.exec(cursor, "UPDATE users SET must_change_password = 0 WHERE id = ?", (current_user["id"],))
             conn.commit()
         return {"message": "Password changed successfully"}
         
@@ -300,7 +308,7 @@ async def change_password(
 @router.post("/admin/reset-password")
 async def admin_reset_password(
     target_email: str,
-    admin_email: str = "admin@qsa-chatbot.com"  # In produzione verifica admin token
+    admin_email: str = DEFAULT_ADMIN_EMAIL  # In produzione verifica admin token
 ):
     """Reset password utente da parte amministratore con sistema escrow"""
     
@@ -320,7 +328,7 @@ async def admin_reset_password(
         "note": "User should change password after first login"
     }
 
-@router.get("/admin/users")
+@router.get("/auth/admin/users")
 async def list_users(
     limit: int = 50,
     current_admin: dict = Depends(get_current_admin_user)
@@ -331,7 +339,7 @@ async def list_users(
         from .database import db_manager
         with db_manager.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            db_manager.exec(cursor, """
                 SELECT id, email, created_at, last_login, is_active, failed_login_attempts
                 FROM users 
                 ORDER BY created_at DESC 
@@ -356,7 +364,7 @@ async def list_users(
 class RoleUpdate(BaseModel):
     is_admin: bool
 
-@router.post("/admin/users/{user_id}/role")
+@router.post("/auth/admin/users/{user_id}/role")
 async def update_user_role(user_id: int, payload: RoleUpdate, current_admin: dict = Depends(get_current_admin_user)):
     """Aggiorna ruolo amministratore per un utente (solo admin)."""
     try:
@@ -372,7 +380,7 @@ async def update_user_role(user_id: int, payload: RoleUpdate, current_admin: dic
 
 @router.get("/admin/escrow/verify")
 async def verify_escrow_integrity(
-    admin_email: str = "admin@qsa-chatbot.com"  # In produzione verifica admin token
+    admin_email: str = DEFAULT_ADMIN_EMAIL  # In produzione verifica admin token
 ):
     """Verifica integrità sistema escrow"""
     

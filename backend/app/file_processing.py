@@ -1,17 +1,5 @@
-"""File processing utilities.
-
-Estrazione testo supportata per:
-- PDF (pypdf / PyPDF2)
-- DOCX/DOC (python-docx)
-- TXT / MD (lettura diretta)
-- CSV (csv standard library)
-- XLSX/XLS (openpyxl o xlrd opzionale; fallback parsing basico se assente)
-- HTML / HTM (BeautifulSoup se disponibile, altrimenti strip tag grezzo)
-- RTF (striprtf se disponibile, altrimenti pulizia semplificata)
-- JSON (flatten ricorsivo concatenando valori stringa / numeri)
-- XML (BeautifulSoup / ElementTree)
-
-Se la libreria opzionale non è installata, restituisce messaggio di errore che il frontend può intercettare.
+"""
+File processing functionality for text files only (PDF, Word, TXT, MD)
 """
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, status
 from fastapi.responses import JSONResponse
@@ -22,29 +10,6 @@ import tempfile
 import uuid
 from datetime import datetime
 import mimetypes
-import csv
-import json
-from typing import Iterable
-
-try:
-    import openpyxl  # type: ignore
-except ImportError:  # pragma: no cover
-    openpyxl = None
-
-try:  # Legacy xls
-    import xlrd  # type: ignore
-except ImportError:  # pragma: no cover
-    xlrd = None
-
-try:
-    from bs4 import BeautifulSoup  # type: ignore
-except ImportError:  # pragma: no cover
-    BeautifulSoup = None
-
-try:
-    from striprtf.striprtf import rtf_to_text  # type: ignore
-except ImportError:  # pragma: no cover
-    rtf_to_text = None
 
 # Import libraries for file processing
 try:
@@ -53,6 +18,10 @@ try:
 except ImportError:
     PyPDF2 = None
     pypdf = None
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 try:
     from docx import Document
@@ -70,60 +39,113 @@ class ProcessedFile(BaseModel):
     processed_at: Optional[datetime] = None
     error: Optional[str] = None
 
-def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text content from PDF file"""
+def extract_text_from_pdf_with_diagnostics(file_path: str, min_chars_threshold: int = 200) -> Dict[str, Any]:
+    """Extract text from PDF trying multiple libraries and return diagnostics.
+
+    Order:
+      1. pypdf (if available)
+      2. PyPDF2 (fallback)
+      3. PyMuPDF (fitz) (used as fallback if previous methods missing or produced too little text)
+
+    If initial method yields < min_chars_threshold chars and PyMuPDF is available, re-extract with PyMuPDF.
+    """
+    chosen_method = None
+    fallback_used = False
     text = ""
-    
-    print(f"🔍 Attempting to extract text from PDF: {file_path}")
-    
-    # Check which PDF library is available
-    print(f"🔍 pypdf available: {pypdf is not None}")
-    print(f"🔍 PyPDF2 available: {PyPDF2 is not None}")
-    
-    if pypdf:
-        print("📚 Using pypdf library")
-        try:
-            with open(file_path, 'rb') as file:
-                reader = pypdf.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
-                
-                for page_num, page in enumerate(reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                    except Exception as e:
-                        print(f"⚠️ Error extracting text from page {page_num + 1}: {e}")
-                        continue
-        except Exception as e:
-            print(f"❌ pypdf error: {e}")
+    page_count = 0
+    errors: list[str] = []
+    print(f"🔍 PDF extraction diagnostics for {file_path}")
+    print(f"   libs => pypdf={bool(pypdf)} PyPDF2={bool(PyPDF2)} fitz={bool(fitz)}")
+
+    def _extract_with_pypdf():
+        nonlocal text, page_count
+        with open(file_path, 'rb') as f:
+            reader = pypdf.PdfReader(f)
+            page_count = len(reader.pages)
+            for page_num, page in enumerate(reader.pages):
+                try:
+                    pt = page.extract_text()
+                    if pt:
+                        text += pt + "\n"
+                except Exception as e:
+                    errors.append(f"pypdf page {page_num+1}: {e}")
+
+    def _extract_with_pypdf2():
+        nonlocal text, page_count
+        with open(file_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            page_count = len(reader.pages)
+            for page_num, page in enumerate(reader.pages):
+                try:
+                    pt = page.extract_text()
+                    if pt:
+                        text += pt + "\n"
+                except Exception as e:
+                    errors.append(f"PyPDF2 page {page_num+1}: {e}")
+
+    def _extract_with_fitz():
+        nonlocal text, page_count
+        doc = fitz.open(file_path)
+        page_count = doc.page_count
+        collected = []
+        for page_num in range(page_count):
+            try:
+                p = doc.load_page(page_num)
+                collected.append(p.get_text("text"))
+            except Exception as e:
+                errors.append(f"fitz page {page_num+1}: {e}")
+        text_local = "\n".join([c for c in collected if c])
+        return text_local
+
+    # Primary attempt
+    try:
+        if pypdf:
+            chosen_method = "pypdf"
+            _extract_with_pypdf()
+        elif PyPDF2:
+            chosen_method = "pypdf2"
+            _extract_with_pypdf2()
+        elif fitz:
+            chosen_method = "pymupdf"
+            text = _extract_with_fitz()
+        else:
+            chosen_method = "none"
             text = ""
-    
-    elif PyPDF2:
-        print("📚 Using PyPDF2 library")
+    except Exception as e:
+        errors.append(f"primary {chosen_method} error: {e}")
+        text = ""
+
+    # Fallback to PyMuPDF if short result
+    if fitz and len(text.strip()) < min_chars_threshold:
         try:
-            with open(file_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
-                print(f"📄 PDF has {len(reader.pages)} pages")
-                
-                for page_num, page in enumerate(reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n"
-                    except Exception as e:
-                        print(f"⚠️ Error extracting text from page {page_num + 1}: {e}")
-                        continue
+            new_text = _extract_with_fitz()
+            if len(new_text.strip()) > len(text.strip()):
+                text = new_text
+                fallback_used = chosen_method != "pymupdf"
+                chosen_method = (chosen_method or "") + "+fallback_pymupdf" if chosen_method else "pymupdf"
         except Exception as e:
-            print(f"❌ PyPDF2 error: {e}")
-            text = ""
-    
-    else:
-        print("❌ No PDF library available")
-        text = "Errore: Nessuna libreria PDF disponibile"
-    
-    print(f"✅ Extracted {len(text)} characters from PDF")
-    return text.strip()
+            errors.append(f"fallback pymupdf error: {e}")
+
+    text = text.strip()
+    chars = len(text)
+    short_text = chars < min_chars_threshold
+    print(f"✅ PDF extraction method={chosen_method} chars={chars} pages={page_count} short={short_text} fallback={fallback_used}")
+    if errors:
+        print(f"⚠️ PDF extraction warnings: {errors[:3]}{'...' if len(errors)>3 else ''}")
+    return {
+        "text": text,
+        "method": chosen_method,
+        "pages": page_count,
+        "chars": chars,
+        "fallback_used": fallback_used,
+        "short_text": short_text,
+        "errors": errors
+    }
+
+def extract_text_from_pdf(file_path: str) -> str:
+    """Backward-compatible simple extractor (returns only text)."""
+    info = extract_text_from_pdf_with_diagnostics(file_path)
+    return info["text"]
 
 def extract_text_from_docx(file_path: str) -> str:
     """Extract text from DOCX file"""
@@ -138,123 +160,6 @@ def extract_text_from_docx(file_path: str) -> str:
         return text.strip()
     except Exception as e:
         return f"Error extracting text from DOCX: {str(e)}"
-
-def extract_text_from_csv(file_path: str, delimiter: str = ',') -> str:
-    """Extract text from CSV by joining rows with newlines."""
-    try:
-        lines = []
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            reader = csv.reader(f, delimiter=delimiter)
-            for row in reader:
-                if any(cell.strip() for cell in row):
-                    lines.append(" \t ".join(cell.strip() for cell in row))
-        return "\n".join(lines).strip()
-    except Exception as e:
-        return f"Errore: impossibile leggere CSV ({e})"
-
-def _flatten_json(value, acc: list):
-    if value is None:
-        return
-    if isinstance(value, (str, int, float)):
-        acc.append(str(value))
-    elif isinstance(value, dict):
-        for v in value.values():
-            _flatten_json(v, acc)
-    elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
-        for v in value:
-            _flatten_json(v, acc)
-
-def extract_text_from_json(file_path: str) -> str:
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            data = json.load(f)
-        acc: list[str] = []
-        _flatten_json(data, acc)
-        text = "\n".join(acc).strip()
-        return text or ""
-    except Exception as e:
-        return f"Errore: impossibile leggere JSON ({e})"
-
-def extract_text_from_excel(file_path: str) -> str:
-    if openpyxl:
-        try:
-            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-            lines = []
-            for ws in wb.worksheets:
-                for row in ws.iter_rows(values_only=True):
-                    vals = [str(c).strip() for c in row if c is not None and str(c).strip()]
-                    if vals:
-                        lines.append(" \t ".join(vals))
-            return "\n".join(lines).strip()
-        except Exception as e:
-            return f"Errore: impossibile leggere XLSX ({e})"
-    if xlrd:  # fallback xls
-        try:
-            book = xlrd.open_workbook(file_path)
-            lines = []
-            for sheet in book.sheets():
-                for r in range(sheet.nrows):
-                    cells = [str(sheet.cell_value(r, c)).strip() for c in range(sheet.ncols) if str(sheet.cell_value(r, c)).strip()]
-                    if cells:
-                        lines.append(" \t ".join(cells))
-            return "\n".join(lines).strip()
-        except Exception as e:
-            return f"Errore: impossibile leggere XLS ({e})"
-    return "Errore: nessuna libreria Excel disponibile (installa openpyxl)"
-
-def extract_text_from_html(file_path: str) -> str:
-    try:
-        raw = open(file_path, 'r', encoding='utf-8', errors='ignore').read()
-        if BeautifulSoup:
-            soup = BeautifulSoup(raw, 'html.parser')
-            # Rimuovi script/style
-            for tag in soup(['script', 'style']):
-                tag.decompose()
-            text = soup.get_text(separator='\n')
-            # Normalizza spazi
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            return "\n".join(lines)
-        # Fallback: strip rudimentale tag
-        import re
-        no_tags = re.sub(r'<[^>]+>', ' ', raw)
-        return ' '.join(no_tags.split())
-    except Exception as e:
-        return f"Errore: impossibile leggere HTML ({e})"
-
-def extract_text_from_rtf(file_path: str) -> str:
-    try:
-        raw = open(file_path, 'r', encoding='utf-8', errors='ignore').read()
-        if rtf_to_text:
-            return rtf_to_text(raw).strip()
-        # Fallback: rimuovi gruppi RTF basilari
-        import re
-        txt = re.sub(r'\\[a-zA-Z]+[0-9]? ?', ' ', raw)  # comandi
-        txt = re.sub(r'[{}]', ' ', txt)  # braces
-        return ' '.join(txt.split())
-    except Exception as e:
-        return f"Errore: impossibile leggere RTF ({e})"
-
-def extract_text_from_xml(file_path: str) -> str:
-    # Tenta BeautifulSoup, fallback ElementTree
-    try:
-        raw = open(file_path, 'r', encoding='utf-8', errors='ignore').read()
-        if BeautifulSoup:
-            soup = BeautifulSoup(raw, 'xml')
-            text = soup.get_text(separator='\n')
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            return "\n".join(lines)
-        import xml.etree.ElementTree as ET
-        root = ET.fromstring(raw)
-        parts = []
-        def walk(el):
-            if el.text and el.text.strip():
-                parts.append(el.text.strip())
-            for c in el:
-                walk(c)
-        walk(root)
-        return "\n".join(parts)
-    except Exception as e:
-        return f"Errore: impossibile leggere XML ({e})"
 
 # Create router
 router = APIRouter()
@@ -300,7 +205,7 @@ async def upload_files(files: List[UploadFile] = File(...)):
             
             # Process based on file type - ONLY TEXT EXTRACTION
             if file_ext == 'pdf':
-                print(f"📄 Processing PDF file: {filename}")
+                print(f"  Processing PDF file: {filename}")
                 text_content = extract_text_from_pdf(temp_file_path)
                 processed_file.content = text_content
                 

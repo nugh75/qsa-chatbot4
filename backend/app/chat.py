@@ -5,15 +5,17 @@ import hashlib
 import re
 from .prompts import load_system_prompt, get_system_prompt_by_id
 from .personalities import get_personality  # includes temperature & context config
-from .topic_router import detect_topic
+from .topic_router import detect_topic, detect_topics
 from .rag import get_context, get_rag_context, format_response_with_citations
 from .llm import chat_with_provider, compute_token_stats
 from .logging_utils import log_interaction, log_system
 from .usage import log_usage
 from .admin import load_config
 from .memory import get_memory
-from .auth import get_current_active_user
+
+from .auth import get_optional_current_user, get_current_active_user
 from .database import db_manager, MessageModel
+from .interaction_summary import load_summary, append_interaction_summary
 from fastapi.responses import StreamingResponse
 import asyncio
 
@@ -33,6 +35,261 @@ class ChatIn(BaseModel):
     conversation_history: Optional[list] = None  # Cronologia dal frontend per conversazioni crittografate
     message_encrypted: Optional[str] = None  # Messaggio crittografato per salvataggio database
     attachments: Optional[List[FileAttachment]] = None  # File allegati
+
+# ----------------- Helper interni (nessuna modifica agli import) -----------------
+def _safe_log_interaction(payload: Dict[str, Any]):
+    try:
+        log_interaction(payload)
+    except Exception:
+        pass
+
+def _safe_log_system(level: int, msg: str):
+    try:
+        log_system(level, msg)
+    except Exception:
+        pass
+
+async def _safe_append_summary(conv_id: str, user_msg: str, assistant_reply: str):
+    """Genera e salva il riassunto dell'interazione in modo sicuro (non blocca il flusso)."""
+    try:
+        await append_interaction_summary(conv_id, user_msg, assistant_reply)
+    except Exception as e:
+        print(f"[interaction_summary] Errore nel salvataggio riassunto: {e}")
+
+def _resolve_personality(personality_id: Optional[str]):
+    """Ritorna (system_prompt, provider_override, model_override, personality_meta, webhook_config)."""
+    from .webhook_handler import WebhookConfig
+    system = load_system_prompt()
+    provider_override = None
+    model_override = None
+    personality_meta = None
+    webhook_config = None
+    if personality_id:
+        try:
+            p = get_personality(personality_id)
+            personality_meta = p
+            if p:
+                if p.get("system_prompt_id"):
+                    system_prompt_candidate = get_system_prompt_by_id(p["system_prompt_id"]) or system
+                    if system_prompt_candidate:
+                        system = system_prompt_candidate
+                if p.get("provider"):
+                    provider_override = p["provider"].lower()
+                if p.get("model"):
+                    model_override = p["model"]
+                # Configura webhook se abilitato
+                if p.get("webhook_enabled") and p.get("webhook_url"):
+                    webhook_config = WebhookConfig(
+                        url=p["webhook_url"],
+                        timeout=p.get("webhook_timeout") or 60,
+                        auth_header=p.get("webhook_auth_header"),
+                        include_history=p.get("webhook_include_history", True),
+                    )
+        except Exception as e:
+            print(f"Personality load failed: {e}")
+    return system, provider_override, model_override, personality_meta, webhook_config
+
+def _check_delegation(message: str, personality_meta: Optional[Dict]) -> Optional[Dict]:
+    """Verifica se il messaggio attiva una regola di delega.
+
+    Ritorna None se non c'è delega, altrimenti:
+    {
+        "target_personality_id": str,
+        "mode": "full" | "partial",
+        "matched_pattern": str
+    }
+    """
+    if not personality_meta:
+        return None
+    delegate_rules = personality_meta.get("delegate_rules") or []
+    if not delegate_rules:
+        return None
+
+    msg_lower = message.lower()
+    for rule in delegate_rules:
+        pattern = rule.get("pattern", "")
+        target_id = rule.get("target_personality_id")
+        mode = rule.get("mode", "full")
+        if not pattern or not target_id:
+            continue
+        try:
+            if re.search(pattern, msg_lower, re.IGNORECASE):
+                return {
+                    "target_personality_id": target_id,
+                    "mode": mode,
+                    "matched_pattern": pattern
+                }
+        except re.error:
+            continue
+    return None
+
+
+async def _check_delegation_ai(
+    message: str,
+    personality_meta: Optional[Dict],
+    provider: str,
+    model: Optional[str] = None,
+    conversation_history: Optional[List[Dict]] = None
+) -> Optional[Dict]:
+    """Verifica se la personalità decide di delegare usando AI.
+
+    Questa funzione fa una chiamata LLM per decidere se delegare ad un'altra personalità
+    basandosi sulle istruzioni configurate nella personalità corrente.
+
+    Ritorna None se non c'è delega, altrimenti:
+    {
+        "target_personality_id": str,
+        "mode": "full",
+        "reason": str  # motivazione dell'AI per la delega
+    }
+    """
+    if not personality_meta:
+        return None
+
+    delegation_instructions = personality_meta.get("delegation_instructions")
+    delegation_targets = personality_meta.get("delegation_targets") or []
+
+    # Se non ci sono istruzioni o target, non c'è delega AI
+    if not delegation_instructions or not delegation_targets:
+        return None
+
+    # Costruisci la lista dei target per il prompt
+    targets_description = "\n".join([
+        f"- ID: {t.get('id')} | Nome: {t.get('name')} | Descrizione: {t.get('description', 'Nessuna descrizione')}"
+        for t in delegation_targets
+    ])
+
+    # Prompt per la decisione di delega
+    delegation_prompt = f"""Sei un sistema di routing che deve decidere se delegare questa conversazione ad un'altra personalità.
+
+ISTRUZIONI PER LA DELEGA:
+{delegation_instructions}
+
+PERSONALITÀ DISPONIBILI PER LA DELEGA:
+{targets_description}
+
+MESSAGGIO DELL'UTENTE:
+{message}
+
+Rispondi SOLO con un JSON valido nel seguente formato:
+- Se NON devi delegare: {{"delegate": false}}
+- Se DEVI delegare: {{"delegate": true, "target_id": "id-della-personalita", "reason": "breve motivazione"}}
+
+Rispondi SOLO con il JSON, nient'altro."""
+
+    messages = [{"role": "system", "content": delegation_prompt}]
+
+    # Aggiungi un po' di contesto dalla conversazione se disponibile
+    if conversation_history:
+        # Prendi solo gli ultimi 3 messaggi per contesto
+        recent_history = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+        for msg in recent_history:
+            messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")[:500]})
+
+    messages.append({"role": "user", "content": message})
+
+    try:
+        # Chiamata LLM per la decisione (usa temperatura bassa per decisioni deterministiche)
+        response = await chat_with_provider(
+            messages,
+            provider=provider,
+            model=model,
+            temperature=0.1,
+            is_summary_request=True  # Evita logging eccessivo
+        )
+
+        # Parse della risposta JSON
+        import json
+        # Pulisci la risposta da eventuali markdown code blocks
+        clean_response = response.strip()
+        if clean_response.startswith("```"):
+            clean_response = clean_response.split("```")[1]
+            if clean_response.startswith("json"):
+                clean_response = clean_response[4:]
+            clean_response = clean_response.strip()
+
+        decision = json.loads(clean_response)
+
+        if decision.get("delegate") and decision.get("target_id"):
+            # Verifica che il target sia valido
+            valid_target_ids = {t.get("id") for t in delegation_targets}
+            target_id = decision.get("target_id")
+            if target_id in valid_target_ids:
+                print(f"[AI-DELEGATION] Decided to delegate to '{target_id}': {decision.get('reason', 'no reason')}")
+                return {
+                    "target_personality_id": target_id,
+                    "mode": "full",
+                    "reason": decision.get("reason", "")
+                }
+            else:
+                print(f"[AI-DELEGATION] Invalid target_id '{target_id}' returned by AI")
+
+        return None
+
+    except Exception as e:
+        print(f"[AI-DELEGATION] Error during AI delegation check: {str(e)}")
+        return None
+
+
+def _resolve_temperature(header_temp: Optional[float], personality_id: Optional[str]) -> float:
+    temp_value = 0.3
+    if header_temp is not None:
+        try:
+            return float(header_temp)
+        except Exception:
+            return temp_value
+    if personality_id:
+        try:
+            p = get_personality(personality_id)
+            if p and p.get('temperature') is not None:
+                return float(p['temperature'])
+        except Exception:
+            return temp_value
+    return temp_value
+
+def _process_attachments(attachments: List[FileAttachment]) -> str:
+    if not attachments:
+        return ""
+    out_parts = []
+    print(f"📎 Processing {len(attachments)} attachments")
+    for attachment in attachments:
+        if attachment.content:
+            out_parts.append(f"\n\n[Contenuto di {attachment.filename}]:\n{attachment.content}")
+        elif attachment.base64_data and attachment.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
+            out_parts.append(f"\n\n[Immagine allegata: {attachment.filename}]")
+    return ''.join(out_parts)
+
+def _filter_topics_jaccard(topics_multi: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not topics_multi:
+        return topics_multi
+    import re as _re
+    def _normalize_words(s: str) -> set:
+        return {w for w in _re.findall(r"[a-zA-ZàèéìòùA-Z0-9]+", s.lower()) if len(w) > 2}
+    filtered = []
+    seen_sets = []
+    JACCARD_THRESHOLD = 0.8
+    for tinfo in topics_multi:
+        nm = tinfo.get('topic')
+        if not nm:
+            continue
+        wset = _normalize_words(nm)
+        if not wset:
+            filtered.append(tinfo)
+            seen_sets.append(wset)
+            continue
+        duplicate = False
+        for sset in seen_sets:
+            if not sset:
+                continue
+            inter = len(wset & sset)
+            union = len(wset | sset) or 1
+            if inter / union >= JACCARD_THRESHOLD:
+                duplicate = True
+                break
+        if not duplicate:
+            filtered.append(tinfo)
+            seen_sets.append(wset)
+    return filtered
 
 def generate_content_hash(content: str) -> str:
     """Generate hash for search indexing"""
@@ -72,7 +329,10 @@ async def chat(
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
-    current_user: dict = Depends(get_current_active_user)
+    x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
+    x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
+    x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
+    current_user: Optional[dict] = Depends(get_optional_current_user)
 ):
     import uuid as _uuid
     request_id = f"req_{_uuid.uuid4().hex}"
@@ -112,19 +372,8 @@ async def chat(
     except Exception:
         pass
     
-    # Processa gli allegati per aggiungere il contenuto al messaggio
-    attachment_content = ""
-    if attachments:
-        print(f"📎 Processing {len(attachments)} attachments")
-        for attachment in attachments:
-            if attachment.content:  # Testo estratto da PDF/Word
-                attachment_content += f"\n\n[Contenuto di {attachment.filename}]:\n{attachment.content}"
-            elif attachment.base64_data and attachment.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']:
-                # Per le immagini, aggiungiamo una nota che l'immagine è allegata
-                attachment_content += f"\n\n[Immagine allegata: {attachment.filename}]"
-    
-    # Combina messaggio utente con contenuto allegati
-    full_user_message = user_msg + attachment_content
+    # Processa gli allegati e combina nel messaggio utente
+    full_user_message = user_msg + _process_attachments(attachments)
     
     # Ottieni l'istanza della memoria solo se NON c'è conversation_id
     # Se c'è conversation_id usiamo solo il database per evitare conflitti
@@ -134,11 +383,14 @@ async def chat(
         memory = get_memory()
         # Aggiungi il messaggio dell'utente alla memoria (con allegati)
         topic = detect_topic(full_user_message)
-        memory.add_message(session_id, "user", full_user_message, {"topic": topic})
+        topics_multi = detect_topics(full_user_message)
+        memory.add_message(session_id, "user", full_user_message, {"topic": topic, "topics_multi": topics_multi})
     else:
         topic = detect_topic(full_user_message)
     
-    # Se abbiamo un conversation_id, salva nel database
+    # Se abbiamo un conversation_id, salva nel database (solo se utente autenticato)
+    # GUEST: se conversation_id è passato ma utente è None, assumiamo che non possiamo salvare su DB utente
+    # o potremmo avere un DB "guest" effimero. Per ora: solo authenticated have persistence.
     if conversation_id and current_user:
         try:
             # Genera ID unico per il messaggio utente
@@ -153,7 +405,8 @@ async def chat(
                 content_encrypted=user_msg_encrypted,  # Versione crittografata per database
                 role="user",
                 token_count=0,
-                processing_time=0.0
+                processing_time=0.0,
+                content_plaintext_for_hash=user_msg
             )
             
             if not success:
@@ -162,50 +415,407 @@ async def chat(
         except Exception as e:
             print(f"Error saving user message: {e}")
     
-    # Contesto & topic con filtri personalità
-    from .topic_router import detect_topic
-    from .rag import get_context, get_rag_context
-    from .personalities import get_personality
+    # Contesto & topic con filtri personalità (imports already at module level; avoid re-import inside to prevent UnboundLocalError)
     
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None
     personality_enabled_rag_groups = None
+    personality_enabled_data_tables = None
     if x_personality_id:
         try:
-            p = get_personality(x_personality_id)
-            if p:
-                personality_enabled_topics = p.get("enabled_pipeline_topics")
-                personality_enabled_rag_groups = p.get("enabled_rag_groups")
+            p_meta = get_personality(x_personality_id)
+            if p_meta:
+                personality_enabled_topics = p_meta.get("enabled_pipeline_topics")
+                personality_enabled_rag_groups = p_meta.get("enabled_rag_groups")
+                personality_enabled_data_tables = p_meta.get("enabled_data_tables")
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
     topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
-    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
-    
-    # Fallback al sistema legacy se RAG non trova nulla
-    if not rag_context:
-        context = get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
-    else:
-        context = rag_context
+    # Rileva TUTTI i topic (max_topics=None -> illimitato)
+    topics_multi = _filter_topics_jaccard(detect_topics(user_msg, enabled_topics=personality_enabled_topics, max_topics=None))
+    # --- Dynamic context assembly (topics priority + RAG by similarity) ---
+    import os as _os
+    from .rag import load_files_mapping, load_text_with_meta
+    # Budgets configurabili (token-approx). Fallback a caratteri.
+    TOTAL_BUDGET = int(_os.getenv("CONTEXT_TOTAL_BUDGET", "9000"))
+    MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_CHARS", "3000"))
+    MIN_RAG = int(_os.getenv("CONTEXT_MIN_RAG_CHARS", "2000"))
+    # Stima token: approx 4 char per token (euristica media lingua mista)
+    def _estimate_tokens(txt: str) -> int:
+        return max(1, len(txt)//4)
+    # Convert budgets (interpretiamo come caratteri se > 2000 e non ridefiniti da *_TOKENS )
+    TOKENS_TOTAL = int(_os.getenv("CONTEXT_TOTAL_TOKENS", str(max(1000, TOTAL_BUDGET//4))))
+    TOKENS_MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_TOKENS", str(max(500, MIN_TOPICS//4))))
+    TOKENS_MIN_RAG = int(_os.getenv("CONTEXT_MIN_RAG_TOKENS", str(max(300, MIN_RAG//4))))
+    # Usare token come baseline; riconvertiamo a caratteri target per fine truncation
+    TOTAL_BUDGET = TOKENS_TOTAL * 4
+    MIN_TOPICS = TOKENS_MIN_TOPICS * 4
+    MIN_RAG = TOKENS_MIN_RAG * 4
+    # Safety clamps
+    if TOTAL_BUDGET < 3000:
+        TOTAL_BUDGET = 3000
+    if MIN_TOPICS + MIN_RAG > TOTAL_BUDGET:
+        # shrink RAG first
+        overflow = (MIN_TOPICS + MIN_RAG) - TOTAL_BUDGET
+        reduce_rag = min(overflow, max(0, MIN_RAG - 1000))  # keep at least 1000 for RAG if possible
+        MIN_RAG -= reduce_rag
+        if MIN_TOPICS + MIN_RAG > TOTAL_BUDGET:
+            MIN_TOPICS = max(1000, TOTAL_BUDGET - MIN_RAG)
+
+    # Collect topic raw snippets
+    file_map = load_files_mapping()
+    topic_snippets: list[tuple[str,str]] = []  # (topic, snippet)
+    topic_files_meta: list[dict] = []
+    topic_files_missing: list[dict] = []
+    debug_pipeline = _os.getenv("PIPELINE_DEBUG_LOG", "0") in ("1", "true", "True")
+    seen_topics = set()
+    for tinfo in (topics_multi or []):
+        tname = tinfo.get('topic')
+        if not tname or tname in seen_topics:
+            continue
+        seen_topics.add(tname)
+        if tname in file_map:
+            try:
+                raw_txt, meta = load_text_with_meta(tname)
+                topic_snippets.append((tname, raw_txt))
+                entry = {
+                    "topic": tname,
+                    "filename": meta.get("filename"),
+                    "source": meta.get("source"),
+                    "chars": meta.get("chars"),
+                }
+                if debug_pipeline:
+                    entry.update({
+                        "pipeline_path": meta.get("pipeline_path"),
+                        "rag_path": meta.get("rag_path"),
+                        "synced_to_rag": meta.get("synced_to_rag"),
+                        "exists": meta.get("exists"),
+                    })
+                topic_files_meta.append(entry)
+            except Exception as e:
+                topic_files_missing.append({
+                    "topic": tname,
+                    "filename": file_map.get(tname),
+                    "error": str(e) if debug_pipeline else "load_failed",
+                })
+                continue
+    # Fallback single-topic context if none collected
+    if not topic_snippets and topic:
+        try:
+            raw_txt, meta = load_text_with_meta(topic)
+            topic_snippets.append((topic, raw_txt))
+            entry = {
+                "topic": topic,
+                "filename": meta.get("filename"),
+                "source": meta.get("source"),
+                "chars": meta.get("chars"),
+            }
+            if debug_pipeline:
+                entry.update({
+                    "pipeline_path": meta.get("pipeline_path"),
+                    "rag_path": meta.get("rag_path"),
+                    "synced_to_rag": meta.get("synced_to_rag"),
+                    "exists": meta.get("exists"),
+                })
+            topic_files_meta.append(entry)
+        except Exception as e:
+            topic_files_missing.append({
+                "topic": topic,
+                "filename": file_map.get(topic),
+                "error": str(e) if debug_pipeline else "load_failed",
+            })
+
+    # We also pre-fetch RAG search results (ordered by similarity) for granular budgeting
+    rag_search_results = []
+    try:
+        from .rag_engine import rag_engine
+        from .rag_routes import get_user_context as _guc
+        selected_groups = _guc(session_id)
+        if personality_enabled_rag_groups is not None:
+            if selected_groups:
+                selected_groups = [g for g in selected_groups if g in personality_enabled_rag_groups]
+            else:
+                selected_groups = personality_enabled_rag_groups
+        if not selected_groups:
+            # attempt auto groups (non-invasive; same logic as get_rag_context)
+            try:
+                all_groups = rag_engine.get_groups()
+                selected_groups = [g['id'] for g in all_groups if g.get('document_count')][:5]
+            except Exception:
+                selected_groups = []
+        if selected_groups:
+            raw_results = rag_engine.search(query=full_user_message, group_ids=selected_groups, top_k=12) or []
+            # sort by similarity_score descending if present
+            rag_search_results = sorted(raw_results, key=lambda r: r.get('similarity_score') or 0.0, reverse=True)
+    except Exception:
+        rag_search_results = []
+
+    # Compose topic section with dynamic allocation
+    # Weight topics by (snippet length truncated + length of topic name)
+    # Priority topics get higher weight when detected
+    PRIORITY_TOPICS = {"Analisi di secondo livello"}
+    topic_weights = []
+    for name, txt in topic_snippets:
+        weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        # Boost priority topics by 3x when detected
+        if name in PRIORITY_TOPICS:
+            weight *= 3.0
+        topic_weights.append((name, txt, weight))
+    total_w = sum(w for _,_,w in topic_weights) or 1
+    remaining_budget = TOTAL_BUDGET
+    # First assign min budgets
+    topic_budget = min(max(MIN_TOPICS, 0), remaining_budget)
+    remaining_budget -= topic_budget
+    rag_budget = min(max(MIN_RAG, 0), remaining_budget)
+    remaining_budget -= rag_budget
+    # Distribute leftover: priority topics then rag
+    if remaining_budget > 0:
+        # 70% leftover to topics, rest to rag
+        extra_topics = int(remaining_budget * 0.7)
+        topic_budget += extra_topics
+        rag_budget += (remaining_budget - extra_topics)
+
+    def _truncate_sentence_boundary(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        cut = text[:limit]
+        # try to end at period or newline
+        for sep in ['.\n', '. ', '\n', '! ', '? ']:
+            idx = cut.rfind(sep)
+            if idx > limit * 0.5:
+                return cut[:idx+len(sep)].strip()
+        return cut.strip()
+
+    # Build topic context
+    topic_sections = []
+    for name, txt, w in topic_weights:
+        share = int(topic_budget * (w / total_w))
+        # bounding per-topic min 300 max 4000
+        share = max(300, min(4000, share))
+        snippet = _truncate_sentence_boundary(txt, share)
+        topic_sections.append(f"[TOPIC: {name}]\n{snippet}")
+    topic_context_combined = "\n\n".join(topic_sections)
+    if len(topic_context_combined) > topic_budget:
+        topic_context_combined = topic_context_combined[:topic_budget]
+
+    # Build RAG context ordered by similarity
+    rag_sections = []
+    if rag_search_results:
+        # weight rag docs by similarity directly
+        rag_total_sim = sum((r.get('similarity_score') or 0.0001) for r in rag_search_results) or 1
+        for r in rag_search_results:
+            sim = r.get('similarity_score') or 0.0001
+            share = int(rag_budget * (sim / rag_total_sim))
+            share = max(250, min(2500, share))
+            content = r.get('content') or ''
+            snippet = _truncate_sentence_boundary(content, share)
+            fname = r.get('original_filename') or r.get('filename') or 'documento'
+            rag_sections.append(f"[RAG Fonte: {fname} sim={sim:.3f}]\n{snippet}")
+            if sum(len(s) for s in rag_sections) > rag_budget * 1.3:  # soft cap to stop early
+                break
+    rag_context_combined = "\n\n".join(rag_sections)
+    if len(rag_context_combined) > rag_budget:
+        rag_context_combined = rag_context_combined[:rag_budget]
+
+    # Reclaim unused topic space for RAG if rag is truncated severely and topic underused
+    unused_topic = max(0, topic_budget - len(topic_context_combined))
+    if unused_topic > 500 and rag_search_results:
+        rag_extra_allow = min(unused_topic, 2000)
+        # try extend each existing rag section a bit if original content longer (skipped for simplicity)
+        rag_context_combined = (rag_context_combined + '\n')[:(rag_budget + rag_extra_allow)]
+
+    pipeline_context = ""
+    if topic_context_combined:
+        pipeline_context = f"[SEZIONE PIPELINE]\n{topic_context_combined.strip()}"
+    sections = []
+    if rag_context_combined:
+        sections.append(f"[SEZIONE RAG]\n{rag_context_combined.strip()}")
+    # Optional: search in data tables (enabled by personality, or auto-detected)
+    data_tables_context = ""
+    data_tables_search_results = None
+    data_tables_agent_answer = None
+    try:
+        # Resolve candidate table_ids: personality -> auto detection (if enabled in config and query matches triggers)
+        candidate_dt_tables = personality_enabled_data_tables or []
+        if not candidate_dt_tables:
+            # Auto-detect if allowed and query suggests tabellare/date intent
+            from .admin import load_config as _load_cfg
+            cfg = _load_cfg()
+            dt_cfg = (cfg.get('data_tables_settings') or {}) if isinstance(cfg, dict) else {}
+            auto_enabled = bool(dt_cfg.get('enabled', True))
+            # Trigger words: lezioni/corsi/orari/calendario + mesi/giorni
+            ql = (full_user_message or '').lower()
+            MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
+            DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
+            # Trigger più ampi per richieste tabellari
+            GLOBAL_KEYWORDS = [
+                'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
+                'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
+            ]
+            has_global_trigger = any(k in ql for k in GLOBAL_KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            # Header force flag
+            _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
+            try:
+                from .data_tables import list_tables as _list_dt
+                _all_dt = _list_dt() or []
+
+                # NEW: Check per-table keywords first
+                def _match_table_keywords(query_lower: str, tables: list) -> list:
+                    """Return table IDs that match per-table keywords."""
+                    matched = []
+                    for t in tables:
+                        table_keywords = t.get('keywords') or []
+                        if table_keywords and any(kw.lower() in query_lower for kw in table_keywords):
+                            matched.append(t.get('id'))
+                    return matched
+
+                per_table_matches = _match_table_keywords(ql, _all_dt)
+                has_trigger = has_global_trigger or bool(per_table_matches)
+
+                # If per-table keywords matched, use only those tables
+                # Otherwise fallback to all tables if global trigger matched
+                if per_table_matches:
+                    candidate_dt_tables = per_table_matches
+                elif auto_enabled and _all_dt and (_force_dt or has_global_trigger):
+                    candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+
+                # Log diagnostico
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_candidates",
+                        "request_id": request_id,
+                        "forced": _force_dt,
+                        "has_trigger": has_trigger,
+                        "per_table_matches": len(per_table_matches),
+                        "count": len(candidate_dt_tables)
+                    })
+                except Exception:
+                    pass
+            except Exception:
+                candidate_dt_tables = []
+        if candidate_dt_tables:
+            from .data_tables import search_tables as _search_dt
+            dt_res = _search_dt(full_user_message, candidate_dt_tables, limit_per_table=8)
+            data_tables_search_results = dt_res.get('results') or []
+            # Format as Markdown table per table (limit display columns to 5)
+            parts = []
+            # Budget for this section (chars)
+            DT_BUDGET = int(_os.getenv('CONTEXT_MIN_DT_CHARS', '2000'))
+            used = 0
+            for t in data_tables_search_results:
+                title = t.get('title') or t.get('table_name') or t.get('table_id')
+                disp_cols = t.get('display_columns') or (t.get('columns') or [])[:5]
+                if not disp_cols:
+                    continue
+                rows = t.get('rows') or []
+                # Header
+                header = "| " + " | ".join(disp_cols) + " |\n" + "|" + "|".join([" --- "] * len(disp_cols)) + "|\n"
+                body_lines = []
+                for r in rows[:8]:
+                    data = r.get('data') or {}
+                    vals = [str((data.get(c) if data.get(c) is not None else '')).replace('\n',' ').strip() for c in disp_cols]
+                    body_lines.append("| " + " | ".join(vals) + " |")
+                block = f"[Tabella: {title}]\n" + header + "\n".join(body_lines)
+                if used + len(block) > DT_BUDGET:
+                    break
+                parts.append(block)
+                used += len(block)
+            if parts:
+                data_tables_context = "\n\n".join(parts)
+            # Sottoagente AI (configurabile) per sintetizzare una risposta mirata dalle tabelle
+            try:
+                from .data_tables_agent import run_agent as _run_dt_agent, get_settings as _dt_get_settings
+                _dt_settings = _dt_get_settings()
+                # Log invocazione subagent
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_agent_invoked",
+                        "request_id": request_id,
+                        "provider": (_dt_settings or {}).get('provider'),
+                        "model": (_dt_settings or {}).get('model'),
+                        "tables": candidate_dt_tables,
+                        "result_tables": len(data_tables_search_results or [])
+                    })
+                except Exception:
+                    pass
+                data_tables_agent_answer = await _run_dt_agent(full_user_message, data_tables_search_results, candidate_dt_tables)
+            except Exception as _ae:
+                print(f"[data-tables-agent] errore run: {_ae}")
+    except Exception as _dte:
+        print(f"[data-tables] errore nel build contesto: {_dte}")
+    if data_tables_context:
+        sections.append(f"[SEZIONE TABELLE]\n{data_tables_context.strip()}")
+    if data_tables_agent_answer:
+        sections.append(f"[SEZIONE TABELLE – SINTESI]\n{data_tables_agent_answer.strip()}")
+    context = "\n\n".join(sections)[:TOTAL_BUDGET]
+    # Provide simple rag_context flag for downstream logic (used in logging)
+    rag_context = rag_context_combined if rag_context_combined else ""
+
+    # --- Logging dettagliato regex & contesto ---
+    try:
+        from .logging_utils import log_interaction as _li, log_system as _ls
+        _li({
+            "event": "pipeline_context_built",
+            "request_id": request_id,
+            "topics_detected": topics_multi,
+            "topic_primary": topic,
+            "topic_files_loaded": [t for t,_ in topic_snippets],
+            "topic_files_meta": topic_files_meta,
+            "topic_files_missing": topic_files_missing,
+            "file_map_count": len(file_map),
+            "topic_budget_chars": topic_budget,
+            "rag_budget_chars": rag_budget,
+            "total_budget_chars": TOTAL_BUDGET,
+            "rag_results_count": len(rag_search_results),
+            "rag_used": bool(rag_context),
+            "user_message_sample": (user_msg or "")[:180],
+        })
+        _ls(20, f"CTX req={request_id} topics={','.join([t.get('topic') for t in topics_multi]) if topics_multi else '-'} rag_docs={len(rag_search_results)} budgets(topic/rag/total)={topic_budget}/{rag_budget}/{TOTAL_BUDGET}")
+    except Exception:
+        pass
         
     # Personality override
     effective_provider = (x_llm_provider or "local").lower()
-    model_override: Optional[str] = None
-    system = load_system_prompt()
-    if x_personality_id:
-        try:
-            from .personalities import get_personality
-            from .prompts import get_system_prompt_by_id
-            p = get_personality(x_personality_id)
-            if p:
-                if p.get("system_prompt_id"):
-                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
-                if p.get("provider"):
-                    effective_provider = p["provider"].lower()
-                if p.get("model"):
-                    model_override = p["model"]
-        except Exception as e:
-            print(f"Personality load failed: {e}")
+    system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
+    if provider_override:
+        effective_provider = provider_override
+
+    # --- Delegation check ---
+    # Prima controlla la delega pattern-based (legacy)
+    delegation_info = _check_delegation(full_user_message, _pmeta)
+    delegate_system = None
+    delegate_provider = None
+    delegate_model = None
+
+    # Se non c'è delega pattern-based, prova la delega AI
+    if not delegation_info and _pmeta:
+        # Costruisci la cronologia per il check AI
+        if use_memory_buffer:
+            ai_check_history = memory.get_conversation_history(session_id)
+        else:
+            ai_check_history = frontend_history
+
+        delegation_info = await _check_delegation_ai(
+            full_user_message,
+            _pmeta,
+            provider=effective_provider,
+            model=model_override,
+            conversation_history=ai_check_history
+        )
+
+    if delegation_info:
+        target_id = delegation_info["target_personality_id"]
+        d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
+        if d_meta:
+            delegate_system = d_sys
+            delegate_provider = d_prov
+            delegate_model = d_model
+            if delegation_info.get("matched_pattern"):
+                print(f"[DELEGATION] Pattern-based: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            else:
+                print(f"[AI-DELEGATION] AI-decided: -> {target_id} (reason={delegation_info.get('reason', 'N/A')})")
+
     # Log risoluzione provider/modello
     try:
         log_interaction({
@@ -232,11 +842,40 @@ async def chat(
         print(f"Using persistent conversation {conversation_id}, frontend provided {len(conversation_history)} history messages")
     
     # Prepara i messaggi per il provider LLM
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic or 'generale'}]\n{context[:6000]}"}
-    ]
-    
+    # Costruisci descrizione topics per prompt se multi
+    if topics_multi:
+        topic_names = ", ".join([t['topic'] for t in topics_multi])
+        topic_label = f"topics: {topic_names} (dinamico)"
+    else:
+        topic_label = f"topic: {topic or 'generale'} (dinamico)"
+
+    # Usa system prompt delegato se delega full, altrimenti quello originale
+    active_system = delegate_system if (delegation_info and delegation_info.get("mode") == "full" and delegate_system) else system
+    messages = [{"role": "system", "content": active_system}]
+    if pipeline_context:
+        messages.append({
+            "role": "system",
+            "content": "ISTRUZIONI PRIORITARIE - Segui queste indicazioni specifiche per rispondere alla richiesta dell'utente. Questi contenuti hanno precedenza sulle istruzioni generali.\n\n" + pipeline_context
+        })
+    if context:
+        messages.append({
+            "role": "system",
+            "content": f"[Materiali di riferimento - {topic_label}]\n{context[:6000]}"
+        })
+
+    # Inietta il riassunto delle interazioni precedenti (memoria persistente MD)
+    _summary_conv_id = conversation_id or session_id
+    _existing_summary = load_summary(_summary_conv_id)
+    if _existing_summary:
+        messages.append({
+            "role": "system",
+            "content": (
+                "[MEMORIA CONVERSAZIONE - Riassunto delle interazioni precedenti]\n"
+                "Usa queste informazioni come contesto per mantenere coerenza nella conversazione.\n\n"
+                + _existing_summary[:4000]
+            )
+        })
+
     # Aggiungi la cronologia della conversazione
     messages.extend(conversation_history)
     
@@ -263,21 +902,70 @@ async def chat(
     import time, datetime
     start_time = time.perf_counter()
     # Determina temperatura: header ha priorità, poi personalità, poi default 0.3
-    temp_value = 0.3
-    if x_llm_temperature is not None:
+    temp_value = _resolve_temperature(x_llm_temperature, x_personality_id)
+    # Se header X-LLM-Model è presente, ha priorità rispetto a personality (solo per test)
+    effective_model_override = x_llm_model or model_override
+
+    # Applica override da delega (full mode usa provider/model della personalità delegata)
+    if delegation_info and delegation_info.get("mode") == "full":
+        if delegate_provider:
+            effective_provider = delegate_provider
+        if delegate_model:
+            effective_model_override = delegate_model
+
+    # Se webhook attivo, inoltra al webhook invece di usare il provider LLM
+    if webhook_config:
+        from .webhook_handler import WebhookRequest, call_webhook
+        webhook_request = WebhookRequest(
+            message=full_user_message,
+            session_id=session_id,
+            conversation_id=conversation_id,
+            history=conversation_history if webhook_config.include_history else None,
+            personality_id=x_personality_id,
+            personality_name=_pmeta.get("name") if _pmeta else None,
+            user_id=(current_user or {}).get("id") if isinstance(current_user, dict) else None,
+            attachments=[{
+                "id": att.id,
+                "filename": att.filename,
+                "file_type": att.file_type,
+                "content": att.content
+            } for att in attachments] if attachments else None
+        )
         try:
-            temp_value = float(x_llm_temperature)
-        except Exception:
-            pass
+            answer = await call_webhook(webhook_config, webhook_request)
+        except Exception as webhook_err:
+            answer = f"Errore nella comunicazione con il webhook: {str(webhook_err)}"
     else:
+        # Comportamento normale: usa provider LLM
+        answer = await chat_with_provider(
+            messages,
+            provider=effective_provider,
+            context_hint=topic or 'generale',
+            model=effective_model_override,
+            temperature=temp_value,
+            ollama_base_url=x_ollama_base_url
+        )
+
+    # --- Delegation partial mode: ottieni risposta aggiuntiva dalla personalità delegata ---
+    if delegation_info and delegation_info.get("mode") == "partial" and delegate_system:
         try:
-            if x_personality_id:
-                _p = get_personality(x_personality_id)
-                if _p and _p.get('temperature') is not None:
-                    temp_value = float(_p.get('temperature'))
-        except Exception:
-            pass
-    answer = await chat_with_provider(messages, provider=effective_provider, context_hint=topic or 'generale', model=model_override, temperature=temp_value)
+            delegate_messages = [{"role": "system", "content": delegate_system}]
+            delegate_messages.extend(conversation_history)
+            delegate_messages.append({"role": "user", "content": full_user_message})
+            delegate_answer = await chat_with_provider(
+                delegate_messages,
+                provider=delegate_provider or effective_provider,
+                context_hint=topic or 'generale',
+                model=delegate_model or effective_model_override,
+                temperature=temp_value,
+                ollama_base_url=x_ollama_base_url
+            )
+            # Combina le risposte
+            answer = f"{answer}\n\n---\n\n{delegate_answer}"
+            print(f"[DELEGATION] Partial mode: combined responses")
+        except Exception as del_err:
+            print(f"[DELEGATION] Partial mode error: {del_err}")
+
     processing_time = time.perf_counter() - start_time
     
     # Se abbiamo usato RAG, aggiungi citazioni ai file sorgente
@@ -290,23 +978,41 @@ async def chat(
             
             selected_groups = get_user_context(session_id)
             if selected_groups:
-                search_results = rag_engine.search(
-                    query=full_user_message,
-                    group_ids=selected_groups,
-                    top_k=5
-                )
-                # Conserva per logging
-                rag_results = [
-                    {
+                # Se l'utente non ha selezionato gruppi ma il contesto RAG è stato creato, effettua fallback auto-select
+                if not selected_groups:
+                    try:
+                        all_groups = rag_engine.get_groups()
+                        auto_groups = [g['id'] for g in all_groups if g.get('document_count')]
+                        selected_groups = auto_groups[:5]
+                        if selected_groups:
+                            print(f"[RAG][fallback][non-stream] uso gruppi {selected_groups} per costruire rag_results")
+                    except Exception as _ae:
+                        print(f"[RAG][fallback][non-stream] errore selezione gruppi: {_ae}")
+
+                search_results = []
+                if selected_groups:
+                    search_results = rag_engine.search(
+                        query=full_user_message,
+                        group_ids=selected_groups,
+                        top_k=5
+                    ) or []
+                # Conserva per logging (propaga tutti i campi utili inclusi chunk_label / download_url se presenti)
+                rag_results = []
+                for r in search_results:
+                    rag_results.append({
                         "chunk_id": r.get("chunk_id"),
                         "document_id": r.get("document_id"),
                         "filename": r.get("filename"),
+                        "original_filename": r.get("original_filename"),
+                        "stored_filename": r.get("stored_filename"),
                         "chunk_index": r.get("chunk_index"),
                         "similarity": r.get("similarity_score"),
                         "preview": (r.get("content") or "")[:200],
-                        "content": r.get("content")
-                    } for r in (search_results or [])
-                ]
+                        "content": r.get("content"),
+                        "chunk_label": r.get("chunk_label"),
+                        "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None)
+                    })
+                print(f"[RAG][non-stream] rag_results={len(rag_results)}")
                 answer = format_response_with_citations(answer, search_results)
         except Exception as e:
             print(f"Errore nell'aggiunta citazioni: {e}")
@@ -334,7 +1040,8 @@ async def chat(
                 content_encrypted=answer,  # TODO: Implementare crittografia server-side
                 role="assistant",
                 token_count=token_count,
-                processing_time=processing_time
+                processing_time=processing_time,
+                content_plaintext_for_hash=answer
             )
             
             if not success:
@@ -343,38 +1050,49 @@ async def chat(
         except Exception as e:
             print(f"Error saving assistant message: {e}")
     
+    # Genera riassunto interazione e salva su file MD (in background, non blocca la risposta)
+    asyncio.ensure_future(_safe_append_summary(_summary_conv_id, user_msg, answer))
+
     # Calcolo token sempre per logging interno
     tokens_full = compute_token_stats(messages, answer)
-    resp = {"reply": answer, "topic": topic}
+    resp = {"reply": answer, "topic": topic, "topics": [t["topic"] for t in topics_multi] if topics_multi else ([topic] if topic else [])}
     # Sezione fonti compatta: solo ciò che è stato realmente usato
     try:
-        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
-        # Import rag_engine early so we can compute file URLs for each chunk
-        try:
-            from .rag_engine import rag_engine as _rag_engine_for_urls
-        except Exception:
-            _rag_engine_for_urls = None
+        sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": [], "delegation": None}
         if rag_results:
             sources["rag_chunks"] = [
                 {
-                    "chunk_id": r.get("chunk_id"),
-                    "document_id": r.get("document_id"),
                     "chunk_index": r.get("chunk_index"),
                     "filename": r.get("filename"),
+                    "original_filename": r.get("original_filename"),
+                    "document_id": r.get("document_id"),
+                    "stored_filename": r.get("stored_filename"),
                     "similarity": r.get("similarity"),
                     "preview": r.get("preview"),
                     "content": r.get("content"),
-                    "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
+                    "chunk_label": r.get("chunk_label"),
+                    "download_url": f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None,
+                    "allow_preview": r.get("allow_preview", True),
+                    "allow_download": r.get("allow_download", True)
                 } for r in rag_results[:10]
             ]
-        if topic and (not personality_enabled_topics or topic in (personality_enabled_topics or [])):
-            try:
-                from .personalities import load_topic_descriptions
-                _td = load_topic_descriptions()
-                descr = _td.get(topic) if isinstance(_td, dict) else None
-            except Exception:
-                descr = None
-            sources["pipeline_topics"].append({"name": topic, "description": descr})
+        # Aggiungi tutti i topic rilevati (multi) mantenendo anche quello principale se non già incluso
+        topics_for_sources = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+        # Filtra per personality_enabled_topics se definito
+        topics_filtered = [t for t in topics_for_sources if (not personality_enabled_topics or t['topic'] in (personality_enabled_topics or []))]
+        seen_topics = set()
+        try:
+            from .personalities import load_topic_descriptions
+            _td = load_topic_descriptions()
+        except Exception:
+            _td = {}
+        for t in topics_filtered:
+            nm = t['topic']
+            if nm in seen_topics:
+                continue
+            seen_topics.add(nm)
+            descr = _td.get(nm) if isinstance(_td, dict) else None
+            sources["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
         try:
             from .rag_routes import get_user_context
             from .rag_engine import rag_engine
@@ -387,7 +1105,35 @@ async def chat(
                         sources["rag_groups"].append({"id": gid, "name": nm})
         except Exception:
             pass
-        if any(sources.values()):
+        # Add data_tables meta if section was used
+        try:
+            if data_tables_search_results:
+                for t in data_tables_search_results:
+                    sources["data_tables"].append({
+                        "table_id": t.get('table_id'),
+                        "title": t.get('title') or t.get('table_name'),
+                        "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                        "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                    })
+        except Exception:
+            pass
+        # Add delegation info if delegation was triggered
+        if delegation_info:
+            target_id = delegation_info.get("target_personality_id")
+            target_name = None
+            if target_id:
+                try:
+                    target_p = get_personality(target_id)
+                    target_name = target_p.get("name") if target_p else target_id
+                except Exception:
+                    target_name = target_id
+            sources["delegation"] = {
+                "target_personality_id": target_id,
+                "target_personality_name": target_name,
+                "mode": delegation_info.get("mode"),
+                "matched_pattern": delegation_info.get("matched_pattern")
+            }
+        if any(v for v in sources.values() if v):
             resp['source_docs'] = sources
     except Exception:
         pass
@@ -435,6 +1181,9 @@ async def chat(
             "personality_id": x_personality_id,
             "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
             "topic": topic,
+            "topics_multi": topics_multi,
+            # Estrarre anche solo la lista semplice di pattern per analisi rapida (senza duplicare tutta la struttura rag_results)
+            "topics_patterns": [t.get('pattern') for t in (topics_multi or [])],
             "conversation_id": conversation_id,
             "session_id": session_id,
             "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
@@ -461,7 +1210,10 @@ async def chat_stream(
     x_personality_id: Optional[str] = Header(default=None),
     x_admin_password: Optional[str] = Header(default=None),
     x_llm_temperature: Optional[float] = Header(default=None, convert_underscores=False),
-    current_user: dict = Depends(get_current_active_user)
+    x_llm_model: Optional[str] = Header(default=None, convert_underscores=False),
+    x_ollama_base_url: Optional[str] = Header(default=None, convert_underscores=False),
+    x_data_tables_force: Optional[str] = Header(default=None, convert_underscores=False),
+    current_user: dict = Depends(get_optional_current_user)
 ):
     import uuid as _uuid
     request_id = f"req_{_uuid.uuid4().hex}"
@@ -514,54 +1266,305 @@ async def chat_stream(
                 content_encrypted=req.message_encrypted or user_msg,
                 role="user",
                 token_count=0,
-                processing_time=0.0
+                processing_time=0.0,
+                content_plaintext_for_hash=user_msg
             )
             if not success:
                 print("Warning: Failed to save user message to database (stream)")
         except Exception as e:
             print(f"Error saving user message (stream): {e}")
 
-    # Contesto & topic con filtri personalità
-    from .topic_router import detect_topic
-    from .rag import get_context, get_rag_context
-    from .personalities import get_personality
+    # Contesto & topic con filtri personalità (imports already at module level)
     
     # Ottieni informazioni sulla personalità per i filtri
     personality_enabled_topics = None
     personality_enabled_rag_groups = None
+    personality_enabled_data_tables = None
     if x_personality_id:
         try:
             p = get_personality(x_personality_id)
             if p:
                 personality_enabled_topics = p.get("enabled_pipeline_topics")
                 personality_enabled_rag_groups = p.get("enabled_rag_groups")
+                personality_enabled_data_tables = p.get("enabled_data_tables")
         except Exception as e:
             print(f"Error getting personality filters: {e}")
     
-    topic = detect_topic(user_msg, enabled_topics=personality_enabled_topics)
+    # Costruisci full_user_message coerente col non-stream (include allegati)
+    full_user_message = user_msg + _process_attachments(attachments)
+    topic = detect_topic(full_user_message, enabled_topics=personality_enabled_topics)
+    topics_multi = detect_topics(full_user_message, enabled_topics=personality_enabled_topics, max_topics=None)
     if not topic:
         topic = 'generale'
-    # Costruisci full_user_message coerente col non-stream (allegati non gestiti qui per semplicità futura estensione)
-    full_user_message = user_msg
-    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
-    context = rag_context or get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
-    # Personality override
-    effective_provider = provider
-    model_override: Optional[str] = None
-    system = load_system_prompt()
-    if x_personality_id:
+    import os as _os
+    from .rag import load_files_mapping, load_text_with_meta
+    file_map = load_files_mapping()
+    topic_snippets: list[tuple[str, str]] = []
+    topic_files_meta: list[dict] = []
+    topic_files_missing: list[dict] = []
+    debug_pipeline = _os.getenv("PIPELINE_DEBUG_LOG", "0") in ("1", "true", "True")
+    seen_topics = set()
+    for tinfo in (topics_multi or []):
+        tname = tinfo.get('topic') if isinstance(tinfo, dict) else None
+        if not tname or tname in seen_topics:
+            continue
+        seen_topics.add(tname)
+        if tname in file_map:
+            try:
+                raw_txt, meta = load_text_with_meta(tname)
+                topic_snippets.append((tname, raw_txt))
+                entry = {
+                    "topic": tname,
+                    "filename": meta.get("filename"),
+                    "source": meta.get("source"),
+                    "chars": meta.get("chars"),
+                }
+                if debug_pipeline:
+                    entry.update({
+                        "pipeline_path": meta.get("pipeline_path"),
+                        "rag_path": meta.get("rag_path"),
+                        "synced_to_rag": meta.get("synced_to_rag"),
+                        "exists": meta.get("exists"),
+                    })
+                topic_files_meta.append(entry)
+            except Exception as e:
+                topic_files_missing.append({
+                    "topic": tname,
+                    "filename": file_map.get(tname),
+                    "error": str(e) if debug_pipeline else "load_failed",
+                })
+    if not topic_snippets and topic:
         try:
-            from .prompts import get_system_prompt_by_id
-            p = get_personality(x_personality_id)
-            if p:
-                if p.get("system_prompt_id"):
-                    system = get_system_prompt_by_id(p["system_prompt_id"]) or system
-                if p.get("provider"):
-                    effective_provider = p["provider"].lower()
-                if p.get("model"):
-                    model_override = p["model"]
+            raw_txt, meta = load_text_with_meta(topic)
+            topic_snippets.append((topic, raw_txt))
+            entry = {
+                "topic": topic,
+                "filename": meta.get("filename"),
+                "source": meta.get("source"),
+                "chars": meta.get("chars"),
+            }
+            if debug_pipeline:
+                entry.update({
+                    "pipeline_path": meta.get("pipeline_path"),
+                    "rag_path": meta.get("rag_path"),
+                    "synced_to_rag": meta.get("synced_to_rag"),
+                    "exists": meta.get("exists"),
+                })
+            topic_files_meta.append(entry)
         except Exception as e:
-            print(f"Personality load failed (stream): {e}")
+            topic_files_missing.append({
+                "topic": topic,
+                "filename": file_map.get(topic),
+                "error": str(e) if debug_pipeline else "load_failed",
+            })
+    TOTAL_BUDGET = int(_os.getenv("CONTEXT_TOTAL_BUDGET", "9000"))
+    MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_CHARS", "3000"))
+    TOKENS_TOTAL = int(_os.getenv("CONTEXT_TOTAL_TOKENS", str(max(1000, TOTAL_BUDGET//4))))
+    TOKENS_MIN_TOPICS = int(_os.getenv("CONTEXT_MIN_TOPICS_TOKENS", str(max(500, MIN_TOPICS//4))))
+    TOTAL_BUDGET = TOKENS_TOTAL * 4
+    MIN_TOPICS = TOKENS_MIN_TOPICS * 4
+    if TOTAL_BUDGET < 3000:
+        TOTAL_BUDGET = 3000
+    topic_budget = min(max(MIN_TOPICS, 0), TOTAL_BUDGET)
+    def _truncate_sentence_boundary(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        cut = text[:limit]
+        for sep in ['.\n', '. ', '\n', '! ', '? ']:
+            idx = cut.rfind(sep)
+            if idx > limit * 0.5:
+                return cut[:idx+len(sep)].strip()
+        return cut.strip()
+    # Priority topics get higher weight when detected
+    PRIORITY_TOPICS = {"Analisi di secondo livello"}
+    topic_weights = []
+    for name, txt in topic_snippets:
+        weight = 1 + min(len(txt), 5000)/5000 + len(name)/20
+        # Boost priority topics by 3x when detected
+        if name in PRIORITY_TOPICS:
+            weight *= 3.0
+        topic_weights.append((name, txt, weight))
+    total_w = sum(w for _, _, w in topic_weights) or 1
+    topic_sections = []
+    for name, txt, w in topic_weights:
+        share = int(topic_budget * (w / total_w))
+        share = max(300, min(4000, share))
+        snippet = _truncate_sentence_boundary(txt, share)
+        topic_sections.append(f"[TOPIC: {name}]\n{snippet}")
+    topic_context_combined = "\n\n".join(topic_sections)
+    if len(topic_context_combined) > topic_budget:
+        topic_context_combined = topic_context_combined[:topic_budget]
+    pipeline_context = ""
+    if topic_context_combined:
+        pipeline_context = f"[SEZIONE PIPELINE]\n{topic_context_combined.strip()}"
+    rag_context = get_rag_context(full_user_message, session_id, personality_enabled_groups=personality_enabled_rag_groups)
+    context = rag_context or ""
+    if not context and not pipeline_context:
+        context = get_context(topic, user_msg, personality_enabled_groups=personality_enabled_rag_groups)
+    # Log pipeline context for stream
+    try:
+        _safe_log_interaction({
+            "event": "pipeline_context_built_stream",
+            "request_id": request_id,
+            "topics_detected": topics_multi,
+            "topic_primary": topic,
+            "topic_files_loaded": [t for t, _ in topic_snippets],
+            "topic_files_meta": topic_files_meta,
+            "topic_files_missing": topic_files_missing,
+            "file_map_count": len(file_map),
+            "topic_budget_chars": topic_budget,
+            "total_budget_chars": TOTAL_BUDGET,
+            "rag_used": bool(rag_context),
+            "user_message_sample": (user_msg or "")[:180],
+        })
+    except Exception:
+        pass
+    # Optional: cerca nelle tabelle dati abilitate o auto-rilevate e aggiungi una sezione al contesto
+    data_tables_search_results = None
+    try:
+        candidate_dt_tables = personality_enabled_data_tables or []
+        if not candidate_dt_tables:
+            from .admin import load_config as _load_cfg
+            cfg = _load_cfg()
+            dt_cfg = (cfg.get('data_tables_settings') or {}) if isinstance(cfg, dict) else {}
+            auto_enabled = bool(dt_cfg.get('enabled', True))
+            ql = (full_user_message or '').lower()
+            MONTHS = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre']
+            DOW = ['lunedì','lunedi','martedì','martedi','mercoledì','mercoledi','giovedì','giovedi','venerdì','venerdi','sabato','domenica','lun','mar','mer','gio','ven','sab','dom']
+            # Trigger più ampi per richieste tabellari (stream)
+            GLOBAL_KEYWORDS = [
+                'lezion','corso','orario','orari','calendario','appello','esame','aula','docente','prof',
+                'tabell','tabella','tabelle','tabulato','dataset','csv','excel','xlsx','foglio','foglio di calcolo','elenco','lista'
+            ]
+            has_global_trigger = any(k in ql for k in GLOBAL_KEYWORDS) or any(m[:3] in ql or m in ql for m in MONTHS) or any(w in ql for w in DOW)
+            _force_dt = str(x_data_tables_force).lower() in ('1','true','yes','on') if x_data_tables_force is not None else False
+            try:
+                from .data_tables import list_tables as _list_dt
+                _all_dt = _list_dt() or []
+
+                # NEW: Check per-table keywords first
+                def _match_table_keywords_stream(query_lower: str, tables: list) -> list:
+                    """Return table IDs that match per-table keywords."""
+                    matched = []
+                    for t in tables:
+                        table_keywords = t.get('keywords') or []
+                        if table_keywords and any(kw.lower() in query_lower for kw in table_keywords):
+                            matched.append(t.get('id'))
+                    return matched
+
+                per_table_matches = _match_table_keywords_stream(ql, _all_dt)
+                has_trigger = has_global_trigger or bool(per_table_matches)
+
+                # If per-table keywords matched, use only those tables
+                # Otherwise fallback to all tables if global trigger matched
+                if per_table_matches:
+                    candidate_dt_tables = per_table_matches
+                elif auto_enabled and _all_dt and (_force_dt or has_global_trigger):
+                    candidate_dt_tables = [t.get('id') for t in _all_dt if t.get('id')]
+
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_candidates_stream",
+                        "request_id": request_id,
+                        "forced": _force_dt,
+                        "has_trigger": has_trigger,
+                        "per_table_matches": len(per_table_matches),
+                        "count": len(candidate_dt_tables)
+                    })
+                except Exception:
+                    pass
+            except Exception:
+                candidate_dt_tables = []
+        if candidate_dt_tables:
+            from .data_tables import search_tables as _search_dt
+            dt_res = _search_dt(full_user_message, candidate_dt_tables, limit_per_table=8)
+            data_tables_search_results = dt_res.get('results') or []
+            # format risultati in una tabella markdown per ciascuna tabella (max 5 colonne visibili, 8 righe)
+            import os as _os
+            DT_BUDGET = int(_os.getenv('CONTEXT_MIN_DT_CHARS', '2000'))
+            parts = []
+            used = 0
+            for t in data_tables_search_results:
+                title = t.get('title') or t.get('table_name') or t.get('table_id')
+                disp_cols = t.get('display_columns') or (t.get('columns') or [])[:5]
+                if not disp_cols:
+                    continue
+                rows = t.get('rows') or []
+                header = "| " + " | ".join(disp_cols) + " |\n" + "|" + "|".join([" --- "] * len(disp_cols)) + "|\n"
+                body_lines = []
+                for r in rows[:8]:
+                    data = r.get('data') or {}
+                    vals = [str((data.get(c) if data.get(c) is not None else '')).replace('\n',' ').strip() for c in disp_cols]
+                    body_lines.append("| " + " | ".join(vals) + " |")
+                block = f"[Tabella: {title}]\n" + header + "\n".join(body_lines)
+                if used + len(block) > DT_BUDGET:
+                    break
+                parts.append(block)
+                used += len(block)
+            if parts:
+                context = (context + "\n\n[SEZIONE TABELLE]\n" + "\n\n".join(parts)).strip()
+            # Sottoagente: sintetizza una risposta mirata dai risultati tabellari
+            try:
+                from .data_tables_agent import run_agent as _run_dt_agent, get_settings as _dt_get_settings
+                _dt_settings = _dt_get_settings()
+                try:
+                    _safe_log_interaction({
+                        "event": "data_tables_agent_invoked_stream",
+                        "request_id": request_id,
+                        "provider": (_dt_settings or {}).get('provider'),
+                        "model": (_dt_settings or {}).get('model'),
+                        "tables": candidate_dt_tables,
+                        "result_tables": len(data_tables_search_results or [])
+                    })
+                except Exception:
+                    pass
+                _dt_ans = await _run_dt_agent(full_user_message, data_tables_search_results, candidate_dt_tables)
+                if _dt_ans:
+                    context = (context + "\n\n[SEZIONE TABELLE – SINTESI]\n" + _dt_ans.strip()).strip()
+            except Exception as _ae:
+                print(f"[data-tables-agent][stream] errore run: {_ae}")
+    except Exception as _dte:
+        print(f"[data-tables][stream] errore nel build contesto: {_dte}")
+    # Personality override (usa la funzione centralizzata per ottenere anche webhook_config)
+    system, provider_override, model_override, _pmeta, webhook_config = _resolve_personality(x_personality_id)
+    effective_provider = provider_override or provider
+
+    # --- Delegation check (stream) ---
+    # Prima controlla la delega pattern-based (legacy)
+    delegation_info = _check_delegation(full_user_message, _pmeta)
+    delegate_system = None
+    delegate_provider = None
+    delegate_model = None
+
+    # Se non c'è delega pattern-based, prova la delega AI
+    if not delegation_info and _pmeta:
+        # Costruisci la cronologia per il check AI
+        if use_memory_buffer:
+            memory_for_check = get_memory()
+            ai_check_history = memory_for_check.get_conversation_history(session_id)
+        else:
+            ai_check_history = frontend_history
+
+        delegation_info = await _check_delegation_ai(
+            full_user_message,
+            _pmeta,
+            provider=effective_provider,
+            model=model_override,
+            conversation_history=ai_check_history
+        )
+
+    if delegation_info:
+        target_id = delegation_info["target_personality_id"]
+        d_sys, d_prov, d_model, d_meta, _ = _resolve_personality(target_id)
+        if d_meta:
+            delegate_system = d_sys
+            delegate_provider = d_prov
+            delegate_model = d_model
+            if delegation_info.get("matched_pattern"):
+                print(f"[DELEGATION][stream] Pattern-based: pattern='{delegation_info['matched_pattern']}' -> {target_id} (mode={delegation_info['mode']})")
+            else:
+                print(f"[AI-DELEGATION][stream] AI-decided: -> {target_id} (reason={delegation_info.get('reason', 'N/A')})")
+
     # Log risoluzione stream
     try:
         log_interaction({
@@ -579,21 +1582,62 @@ async def chat_stream(
 
     if use_memory_buffer:
         memory = get_memory()
-        memory.add_message(session_id, "user", user_msg, {"topic": topic})
+        memory.add_message(session_id, "user", full_user_message, {"topic": topic})
         conversation_history = memory.get_conversation_history(session_id)
     else:
         conversation_history = frontend_history
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"}
-    ] + conversation_history
-    if not any(m.get('role') == 'user' and m.get('content') == user_msg for m in conversation_history):
-        messages.append({"role": "user", "content": user_msg})
+    # Usa system prompt delegato se delega full, altrimenti quello originale
+    active_system = delegate_system if (delegation_info and delegation_info.get("mode") == "full" and delegate_system) else system
+    messages = [{"role": "system", "content": active_system}]
+    if pipeline_context:
+        messages.append({
+            "role": "system",
+            "content": "ISTRUZIONI PRIORITARIE - Segui queste indicazioni specifiche per rispondere alla richiesta dell'utente. Questi contenuti hanno precedenza sulle istruzioni generali.\n\n" + pipeline_context
+        })
+    if context:
+        messages.append({
+            "role": "system",
+            "content": f"[Materiali di riferimento per il topic: {topic}]\n{context[:6000]}"
+        })
+
+    # Inietta il riassunto delle interazioni precedenti (memoria persistente MD) - STREAM
+    _summary_conv_id_stream = conversation_id or session_id
+    _existing_summary_stream = load_summary(_summary_conv_id_stream)
+    if _existing_summary_stream:
+        messages.append({
+            "role": "system",
+            "content": (
+                "[MEMORIA CONVERSAZIONE - Riassunto delle interazioni precedenti]\n"
+                "Usa queste informazioni come contesto per mantenere coerenza nella conversazione.\n\n"
+                + _existing_summary_stream[:4000]
+            )
+        })
+
+    messages += conversation_history
+    # Aggiungi il messaggio utente corrente (con allegati) se non già presente in cronologia
+    if not any(m.get('role') == 'user' and m.get('content') == full_user_message for m in conversation_history):
+        user_message_for_llm = {"role": "user", "content": full_user_message}
+        # Per modelli che supportano immagini (Claude/GPT-4V), inserisci immagini base64
+        if attachments and x_llm_provider in ['anthropic', 'openai']:
+            image_attachments = [att for att in attachments if att.base64_data and att.file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']]
+            if image_attachments:
+                user_message_for_llm["images"] = [
+                    {"type": "image", "data": att.base64_data, "filename": att.filename}
+                    for att in image_attachments
+                ]
+        messages.append(user_message_for_llm)
 
     start_time = asyncio.get_event_loop().time()
     answer_accum = []  # parti accumulate
     rag_results = []
+
+    # Applica override da delega (full mode usa provider/model della personalità delegata)
+    if delegation_info and delegation_info.get("mode") == "full":
+        if delegate_provider:
+            effective_provider = delegate_provider
+        if delegate_model:
+            model_override = delegate_model
 
     # Pre-calcola temperatura effettiva
     temp_value = 0.3
@@ -614,10 +1658,46 @@ async def chat_stream(
     async def event_generator():
         nonlocal answer_accum, rag_results, topic
         try:
-            if provider == 'ollama':
+            # Se webhook attivo, inoltra allo streaming webhook
+            if webhook_config:
+                from .webhook_handler import WebhookRequest, call_webhook_streaming
+                import json as _json_wh
+                webhook_request = WebhookRequest(
+                    message=full_user_message,
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    history=conversation_history if webhook_config.include_history else None,
+                    personality_id=x_personality_id,
+                    personality_name=_pmeta.get("name") if _pmeta else None,
+                    user_id=(current_user or {}).get("id") if isinstance(current_user, dict) else None,
+                    attachments=[{
+                        "id": att.id,
+                        "filename": att.filename,
+                        "file_type": att.file_type,
+                        "content": att.content
+                    } for att in attachments] if attachments else None
+                )
+                async for chunk in call_webhook_streaming(webhook_config, webhook_request):
+                    answer_accum.append(chunk)
+                    yield f"data: {{\"delta\":{_json_wh.dumps(chunk)}}}\n\n"
+            elif provider == 'ollama':
                 # Streaming reale da Ollama
-                import httpx, json as _json, os as _os
-                base_url = _os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+                import json as _json, os as _os, importlib
+                try:
+                    _httpx = importlib.import_module('httpx')
+                except Exception:
+                    _httpx = None
+                base_url_env = x_ollama_base_url or _os.getenv('OLLAMA_BASE_URL')
+                base_url_cfg = None
+                try:
+                    from .admin import load_config as _load_cfg  # type: ignore
+                    _cfg_tmp = _load_cfg()
+                    base_url_cfg = _cfg_tmp.get('ai_providers', {}).get('ollama', {}).get('base_url') if isinstance(_cfg_tmp, dict) else None
+                except Exception:
+                    base_url_cfg = None
+                base_url = base_url_env or base_url_cfg or 'http://localhost:11434'
+                origin = 'ENV' if base_url_env else ('CONFIG' if base_url_cfg else 'DEFAULT')
+                print(f"🦙 [stream] Ollama URL: {base_url} (origin={origin})")
                 model_env = _os.getenv('OLLAMA_MODEL')
                 if not model_env:
                     try:
@@ -632,7 +1712,9 @@ async def chat_stream(
                     "stream": True,
                     "options": {"temperature": 0.3, "top_p": 0.9}
                 }
-                async with httpx.AsyncClient(timeout=None) as cx:
+                if _httpx is None:
+                    raise RuntimeError("httpx is required for Ollama streaming but not installed")
+                async with _httpx.AsyncClient(timeout=None) as cx:
                     async with cx.stream('POST', f"{base_url}/api/chat", json=payload) as resp:
                         async for line in resp.aiter_lines():
                             if not line:
@@ -657,54 +1739,80 @@ async def chat_stream(
                         from .rag_engine import rag_engine
                         from .rag_routes import get_user_context as _get_uc
                         sel_groups = _get_uc(session_id)
-                        if sel_groups:
-                            _sr = rag_engine.search(query=full_user_message, group_ids=sel_groups, top_k=5)
-                            rag_results = [
-                                {
-                                    "chunk_id": r.get("chunk_id"),
-                                    "document_id": r.get("document_id"),
-                                    "filename": r.get("filename"),
-                                    "chunk_index": r.get("chunk_index"),
-                                    "similarity": r.get("similarity_score"),
-                                    "preview": (r.get("content") or "")[:200],
-                                    "content": r.get("content")
-                                } for r in (_sr or [])
-                            ]
-                            # Ordina per similarità desc se presente
+                        # Fallback auto-select se vuoto
+                        if not sel_groups:
                             try:
-                                rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
-                            except Exception:
-                                pass
-                    except Exception:
+                                all_groups = rag_engine.get_groups()
+                                sel_groups = [g['id'] for g in all_groups if g.get('document_count')][:5]
+                                if sel_groups:
+                                    print(f"[RAG][fallback][stream] uso gruppi {sel_groups}")
+                            except Exception as _se:
+                                print(f"[RAG][fallback][stream] errore selezione gruppi: {_se}")
+                        _sr = []
+                        if sel_groups:
+                            _sr = rag_engine.search(query=full_user_message, group_ids=sel_groups, top_k=5) or []
+                        rag_results = []
+                        for r in _sr:
+                            rag_results.append({
+                                "chunk_id": r.get("chunk_id"),
+                                "document_id": r.get("document_id"),
+                                "filename": r.get("filename"),
+                                "original_filename": r.get("original_filename"),
+                                "stored_filename": r.get("stored_filename"),
+                                "chunk_index": r.get("chunk_index"),
+                                "similarity": r.get("similarity_score"),
+                                "preview": (r.get("content") or "")[:200],
+                                "content": r.get("content"),
+                                "chunk_label": r.get("chunk_label"),
+                                "download_url": r.get("download_url") or (f"/api/rag/download/{r.get('document_id')}" if r.get('document_id') else None),
+                                "allow_preview": r.get("allow_preview", True),
+                                "allow_download": r.get("allow_download", True)
+                            })
+                        try:
+                            rag_results.sort(key=lambda x: x.get('similarity') or 0, reverse=True)
+                        except Exception:
+                            pass
+                        print(f"[RAG][stream] rag_results={len(rag_results)}")
+                    except Exception as _re:
+                        print(f"[RAG][stream] errore recupero rag_results: {_re}")
                         rag_results = []
                 # Invia meta iniziale con source_docs
                 try:
                     from .personalities import load_topic_descriptions as _ltd
                     _td2 = _ltd()
-                    sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
-                    try:
-                        from .rag_engine import rag_engine as _rag_engine_for_urls
-                    except Exception:
-                        _rag_engine_for_urls = None
+                    sources = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
                     if rag_results:
                         sources["rag_chunks"] = [
                             {
                                 "chunk_id": r.get("chunk_id"),
                                 "document_id": r.get("document_id"),
                                 "chunk_index": r.get("chunk_index"),
-                                "filename": r.get("filename"),
+                                "filename": r.get("original_filename") or r.get("filename"),
+                                "original_filename": r.get("original_filename"),
+                                "stored_filename": r.get("stored_filename"),
                                 "similarity": r.get("similarity"),
                                 "preview": r.get("preview"),
                                 "content": r.get("content"),
-                                "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
+                                "chunk_label": r.get("chunk_label"),
+                                "download_url": r.get("download_url"),
+                                "allow_preview": r.get("allow_preview", True),
+                                "allow_download": r.get("allow_download", True)
                             } for r in rag_results[:10]
                         ]
-                    if topic:
-                        try:
-                            descr = _td2.get(topic) if isinstance(_td2, dict) else None
-                        except Exception:
-                            descr = None
-                        sources["pipeline_topics"].append({"name": topic, "description": descr})
+                    # Inserisci multi-topic
+                    topics_for_sources = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+                    try:
+                        descr_map = _td2 if isinstance(_td2, dict) else {}
+                    except Exception:
+                        descr_map = {}
+                    seen_mt = set()
+                    for t in topics_for_sources:
+                        nm = t['topic']
+                        if nm in seen_mt:
+                            continue
+                        seen_mt.add(nm)
+                        descr = descr_map.get(nm)
+                        sources["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
                     try:
                         from .rag_routes import get_user_context
                         all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
@@ -714,6 +1822,18 @@ async def chat_stream(
                                 nm = all_groups.get(gid)
                                 if nm:
                                     sources["rag_groups"].append({"id": gid, "name": nm})
+                    except Exception:
+                        pass
+                    # Data tables meta (if available in this request scope)
+                    try:
+                        if data_tables_search_results:
+                            for t in data_tables_search_results:
+                                sources["data_tables"].append({
+                                    "table_id": t.get('table_id'),
+                                    "title": t.get('title') or t.get('table_name'),
+                                    "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                                    "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                                })
                     except Exception:
                         pass
                     meta_evt = {"meta": True, "topic": topic, "source_docs": sources if any(sources.values()) else None}
@@ -774,12 +1894,15 @@ async def chat_stream(
                             content_encrypted=full_answer,
                             role='assistant',
                             token_count=tokens_full.get('total', 0),
-                            processing_time=duration_ms/1000.0
+                            processing_time=duration_ms/1000.0,
+                            content_plaintext_for_hash=full_answer
                         )
                         if not success:
                             print("Warning: failed to save assistant message (stream)")
                     except Exception as e:
                         print(f"Error saving assistant message (stream): {e}")
+                # Genera riassunto interazione (in background, non blocca lo stream)
+                asyncio.ensure_future(_safe_append_summary(_summary_conv_id_stream, user_msg, full_answer))
                 # Logging usage
                 try:
                     cfg = load_config()
@@ -808,6 +1931,7 @@ async def chat_stream(
                         "personality_id": x_personality_id,
                         "personality_name": (get_personality(x_personality_id).get("name") if x_personality_id else None),
                         "topic": topic,
+                        "topics_patterns": [t.get('pattern') for t in (topics_multi or [])],
                         "conversation_id": conversation_id,
                         "session_id": session_id,
                         "user_id": (current_user or {}).get("id") if isinstance(current_user, dict) else None,
@@ -825,30 +1949,38 @@ async def chat_stream(
                 # Aggiungi pipeline topics e rag group names anche nell'evento finale
                 from .personalities import load_topic_descriptions as _ltd3
                 _td3 = _ltd3()
-                sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": []}
-                try:
-                    from .rag_engine import rag_engine as _rag_engine_for_urls
-                except Exception:
-                    _rag_engine_for_urls = None
+                sources_final = {"rag_chunks": [], "pipeline_topics": [], "rag_groups": [], "data_tables": []}
                 if rag_results:
                     sources_final["rag_chunks"] = [
                         {
                             "chunk_id": r.get("chunk_id"),
                             "document_id": r.get("document_id"),
                             "chunk_index": r.get("chunk_index"),
-                            "filename": r.get("filename"),
+                            "filename": r.get("original_filename") or r.get("filename"),
+                            "original_filename": r.get("original_filename"),
+                            "stored_filename": r.get("stored_filename"),
                             "similarity": r.get("similarity"),
                             "preview": r.get("preview"),
                             "content": r.get("content"),
-                            "file_url": (_rag_engine_for_urls.get_document_file_url(r.get("document_id")) if (_rag_engine_for_urls and r.get("document_id") is not None) else None)
+                            "chunk_label": r.get("chunk_label"),
+                            "download_url": r.get("download_url"),
+                            "allow_preview": r.get("allow_preview", True),
+                            "allow_download": r.get("allow_download", True)
                         } for r in rag_results[:10]
                     ]
-                if topic:
-                    try:
-                        descr = _td3.get(topic) if isinstance(_td3, dict) else None
-                    except Exception:
-                        descr = None
-                    sources_final["pipeline_topics"].append({"name": topic, "description": descr})
+                topics_for_sources2 = topics_multi or ([] if not topic else [{"topic": topic, "pattern": "(single_detect)"}])
+                try:
+                    descr_map2 = _td3 if isinstance(_td3, dict) else {}
+                except Exception:
+                    descr_map2 = {}
+                seen_mt2 = set()
+                for t in topics_for_sources2:
+                    nm = t['topic']
+                    if nm in seen_mt2:
+                        continue
+                    seen_mt2.add(nm)
+                    descr = descr_map2.get(nm)
+                    sources_final["pipeline_topics"].append({"name": nm, "description": descr, "pattern": t.get('pattern')})
                 try:
                     from .rag_routes import get_user_context
                     all_groups = {g['id']: g['name'] for g in rag_engine.get_groups()}
@@ -860,7 +1992,35 @@ async def chat_stream(
                                 sources_final["rag_groups"].append({"id": gid, "name": nm})
                 except Exception:
                     pass
-                meta = {"done": True, "reply": full_answer, "topic": topic, "source_docs": sources_final if any(sources_final.values()) else None}
+                # Data tables meta final
+                try:
+                    if data_tables_search_results:
+                        for t in data_tables_search_results:
+                            sources_final["data_tables"].append({
+                                "table_id": t.get('table_id'),
+                                "title": t.get('title') or t.get('table_name'),
+                                "download_url": f"/api/data-tables/{t.get('table_id')}/download?format=csv",
+                                "row_ids": [r.get('id') for r in (t.get('rows') or [])]
+                            })
+                except Exception:
+                    pass
+                # Add delegation info if delegation was triggered
+                if delegation_info:
+                    target_id = delegation_info.get("target_personality_id")
+                    target_name = None
+                    if target_id:
+                        try:
+                            target_p = get_personality(target_id)
+                            target_name = target_p.get("name") if target_p else target_id
+                        except Exception:
+                            target_name = target_id
+                    sources_final["delegation"] = {
+                        "target_personality_id": target_id,
+                        "target_personality_name": target_name,
+                        "mode": delegation_info.get("mode"),
+                        "matched_pattern": delegation_info.get("matched_pattern")
+                    }
+                meta = {"done": True, "reply": full_answer, "topic": topic, "topics": [t['topic'] for t in topics_multi] if topics_multi else ([topic] if topic else []), "source_docs": sources_final if any(v for v in sources_final.values() if v) else None}
                 yield f"data: {_json_final.dumps(meta)}\n\n"
             except Exception:
                 yield "data: {\"done\":true}\n\n"

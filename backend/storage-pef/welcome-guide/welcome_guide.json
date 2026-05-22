@@ -1,0 +1,22 @@
+{
+  "welcome": {
+    "active_id": "wm_minimal",
+    "messages": [
+      {
+        "id": "wm_minimal",
+        "title": "Benvenuto",
+        "content": "Ciao! Sono qui per assisterti. Dimmi pure da dove vuoi iniziare."
+      }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_minimal",
+    "guides": [
+      {
+        "id": "gd_minimal",
+        "title": "Come iniziare",
+        "content": "Condividi un obiettivo o una domanda e ti guiderò passo dopo passo."
+      }
+    ]
+  }
+}

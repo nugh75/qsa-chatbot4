@@ -1,0 +1,32 @@
+{
+  "welcome": {
+    "active_id": "wm_3fea010c",
+    "messages": [
+      {
+        "id": "wm_minimal",
+        "title": "Benvenuto",
+        "content": "Ciao! Sono qui per assisterti. Dimmi pure da dove vuoi iniziare."
+      },
+      {
+        "id": "wm_3fea010c",
+        "title": "Counselorbot",
+        "content": "Ciao, sono CounselorBot!\nSono un tutor virtuale pensato per accompagnarti nella riflessione sulle tue esperienze e sul tuo modo di apprendere, studiare e progettare il futuro.\nPosso aiutarti a utilizzare il sito CompetenzeStrategiche.it, dove troverai diversi questionari di autoriflessione pensati per far emergere le tue competenze strategiche — cognitive, emotive, motivazionali e metacognitive.\n\nDopo aver compilato un questionario, posso guidarti nell’analisi dei risultati, aiutandoti a interpretarli e a collegarli ai tuoi obiettivi personali, di studio o professionali.\nNon fornirò risposte preconfezionate: il mio compito è aiutarti a costruire le tue, passo dopo passo.\n\nPuoi anche scegliere tra diverse versioni di me, ognuna con un approccio diverso — più riflessivo, più analitico o più orientato all’azione.\n\nAllora, cominciamo: vuoi esplorare insieme uno dei questionari o riflettere su una competenza specifica?"
+      },
+      {
+        "id": "wm_b3c73646",
+        "title": "CB",
+        "content": "Ciao! Sono Counselorbot, il tuo compagno di apprendimento!\nPrima di iniziare, ricorda che ciò che condivido sono solo suggerimenti orientativi: per decisioni e approfondimenti rivolgiti sempre ai tuoi professori, ai tutor/orientatori e alle altre figure di supporto del tuo istituto.\nHo visto che hai completato il QSA – che esperienza interessante!\nPer iniziare, mi piacerebbe conoscere la tua impressione generale: cosa hai pensato durante la compilazione del questionario? C’è qualcosa che ti ha colpito o sorpreso nei risultati?\nPuoi inviarmi i tuoi esiti del questionario cliccando sull’icona in basso questionari."
+      }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_minimal",
+    "guides": [
+      {
+        "id": "gd_minimal",
+        "title": "Come iniziare",
+        "content": "Condividi un obiettivo o una domanda e ti guiderò passo dopo passo."
+      }
+    ]
+  }
+}

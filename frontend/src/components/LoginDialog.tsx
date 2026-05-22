@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Dialog,
   DialogTitle,
@@ -25,12 +26,12 @@ import {
   Email as EmailIcon,
 } from '@mui/icons-material';
 import { apiService, handleApiError } from '../apiService';
-import { ChatCrypto, CredentialManager } from '../crypto';
+import { CredentialManager, PasswordValidator } from '../crypto';
 
 interface LoginDialogProps {
   open: boolean;
   onClose: () => void;
-  onLoginSuccess: (user: UserInfo, crypto: ChatCrypto) => void;
+  onLoginSuccess: (user: UserInfo, crypto: any | null) => void;
 }
 
 interface UserInfo {
@@ -43,23 +44,26 @@ interface UserInfo {
 interface LoginForm {
   email: string;
   password: string;
+  // Unico flag: se attivo, mantiene l'accesso e salva la chiave finché il browser resta aperto
   rememberMe: boolean;
-  rememberKeyThisSession?: boolean;
 }
 
 interface RegisterForm {
   email: string;
   password: string;
   confirmPassword: string;
+  rememberMe?: boolean;
 }
 
 const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8005');
+const PASSWORD_REQUIREMENTS = 'Minimo 8 caratteri, 1 maiuscola, 1 minuscola, 1 numero, 1 speciale';
 
 const LoginDialog: React.FC<LoginDialogProps> = ({
   open,
   onClose,
   onLoginSuccess,
 }) => {
+  const { continueAsGuest } = useAuth();
   const [currentTab, setCurrentTab] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,21 +76,21 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
     email: '',
     password: '',
     rememberMe: false,
-    rememberKeyThisSession: false,
   });
 
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
     email: '',
     password: '',
     confirmPassword: '',
+    rememberMe: false,
   });
 
   useEffect(() => {
     if (open) {
       // Reset form quando si apre
       setError(null);
-      setLoginForm({ email: '', password: '', rememberMe: false, rememberKeyThisSession: false });
-      setRegisterForm({ email: '', password: '', confirmPassword: '' });
+      setLoginForm({ email: '', password: '', rememberMe: false });
+      setRegisterForm({ email: '', password: '', confirmPassword: '', rememberMe: false });
     }
   }, [open]);
 
@@ -111,7 +115,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         CredentialManager.saveTokens(
           response.data.access_token,
           response.data.refresh_token,
-          {} // userInfo temporaneo, verrà aggiornato dopo
+          {}, // userInfo temporaneo, verrà aggiornato dopo
+          loginForm.rememberMe
         );
 
         // Poi ottieni info utente (ora il token è disponibile)
@@ -132,27 +137,8 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
             userInfo
           );
 
-          // Inizializza crypto con password utente
-          const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(
-            loginForm.password,
-            loginForm.email,
-            !!loginForm.rememberKeyThisSession
-          );
-
-          // Se richiesto, salva la chiave in sessionStorage
-          if (loginForm.rememberKeyThisSession) {
-            try {
-              const raw = await crypto.exportCurrentKeyRaw();
-              sessionStorage.setItem('qsa_crypto_key_raw', raw);
-              sessionStorage.setItem('qsa_crypto_key_user', loginForm.email);
-            } catch (e) {
-              console.warn('Impossibile salvare la chiave in sessione:', e);
-            }
-          }
-
-          // Ignora il flusso di cambio password forzato: accesso diretto
-          onLoginSuccess(userInfo, crypto);
+          // Client-side encryption disabled: no key derivation. Pass null for crypto
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           setError('Errore nel recupero delle informazioni utente');
@@ -173,18 +159,21 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       setError('Le nuove password non corrispondono');
       return;
     }
+    const passwordValidation = PasswordValidator.validatePassword(newPassword);
+    if (!passwordValidation.isValid) {
+      setError(`Password non valida: ${passwordValidation.errors.join(', ')}`);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const resp = await apiService.changePassword(loginForm.password, newPassword);
       if (resp.success) {
-        // re-derive crypto with new password
-        const crypto = new ChatCrypto();
-        await crypto.deriveKeyFromPassword(newPassword, loginForm.email);
+        // Client-side encryption disabled: do not derive key
         const me = await apiService.getCurrentUser();
         if (me.success && me.data) {
           const userInfo: UserInfo = { id: me.data.id, email: me.data.email, is_admin: (me.data as any).is_admin ?? false, created_at: me.data.created_at };
-          onLoginSuccess(userInfo, crypto);
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           onClose();
@@ -210,8 +199,9 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       return;
     }
 
-    if (registerForm.password.length < 8) {
-      setError('La password deve essere di almeno 8 caratteri');
+    const passwordValidation = PasswordValidator.validatePassword(registerForm.password);
+    if (!passwordValidation.isValid) {
+      setError(`Password non valida: ${passwordValidation.errors.join(', ')}`);
       return;
     }
 
@@ -220,7 +210,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
 
     try {
       // Chiama API di registrazione
-      console.log('📡 Attempting registration with:', {
+  console.log('Attempting registration with:', {
         email: registerForm.email,
         password: registerForm.password.substring(0, 3) + '***'
       });
@@ -230,7 +220,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         password: registerForm.password,
       });
       
-      console.log('📡 Registration response:', response);
+  console.log('Registration response:', response);
 
       if (response.success && response.data?.access_token) {
         console.log('✅ Registration successful, token received:', response.data.access_token.substring(0, 20) + '...');
@@ -239,16 +229,17 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
         CredentialManager.saveTokens(
           response.data.access_token,
           response.data.refresh_token,
-          {} // userInfo temporaneo, verrà aggiornato dopo
+          {}, // userInfo temporaneo, verrà aggiornato dopo
+          !!registerForm.rememberMe
         );
         
         console.log('✅ Tokens saved to localStorage');
-        console.log('🔍 Checking saved token:', CredentialManager.getAccessToken()?.substring(0, 20) + '...');
+  console.log('Checking saved token:', CredentialManager.getAccessToken()?.substring(0, 20) + '...');
 
         // Poi ottieni info utente (ora il token è disponibile)
-        console.log('📡 Calling getCurrentUser...');
+  console.log('Calling getCurrentUser...');
         const userResponse = await apiService.getCurrentUser();
-        console.log('📡 getCurrentUser response:', userResponse);
+  console.log('getCurrentUser response:', userResponse);
 
         if (userResponse.success && userResponse.data) {
           const userInfo: UserInfo = {
@@ -262,14 +253,12 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
           CredentialManager.saveTokens(
             response.data.access_token,
             response.data.refresh_token,
-            userInfo
+            userInfo,
+            !!registerForm.rememberMe
           );
 
-          // Inizializza crypto
-          const crypto = new ChatCrypto();
-          await crypto.deriveKeyFromPassword(registerForm.password, registerForm.email);
-
-          onLoginSuccess(userInfo, crypto);
+          // Client-side encryption disabled: pass null for crypto
+          onLoginSuccess(userInfo, null as any);
           onClose();
         } else {
           setError('Errore nel recupero delle informazioni utente');
@@ -299,7 +288,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
       <DialogTitle>
         <Box display="flex" alignItems="center" gap={1}>
           <PersonIcon />
-          Accesso Counselorbot
+          Accesso
         </Box>
       </DialogTitle>
 
@@ -369,17 +358,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                     onChange={(e) => setLoginForm(prev => ({ ...prev, rememberMe: e.target.checked }))}
                   />
                 }
-                label="Ricordami"
-              />
-
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={!!loginForm.rememberKeyThisSession}
-                    onChange={(e) => setLoginForm(prev => ({ ...prev, rememberKeyThisSession: e.target.checked }))}
-                  />
-                }
-                label="Ricorda chiave finché il browser resta aperto"
+                label="Ricordami (mantieni accesso, chiave finché il browser resta aperto)"
               />
             </Box>
           ) : (
@@ -424,25 +403,35 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                     </InputAdornment>
                   ),
                 }}
-                helperText="Minimo 8 caratteri"
+                helperText={PASSWORD_REQUIREMENTS}
                 required
               />
 
-              <TextField
-                fullWidth
-                label="Conferma Password"
-                type={showPassword ? 'text' : 'password'}
-                value={registerForm.confirmPassword}
-                onChange={(e) => setRegisterForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <LockIcon />
-                    </InputAdornment>
-                  ),
-                }}
-                required
-              />
+            <TextField
+              fullWidth
+              label="Conferma Password"
+              type={showPassword ? 'text' : 'password'}
+              value={registerForm.confirmPassword}
+              onChange={(e) => setRegisterForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LockIcon />
+                  </InputAdornment>
+                ),
+              }}
+              required
+            />
+
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={!!registerForm.rememberMe}
+                  onChange={(e) => setRegisterForm(prev => ({ ...prev, rememberMe: e.target.checked }))}
+                />
+              }
+              label="Ricordami (mantieni accesso, chiave finché il browser resta aperto)"
+            />
 
               <Typography variant="caption" color="text.secondary">
                 Creando un account, le tue conversazioni saranno crittografate end-to-end
@@ -471,6 +460,7 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
                   </InputAdornment>
                 ),
               }}
+              helperText={PASSWORD_REQUIREMENTS}
             />
             <TextField
               fullWidth
@@ -501,6 +491,15 @@ const LoginDialog: React.FC<LoginDialogProps> = ({
               startIcon={loading && <CircularProgress size={16} />}
             >
               {loading ? 'Attendere...' : currentTab === 0 ? 'Accedi' : 'Registrati'}
+            </Button>
+            <Button
+              onClick={() => {
+                continueAsGuest();
+                onClose();
+              }}
+              color="secondary"
+            >
+              Continua come ospite
             </Button>
           </>
         ) : (

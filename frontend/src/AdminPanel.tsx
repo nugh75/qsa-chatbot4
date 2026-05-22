@@ -4,13 +4,15 @@ import {
   FormControl, InputLabel, Select, MenuItem, Switch, FormControlLabel,
   Card, CardContent, Grid, Divider, Alert, Chip, LinearProgress,
   Accordion, AccordionSummary, AccordionDetails, IconButton, CircularProgress,
-  Tooltip, Slider, Tabs, Tab
+  Tooltip, Slider, Tabs, Tab, Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material'
 import Avatar from '@mui/material/Avatar'
-import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon } from '@mui/icons-material'
+import { Settings as SettingsIcon, VolumeUp as VolumeIcon, Psychology as AIIcon, Analytics as StatsIcon, ExpandMore as ExpandMoreIcon, Mic as MicIcon, Key as KeyIcon, Storage as StorageIcon, Description as DescriptionIcon, Chat as ChatIcon, SportsKabaddi as ArenaIcon, Hub as HubIcon, CloudDownload as CloudDownloadIcon, Refresh as RefreshIcon, CheckCircle as CheckCircleIcon, HourglassBottom as HourglassBottomIcon, Error as ErrorIcon, Info as InfoIcon, HelpOutline as HelpOutlineIcon, Dns as DnsIcon, ArrowBack as ArrowBackIcon } from '@mui/icons-material'
+import { useNavigate } from 'react-router-dom'
 
 import UserManagement from './components/UserManagement'
-import ModelProvidersPanel from './components/ModelProvidersPanel'
+// Rimosso ModelProvidersPanel (tab provider) — test LLM spostato sotto Personalità
+import APIKeysManagementPanel from './components/APIKeysManagementPanel'
 import TTSProvidersPanel from './components/TTSProvidersPanel'
 import WhisperPanel from './components/WhisperPanel'
 import MemoryPanel from './components/MemoryPanel';
@@ -20,23 +22,35 @@ import SummaryPromptsPanel from './components/SummaryPromptsPanel'
 import PersonalitiesPanel from './components/PersonalitiesPanel'
 import APIDocsPanel from './components/APIDocsPanel'
 import RagDocumentsPanel from './components/RagDocumentsPanel'
+import WebSourcesAdminTab from './components/WebSourcesAdminTab'
+import FormsBuilderPanel from './components/FormsBuilderPanel'
+import DataTablesPanel from './components/DataTablesPanel'
+
 import WhisperHealthPanel from './components/WhisperHealthPanel'
 import PipelinePanel from './components/PipelinePanel'
 import EndpointsExplorer from './components/EndpointsExplorer'
-import WelcomeGuidesPanel from './components/WelcomeGuidesPanel'
+// WelcomeGuidesPanel rimosso
 import MCPPanel from './components/MCPPanel'
-import NewRAGAdminPanel from './components/NewRAGAdminPanel'
 import { authFetch, BACKEND } from './utils/authFetch'
 import FooterSettingsPanel from './components/FooterSettingsPanel'
 import { apiService } from './apiService'
 import type { AdminConfig, FeedbackStats } from './types/admin'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import remarkSlugLocal from './utils/remarkSlugLocal'
+import BackupPanel from './components/BackupPanel'
+import DatabaseInfoPanel from './components/DatabaseInfoPanel'
+import ConversationsAdminTab from './components/ConversationsAdminTab'
 
 const AdminPanel: React.FC = () => {
+  const navigate = useNavigate()
+
   // Stato principale
   const [config, setConfig] = useState<AdminConfig | null>(null)
   const [feedbackStats, setFeedbackStats] = useState<FeedbackStats | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
   const [arenaPublic, setArenaPublic] = useState<boolean>(false)
+  const [surveyResultsPublic, setSurveyResultsPublic] = useState<boolean>(false)
   const [contactEmail, setContactEmail] = useState<string>('')
   const [researchProject, setResearchProject] = useState<string>('')
   const [repositoryUrl, setRepositoryUrl] = useState<string>('')
@@ -52,41 +66,54 @@ const AdminPanel: React.FC = () => {
   const [showFooterBlock, setShowFooterBlock] = useState<boolean>(true)
   const [savingArena, setSavingArena] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
+  // Guida Admin modal state
+  const [guideOpen, setGuideOpen] = useState(false)
+  const [guideLoading, setGuideLoading] = useState(false)
+  const [guideError, setGuideError] = useState<string|null>(null)
+  const [guideContent, setGuideContent] = useState('')
+  const [guideSearch, setGuideSearch] = useState('')
+  const [guideToc, setGuideToc] = useState<{id:string; level:number; title:string}[]>([])
+  const [activeHeading, setActiveHeading] = useState('')
+  const guideRef = React.useRef<HTMLDivElement|null>(null)
+  const [guideFontScale, setGuideFontScale] = useState(1)
 
   // Categorie tematiche (definisce quali pannelli appaiono in ogni tab)
   const categories = [
-    { id: 'provider', label: 'Modelli & Provider', panels: ['providers', 'tts'] },
-    { id: 'conversation', label: 'Conversazione', panels: ['prompts', 'personalities', 'memory', 'welcome_guides'] },
-    { id: 'audio', label: 'Audio', panels: ['transcription', 'whisper_health'] },
-    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'pipeline'] },
-    { id: 'new_rag', label: 'Nuovo RAG Admin', panels: ['new_rag_admin'] },
+    { id: 'conversation', label: 'Personalità', panels: ['personalities'] },
+    { id: 'audio', label: 'Audio', panels: ['tts', 'transcription', 'whisper_health'] },
+    { id: 'rag', label: 'RAG & Pipeline', panels: ['embedding', 'ragdocs', 'web_sources', 'data_tables', 'forms', 'pipeline', 'summary_prompts'] },
     { id: 'mcp', label: 'MCP Servers', panels: ['mcp_servers'] },
-    { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'usage'] },
+    { id: 'utenti', label: 'Utenti & Feedback', panels: ['user_management', 'conversations', 'usage'] },
     { id: 'footer', label: 'Footer & Info', panels: ['footer_settings'] },
-    { id: 'api', label: 'API & Tecnico', panels: ['apidocs'] },
+    { id: 'api', label: 'API & Tecnico', panels: ['api_keys', 'memory', 'apidocs', 'dbinfo'] },
+    { id: 'backup', label: 'Backup', panels: ['backup_panel'] },
   ] as const
 
-  const [selectedCategory, setSelectedCategory] = useState<string>('provider')
+  const [selectedCategory, setSelectedCategory] = useState<string>('conversation')
 
   // UI stato locale
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({
-    providers: true,
     tts: false,
-  transcription: false,
-    prompts: false,
+    transcription: false,
     personalities: false,
-    user_management: true,
-  usage: false,
-  memory: false,
-  apidocs: false,
-  embedding: false,
-  ragdocs: false,
-  new_rag_admin: true,
-  whisper_health: false,
-  pipeline: false,
-  welcome_guides: false,
-  footer_settings: true,
-  mcp_servers: true,
+    user_management: false,
+    conversations: false,
+    usage: false,
+    memory: false,
+    apidocs: false,
+    dbinfo: false,
+    embedding: false,
+    ragdocs: false,
+    web_sources: false,
+    data_tables: false,
+    forms: false,
+    whisper_health: false,
+    pipeline: false,
+    summary_prompts: false,
+    footer_settings: false,
+    mcp_servers: false,
+    backup_panel: false,
+    api_keys: false,
   })
 
   // Token test
@@ -102,11 +129,7 @@ const AdminPanel: React.FC = () => {
   const [startingDownload, setStartingDownload] = useState(false);
   const [selectedModel, setSelectedModel] = useState<string>('');
 
-  // Memo per provider e voci disponibili
-  const providerNames = useMemo(() => {
-    if (!config) return []
-    return Object.keys(config.ai_providers)
-  }, [config])
+  // providerNames rimosso (tab provider eliminato)
 
   const ttsNames = useMemo(() => {
     if (!config) return []
@@ -131,10 +154,20 @@ const AdminPanel: React.FC = () => {
 
   const loadUsage = async () => {
     try {
-      const res = await authFetch(`${BACKEND}/api/admin/feedback/stats`)
+      // Endpoint corretto è /api/feedback/stats (non /api/admin/feedback/stats)
+      const res = await authFetch(`${BACKEND}/api/feedback/stats`)
       if (res.ok) {
         const data: FeedbackStats = await res.json()
         setFeedbackStats(data)
+      } else if (res.status === 404) {
+        // fallback retrocompatibilità (vecchie versioni?)
+        try {
+          const res2 = await authFetch(`${BACKEND}/api/admin/feedback/stats`)
+          if (res2.ok) {
+            const data: FeedbackStats = await res2.json()
+            setFeedbackStats(data)
+          }
+        } catch {/* ignore */}
       }
     } catch {
       /* opzionale: silenzioso */
@@ -147,6 +180,7 @@ const AdminPanel: React.FC = () => {
       if (res.ok) {
         const data = await res.json()
   setArenaPublic(Boolean(data?.settings?.arena_public))
+  setSurveyResultsPublic(Boolean(data?.settings?.survey_results_public))
   if (data?.settings?.contact_email) setContactEmail(data.settings.contact_email)
   if (data?.settings?.research_project) setResearchProject(data.settings.research_project)
   if (data?.settings?.repository_url) setRepositoryUrl(data.settings.repository_url)
@@ -170,7 +204,75 @@ const AdminPanel: React.FC = () => {
     loadUiSettings()
   }, [])
 
-  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean;}>) => {
+
+  // Fetch guida
+  const openGuide = async () => {
+    setGuideOpen(true)
+    if (!guideContent && !guideLoading) {
+      setGuideLoading(true); setGuideError(null)
+      const res = await apiService.getAdminGuide?.()
+      if (res?.success && (res.data as any)?.content) {
+        setGuideContent((res.data as any).content)
+      } else {
+        setGuideError(res?.error || 'Errore caricamento guida')
+      }
+      setGuideLoading(false)
+    }
+  }
+
+  // TOC build
+  useEffect(() => {
+    if (!guideContent) { setGuideToc([]); return }
+    const lines = guideContent.split(/\n/)
+    const toc: {id:string; level:number; title:string}[] = []
+    lines.forEach(l => {
+      const m = /^(#{1,4})\s+(.*)$/.exec(l.trim())
+      if (m) {
+        const level = m[1].length
+        const raw = m[2].replace(/[`*_]+/g,'').trim()
+        const id = raw.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
+        toc.push({ id, level, title: raw })
+      }
+    })
+    setGuideToc(toc)
+  }, [guideContent])
+
+  // Scroll spy
+  useEffect(() => {
+    if (!guideOpen) return
+    const el = guideRef.current; if (!el) return
+    const onScroll = () => {
+      const headings = Array.from(el.querySelectorAll('h1, h2, h3, h4')) as HTMLElement[]
+      const top = el.scrollTop
+      let current = ''
+      for (const h of headings) {
+        if (h.offsetTop - 80 <= top) current = h.id || ''
+        else break
+      }
+      if (current && current !== activeHeading) setActiveHeading(current)
+    }
+    el.addEventListener('scroll', onScroll)
+    onScroll()
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [guideOpen, guideContent, activeHeading])
+
+  const filteredGuide = useMemo(() => {
+    if (!guideSearch) return guideContent
+    try {
+      const re = new RegExp(`(${guideSearch.replace(/[-/\\^$*+?.()|[\]{}]/g,'\\$&')})`, 'ig')
+      return guideContent.replace(re, '===$1===')
+    } catch { return guideContent }
+  }, [guideContent, guideSearch])
+
+  const mdRenderers = useMemo(() => ({
+    text: (props: any) => {
+      const parts = String(props.children).split(/===/g)
+      if (parts.length === 1) return <>{props.children}</>
+      return <>{parts.map((p,i)=> i%2===1 ? <mark key={i} style={{ background:'#ffc107', color:'#000', padding:'0 2px' }}>{p}</mark> : p)}</>
+    }
+  }), [])
+
+  const saveUiSettings = async (nextArena?: boolean, nextEmail?: string, extra?: Partial<{research_project:string;repository_url:string;website_url:string;info_pdf_url:string;footer_title:string;footer_text:string; show_research_project:boolean; show_repository_url:boolean; show_website_url:boolean; show_info_pdf_url:boolean; show_contact_email:boolean; show_footer_block:boolean; survey_results_public:boolean;}>) => {
     setSavingArena(true)
     try {
       const res = await authFetch(`${BACKEND}/api/admin/ui-settings`, {
@@ -178,6 +280,7 @@ const AdminPanel: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           arena_public: nextArena ?? arenaPublic,
+          survey_results_public: extra?.survey_results_public ?? surveyResultsPublic,
           contact_email: (nextEmail ?? contactEmail) || null,
           research_project: (extra?.research_project ?? researchProject) || null,
           repository_url: (extra?.repository_url ?? repositoryUrl) || null,
@@ -195,6 +298,7 @@ const AdminPanel: React.FC = () => {
       })
       if (res.ok) {
         if (nextArena !== undefined) setArenaPublic(!!nextArena)
+        if (extra?.survey_results_public !== undefined) setSurveyResultsPublic(extra.survey_results_public)
         if (nextEmail !== undefined) setContactEmail(nextEmail)
         if (extra?.research_project !== undefined) setResearchProject(extra.research_project)
         if (extra?.repository_url !== undefined) setRepositoryUrl(extra.repository_url)
@@ -241,20 +345,7 @@ const AdminPanel: React.FC = () => {
     }
   }
 
-  const updateDefaultProvider = async (value: string) => {
-    try {
-      const res = await authFetch(`${BACKEND}/api/admin/config/default-provider`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: value })
-      })
-      if (res.ok) {
-        setConfig(prev => prev ? { ...prev, default_provider: value } as AdminConfig : prev)
-      }
-    } catch {
-      /* noop */
-    }
-  }
+  // updateDefaultProvider rimosso (gestione spostata altrove o non necessaria nel pannello)
 
   const updateDefaultTTS = async (value: string) => {
     try {
@@ -325,13 +416,38 @@ const AdminPanel: React.FC = () => {
   const panelVisible = (key: string) => (activePanels as readonly string[]).includes(key)
 
   return (
+    <>
     <Container maxWidth="lg" sx={{ py: 3 }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexWrap: 'wrap' }}>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => navigate('/')}
+        >
+          Torna alla chat
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<ArenaIcon />}
+          onClick={() => navigate('/arena')}
+        >
+          Arena
+        </Button>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<StatsIcon />}
+          onClick={() => navigate('/survey-results')}
+        >
+          Risultati
+        </Button>
         <SettingsIcon />
         <Typography variant="h5" sx={{ mr: 2 }}>Pannello di amministrazione</Typography>
-        <Button size="small" startIcon={<ChatIcon />} href="/" variant="outlined">Chat</Button>
-        <Button size="small" startIcon={<ArenaIcon />} href="/arena" variant="outlined">Arena</Button>
+  <Tooltip title="Guida Admin"><IconButton size="small" color="secondary" onClick={openGuide}><HelpOutlineIcon fontSize="small" /></IconButton></Tooltip>
   <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={arenaPublic} onChange={(e)=> saveUiSettings(e.target.checked, undefined)} />} label={savingArena ? 'Arena…' : 'Arena pubblica'} />
+  <FormControlLabel sx={{ ml: 1 }} control={<Switch size="small" checked={surveyResultsPublic} onChange={(e)=> saveUiSettings(undefined, undefined, { survey_results_public: e.target.checked })} />} label={savingArena ? 'Risultati…' : 'Risultati pubblici'} />
         {loading && <LinearProgress sx={{ flexBasis: '100%', mt: 1 }} />}
       </Stack>
 
@@ -355,89 +471,29 @@ const AdminPanel: React.FC = () => {
         </Alert>
       )}
 
-      {/* Providers */}
-      {/* Nota: quando si cambiano welcome/guides in altre sezioni (non ancora implementate qui), si potrebbe impostare: localStorage.setItem('welcome_guides_version', Date.now().toString()) per forzare il refresh lato chat. */}
-      {panelVisible('providers') && (
-      <Accordion expanded={expandedPanels.providers} onChange={handlePanelExpansion('providers')}>
+      {/* Layout per LLM & Chat - Personalità come pannello principale */}
+      {selectedCategory === 'conversation' && (
+        <Box>
+          <PersonalitiesPanel />
+        </Box>
+      )}
+
+      {/* Tab Provider rimosso */}
+
+  {/* API Keys Management */}
+  {panelVisible('api_keys') && selectedCategory !== 'conversation' && (
+  <Accordion expanded={expandedPanels.api_keys} onChange={handlePanelExpansion('api_keys')}>
         <AccordionSummary expandIcon={<ExpandMoreIcon />}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AIIcon fontSize="small" />
-            <Typography variant="h6">Modelli e provider</Typography>
-            {config && <Chip size="small" label={config.default_provider ? `default: ${config.default_provider}` : 'default: -'} />}
+            <KeyIcon fontSize="small" />
+            <Typography variant="h6">API Keys</Typography>
           </Box>
         </AccordionSummary>
         <AccordionDetails>
-          <Card>
-            <CardContent>
-              {!config ? (
-                <Typography color="text.secondary">Caricamento configurazione…</Typography>
-              ) : (
-                <>
-                  <Grid container spacing={2} sx={{ mb: 2 }}>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <FormControl fullWidth size="small">
-                        <InputLabel id="default-provider-label">Provider predefinito</InputLabel>
-                        <Select
-                          labelId="default-provider-label"
-                          label="Provider predefinito"
-                          value={config.default_provider || ''}
-                          onChange={(e) => updateDefaultProvider(e.target.value)}
-                        >
-                          {providerNames.map(p => (
-                            <MenuItem key={p} value={p}>{p}</MenuItem>
-                          ))}
-                        </Select>
-                      </FormControl>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={5}>
-                      <TextField size="small" fullWidth label="Email contatto ricerca" value={contactEmail} onChange={e=> setContactEmail(e.target.value)} placeholder="es. ricerca@example.org" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={3} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, contactEmail)}>Salva contatto</Button>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Titolo progetto ricerca" value={researchProject} onChange={e=> setResearchProject(e.target.value)} placeholder="es. Progetto QSA" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Repository URL" value={repositoryUrl} onChange={e=> setRepositoryUrl(e.target.value)} placeholder="https://github.com/..." />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Sito Web" value={websiteUrl} onChange={e=> setWebsiteUrl(e.target.value)} placeholder="https://example.org" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6}>
-                      <TextField size="small" fullWidth label="Informativa PDF URL" value={infoPdfUrl} onChange={e=> setInfoPdfUrl(e.target.value)} placeholder="https://example.org/informativa.pdf" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {research_project: researchProject, repository_url: repositoryUrl, website_url: websiteUrl, info_pdf_url: infoPdfUrl})}>Salva campi ricerca</Button>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}>
-                      <TextField size="small" fullWidth label="Footer titolo" value={footerTitle} onChange={e=> setFooterTitle(e.target.value)} placeholder="es. Informazioni" />
-                    </Grid>
-                    <Grid item xs={12} sm={12} md={8}>
-                      <TextField size="small" fullWidth multiline minRows={2} label="Footer testo" value={footerText} onChange={e=> setFooterText(e.target.value)} placeholder="Testo descrittivo (markdown semplice)" />
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={6} sx={{ display:'flex', alignItems:'center' }}>
-                      <Button size="small" variant="outlined" disabled={savingArena} onClick={()=> saveUiSettings(undefined, undefined, {footer_title: footerTitle, footer_text: footerText})}>Salva footer</Button>
-                    </Grid>
-                    <Grid item xs={12}>
-                      <Divider sx={{ my:1 }} />
-                      <Typography variant="subtitle2" sx={{ mb:1 }}>Visibilità sezione questionario</Typography>
-                    </Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showFooterBlock} onChange={e=> saveUiSettings(undefined, undefined, {show_footer_block: e.target.checked})} />} label="Mostra blocco footer" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showResearchProject} onChange={e=> saveUiSettings(undefined, undefined, {show_research_project: e.target.checked})} />} label="Mostra progetto" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showRepositoryUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_repository_url: e.target.checked})} />} label="Mostra repository" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showWebsiteUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_website_url: e.target.checked})} />} label="Mostra sito web" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showInfoPdfUrl} onChange={e=> saveUiSettings(undefined, undefined, {show_info_pdf_url: e.target.checked})} />} label="Mostra PDF" /></Grid>
-                    <Grid item xs={12} sm={6} md={4}><FormControlLabel control={<Switch size="small" checked={showContactEmail} onChange={e=> saveUiSettings(undefined, undefined, {show_contact_email: e.target.checked})} />} label="Mostra email contatto" /></Grid>
-                  </Grid>
-                  <ModelProvidersPanel config={config as any} onConfigUpdate={(next) => setConfig(prev => prev ? ({ ...prev, ...next } as any) : prev)} />
-                </>
-              )}
-            </CardContent>
-          </Card>
+          <APIKeysManagementPanel />
         </AccordionDetails>
       </Accordion>
-          )}
+  )}
 
   {/* TTS */}
   {panelVisible('tts') && (
@@ -493,6 +549,21 @@ const AdminPanel: React.FC = () => {
         </AccordionSummary>
         <AccordionDetails>
           <UserManagement />
+        </AccordionDetails>
+      </Accordion>
+  )}
+
+  {/* Conversazioni Utenti */}
+  {panelVisible('conversations') && (
+  <Accordion expanded={expandedPanels.conversations} onChange={handlePanelExpansion('conversations')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <ChatIcon fontSize="small" />
+            <Typography variant="h6">Conversazioni Utenti</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <ConversationsAdminTab />
         </AccordionDetails>
       </Accordion>
   )}
@@ -558,40 +629,7 @@ const AdminPanel: React.FC = () => {
       </Accordion>
   )}
 
-  {/* Prompts (System & Summary) */}
-  {panelVisible('prompts') && (
-  <Accordion expanded={expandedPanels.prompts} onChange={handlePanelExpansion('prompts')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Prompts (System & Summary)</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <Stack spacing={2}>
-            <SystemPromptsPanel />
-            <SummaryPromptsPanel />
-          </Stack>
-        </AccordionDetails>
-      </Accordion>
-  )}
-
-  {/* Welcome & Guides */}
-  {panelVisible('welcome_guides') && (
-  <Accordion expanded={expandedPanels.welcome_guides} onChange={handlePanelExpansion('welcome_guides')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
-          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
-            <DescriptionIcon fontSize="small" />
-            <Typography variant="h6">Welcome & Guide</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <WelcomeGuidesPanel />
-        </AccordionDetails>
-      </Accordion>
-  )}
-
-  {/* Personalità */}
+  {/* Prompts, Welcome & Guides, Personalità sono gestiti nel layout a due colonne sopra */}
   {/* Footer Settings */}
   {panelVisible('footer_settings') && (
   <Accordion expanded={expandedPanels.footer_settings} onChange={handlePanelExpansion('footer_settings')}>
@@ -606,20 +644,6 @@ const AdminPanel: React.FC = () => {
         </AccordionDetails>
       </Accordion>
   )}
-  {panelVisible('personalities') && (
-  <Accordion expanded={expandedPanels.personalities} onChange={handlePanelExpansion('personalities')}>
-        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <AIIcon fontSize="small" />
-            <Typography variant="h6">Personalità</Typography>
-          </Box>
-        </AccordionSummary>
-        <AccordionDetails>
-          <PersonalitiesPanel />
-        </AccordionDetails>
-      </Accordion>
-  )}
-
   {/* FastAPI Endpoints */}
       {panelVisible('apidocs') && (
       <Accordion expanded={expandedPanels.apidocs} onChange={handlePanelExpansion('apidocs')}>
@@ -632,6 +656,20 @@ const AdminPanel: React.FC = () => {
         <AccordionDetails>
           <EndpointsExplorer />
           <APIDocsPanel />
+        </AccordionDetails>
+      </Accordion>
+      )}
+
+      {panelVisible('dbinfo') && (
+      <Accordion expanded={expandedPanels.dbinfo} onChange={handlePanelExpansion('dbinfo')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <DnsIcon fontSize="small" />
+            <Typography variant="h6">Database Info</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <DatabaseInfoPanel />
         </AccordionDetails>
       </Accordion>
       )}
@@ -697,7 +735,38 @@ const AdminPanel: React.FC = () => {
           </Card>
         </AccordionDetails>
       </Accordion>
+      )}
+
+  {/* Data Tables Management */}
+  {panelVisible('data_tables') && (
+    <Accordion expanded={expandedPanels.data_tables} onChange={handlePanelExpansion('data_tables')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <StorageIcon fontSize="small" />
+          <Typography variant="h6">Tabelle Dati (CSV/XLSX)</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <DataTablesPanel />
+      </AccordionDetails>
+    </Accordion>
   )}
+
+  {/* Forms (Questionari) */}
+  {panelVisible('forms') && (
+    <Accordion expanded={expandedPanels.forms} onChange={handlePanelExpansion('forms')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <DescriptionIcon fontSize="small" />
+          <Typography variant="h6">Questionari (Forms)</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <FormsBuilderPanel />
+      </AccordionDetails>
+    </Accordion>
+  )}
+
 
   {/* RAG Documenti */}
   {panelVisible('ragdocs') && (
@@ -710,6 +779,21 @@ const AdminPanel: React.FC = () => {
         </AccordionSummary>
         <AccordionDetails>
           <RagDocumentsPanel />
+        </AccordionDetails>
+      </Accordion>
+  )}
+
+  {/* Web Sources Management */}
+  {panelVisible('web_sources') && (
+  <Accordion expanded={expandedPanels.web_sources} onChange={handlePanelExpansion('web_sources')}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
+            <CloudDownloadIcon fontSize="small" />
+            <Typography variant="h6">Web Sources</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <WebSourcesAdminTab />
         </AccordionDetails>
       </Accordion>
   )}
@@ -729,6 +813,21 @@ const AdminPanel: React.FC = () => {
       </Accordion>
   )}
 
+  {/* Summary Prompts */}
+  {panelVisible('summary_prompts') && (
+    <Accordion expanded={expandedPanels.summary_prompts} onChange={handlePanelExpansion('summary_prompts')}>
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <DescriptionIcon fontSize="small" />
+          <Typography variant="h6">Summary Prompts</Typography>
+        </Box>
+      </AccordionSummary>
+      <AccordionDetails>
+        <SummaryPromptsPanel config={config as any} />
+      </AccordionDetails>
+    </Accordion>
+  )}
+
   {/* MCP Servers */}
   {panelVisible('mcp_servers') && (
     <Accordion expanded={expandedPanels.mcp_servers} onChange={handlePanelExpansion('mcp_servers')}>
@@ -743,22 +842,63 @@ const AdminPanel: React.FC = () => {
       </AccordionDetails>
     </Accordion>
   )}
-
-  {/* Nuovo RAG Admin */}
-  {panelVisible('new_rag_admin') && (
-    <Accordion expanded={expandedPanels.new_rag_admin} onChange={handlePanelExpansion('new_rag_admin')}>
-      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-          <StorageIcon fontSize="small" />
-          <Typography variant="h6">Nuovo RAG Administration</Typography>
-        </Box>
-      </AccordionSummary>
-      <AccordionDetails sx={{ p: 0 }}>
-        <NewRAGAdminPanel />
-      </AccordionDetails>
-    </Accordion>
-  )}
-    </Container>
+  {panelVisible('backup_panel') && (
+        <Accordion expanded={expandedPanels.backup_panel} onChange={handlePanelExpansion('backup_panel')} id="panel-backup" sx={{ mt:2 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}> 
+            <Stack direction="row" spacing={1} alignItems="center">
+              <StorageIcon fontSize="small" />
+              <Typography variant="subtitle1">Backup & Restore Config</Typography>
+            </Stack>
+          </AccordionSummary>
+          <AccordionDetails>
+            <BackupPanel />
+          </AccordionDetails>
+        </Accordion>
+      )}
+  </Container>
+    <Dialog open={guideOpen} onClose={()=> setGuideOpen(false)} fullScreen>
+      <DialogTitle>Guida Amministratore</DialogTitle>
+  <DialogContent dividers sx={{ p:0, display:'flex', flexDirection:'row', height:'100%', bgcolor:(theme)=> theme.palette.mode==='dark'? '#12161b':'#f5f7f9' }}>
+        {guideLoading && <LinearProgress sx={{ position:'absolute', top:0, left:0, right:0 }} />}
+        {!guideLoading && guideError && (
+          <Box p={3}>
+            <Alert severity='error' sx={{ mb:2 }}>{guideError}</Alert>
+            <Button variant='outlined' onClick={()=> { setGuideContent(''); openGuide() }}>Riprova</Button>
+          </Box>
+        )}
+        {!guideLoading && !guideError && (
+          <>
+            <Box sx={{ width:250, borderRight:'1px solid', borderColor:'divider', display:'flex', flexDirection:'column', p:1, bgcolor:(theme)=> theme.palette.mode==='dark'? '#181e24':'#ffffff' }}>
+              <TextField size='small' label='Cerca' value={guideSearch} onChange={e=> setGuideSearch(e.target.value)} sx={{ mb:1 }} />
+              <Stack direction='row' spacing={1} sx={{ mb:1 }}>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(s=> Math.max(0.8, +(s-0.1).toFixed(2)))}>-</Button>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(1)}>100%</Button>
+                <Button size='small' variant='outlined' onClick={()=> setGuideFontScale(s=> Math.min(1.6, +(s+0.1).toFixed(2)))}>+</Button>
+              </Stack>
+              <Box sx={{ flex:1, overflow:'auto' }}>
+                {guideToc.map(item => (
+                  <Box key={item.id} sx={{ pl:(item.level-1)*1.2, py:0.25 }}>
+                    <Button size='small' variant={activeHeading===item.id? 'contained':'text'} color={activeHeading===item.id? 'primary':'inherit'} sx={{ justifyContent:'flex-start', textTransform:'none', fontSize:12, width:'100%' }} onClick={()=> {
+                      const el = guideRef.current?.querySelector('#'+item.id)
+                      if (el && guideRef.current) guideRef.current.scrollTo({ top:(el as HTMLElement).offsetTop - 60, behavior:'smooth' })
+                    }}>{item.title}</Button>
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+            <Box ref={guideRef} sx={{ flex:1, overflow:'auto', px:3, py:2 }}>
+              <Box sx={{ maxWidth:1000, mx:'auto', fontSize: `${guideFontScale}rem`, lineHeight:1.6, '& h1, & h2, & h3, & h4': { fontWeight:600, lineHeight:1.25, mt: '2.2em' }, '& h1': { fontSize: `${1.9*guideFontScale}rem`, mt:0 }, '& h2': { fontSize: `${1.45*guideFontScale}rem` }, '& h3': { fontSize: `${1.2*guideFontScale}rem` }, '& h4': { fontSize: `${1.05*guideFontScale}rem` }, '& p': { mb:'1em' }, '& ul': { pl:3, mb:'1em' }, '& li': { mb:0.4 }, '& code': { bgcolor:(theme)=> theme.palette.mode==='dark'? '#1e2530':'#e3e7ea', px:0.5, py:0.25, borderRadius:0.5, fontSize:'0.82em' }, '& pre code': { fontSize:'0.85em' }, '& pre': { bgcolor:(theme)=> theme.palette.mode==='dark'? '#1e2530':'#e3e7ea', p:1.2, borderRadius:1, overflow:'auto' }, '& blockquote': { borderLeft:'4px solid', borderColor:'primary.main', bgcolor:(theme)=> theme.palette.mode==='dark'? 'rgba(255,255,255,0.05)':'#f0f6ff', py:0.5, px:2, mb:'1em', fontStyle:'italic' } }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkSlugLocal]} components={mdRenderers}>{filteredGuide}</ReactMarkdown>
+              </Box>
+            </Box>
+          </>
+        )}
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={()=> setGuideOpen(false)}>Chiudi</Button>
+      </DialogActions>
+  </Dialog>
+  </>
   )
 }
 

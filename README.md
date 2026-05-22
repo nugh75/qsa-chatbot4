@@ -2,30 +2,283 @@
 
 **English** | [Italiano](#italiano)
 
+## Recent Updates (2025-09-01)
+
+### EN
+- Added RAG source downloads (`/api/rag/download/{document_id}`) with `original_filename`, `stored_filename`, `download_url` metadata.
+- Introduced per-chunk `chunk_label` in unified `source_docs.rag_chunks` for clearer citation mapping.
+- Unified message payload: `source_docs` now wraps `rag_chunks`, `pipeline_topics`, `rag_groups` (legacy arrays removed).
+- Document preview dialog aggregates chunk content via internal `doc://` links auto-injected from `[DOC filename]` references.
+- Markdown normalization (unescape literal \n, improved paragraph spacing, soft breaks via remark-breaks) for consistent rendering of the source metadata blocks.
+- Removed decorative emojis across UI; standardized on clean SVG/MUI icons only.
+
+- Predefined Queries & NLQ (admin): safe, parameterized predefined queries with dropdown + dynamic form; simple NLQ endpoint to map natural requests to queries. See `docs/QUICK_QUERIES_GUIDE.md` for a non‑technical guide. Endpoints:
+  - `GET /api/queries` — list queries
+  - `GET /api/queries/{id}` — describe
+  - `POST /api/queries/{id}/preview|execute`
+  - `POST /api/queries/nlq`
+  - `POST /api/queries/{id}/export` — CSV export (admin)
+
+### IT
+- Aggiunti download delle fonti RAG (`/api/rag/download/{document_id}`) con metadati `original_filename`, `stored_filename`, `download_url`.
+- Introdotta etichetta per chunk (`chunk_label`) in `source_docs.rag_chunks` per mappare le citazioni.
+- Unificato il payload dei messaggi: `source_docs` contiene `rag_chunks`, `pipeline_topics`, `rag_groups` (rimosse liste legacy).
+- Dialog di anteprima documento che aggrega il contenuto dei chunk tramite link interni `doc://` generati da riferimenti `[DOC nomefile]`.
+- Normalizzazione Markdown (de-escape \n, spaziatura paragrafi, soft break con remark-breaks) per rendere correttamente i blocchi con le fonti.
+- Rimosse tutte le emoji decorative nell'interfaccia; solo icone SVG/MUI.
+
+---
+
+## Initial Setup & Backup – How it works (EN/IT)
+
+### English
+
+This project separates first‑start seeding (one‑time or idempotent) from day‑to‑day runtime data. On backend startup (`app.main` lifespan), the following happens in order:
+
+1) Load .env and diagnose storage
+  - `.env` is loaded from `backend/.env` (inside the container path `/app/backend/.env`).
+  - A lightweight storage diagnostic prints a `[storage-diag]` line for `/app/storage`, avatars, and personalities folders.
+
+2) Ensure admin and default AI provider
+  - Default admin is ensured from env (idempotent):
+    - DEFAULT_ADMIN_EMAIL (default: ai4educ@gmail.com)
+    - DEFAULT_ADMIN_PASSWORD (default: admin123!)
+    - DEFAULT_ADMIN_OVERWRITE (0/1) to force reset the password
+  - A default AI provider/model entry is ensured if missing.
+
+3) Prompts and content seeding (env + JSON)
+  - Runtime prompt files are ensured to exist (created under `/app/storage/...` if missing):
+    - System prompts: `/app/storage/prompts/system_prompts.json`
+    - Summary prompts: `/app/storage/summary/summary_prompts.json`
+  - Optional JSON seed import if configured via env:
+    - SEED_CONTENT_JSON: absolute path to a JSON file; recommended: `/app/config/seed/default_content.json`
+    - SEED_CONTENT_OVERWRITE: `true/false` (default false). If false, the import MERGES (upserts) items; if true, it OVERWRITES the whole section.
+    - Supported sections in the JSON file:
+      - `system_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `summary_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `welcome`: `{ active_id?: string, messages: [{ id, title?, content }] }`
+      - `guides`: `{ active_id?: string, guides: [{ id, title?, content }] }`
+  - Env‑driven, idempotent upsert after the JSON step (useful to enforce a default):
+    - DEFAULT_SYSTEM_PROMPT_ID | DEFAULT_SYSTEM_PROMPT_NAME | DEFAULT_SYSTEM_PROMPT_TEXT | DEFAULT_SYSTEM_PROMPT_SET_ACTIVE
+    - DEFAULT_SUMMARY_PROMPT_ID | DEFAULT_SUMMARY_PROMPT_NAME | DEFAULT_SUMMARY_PROMPT_TEXT | DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+
+4) Default personality in Postgres (idempotent)
+  - A default Counselorbot personality is upserted into PostgreSQL with env overrides:
+    - DEFAULT_PERSONALITY_ID | DEFAULT_PERSONALITY_NAME | DEFAULT_PERSONALITY_PROVIDER | DEFAULT_PERSONALITY_MODEL
+    - DEFAULT_PERSONALITY_WELCOME_ID | DEFAULT_PERSONALITY_GUIDE_ID
+    - DEFAULT_PERSONALITY_SET_DEFAULT (0/1), DEFAULT_PERSONALITY_ACTIVE (0/1)
+  - Note: Personalities are stored in the database, not in the runtime JSON seed.
+
+5) Optional Whisper warm‑up
+  - WHISPER_WARMUP (default 1/true) to asynchronously warm the "small" model at startup.
+
+Where things live (runtime vs. seed):
+  - Runtime JSON files (persist across restarts via Docker volumes):
+    - System prompts: `/app/storage/prompts/system_prompts.json`
+    - Summary prompts: `/app/storage/summary/summary_prompts.json`
+    - Welcome & Guides: `/app/storage/welcome-guide/welcome_guide.json`
+  - Database (PostgreSQL):
+    - Personalities (including default and activation flags)
+  - Versioned seed content (repo):
+    - `backend/config/seed/default_content.json` (sample content for system/summary prompts and welcome/guides). Mount it in the container at `/app/config/seed/default_content.json`.
+
+Environment variables quick reference (subset):
+  - SEED_CONTENT_JSON=/app/config/seed/default_content.json
+  - SEED_CONTENT_OVERWRITE=false
+  - DEFAULT_SYSTEM_PROMPT_ID=counselorbot
+  - DEFAULT_SYSTEM_PROMPT_NAME="Counselorbot (QSA)"
+  - DEFAULT_SYSTEM_PROMPT_TEXT="..."  (optional; if omitted, a built‑in Italian prompt text is used)
+  - DEFAULT_SYSTEM_PROMPT_SET_ACTIVE=true|false
+  - DEFAULT_SUMMARY_PROMPT_ID, DEFAULT_SUMMARY_PROMPT_NAME, DEFAULT_SUMMARY_PROMPT_TEXT, DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+  - DEFAULT_PERSONALITY_ID=counselorbot, DEFAULT_PERSONALITY_NAME=Counselorbot
+  - DEFAULT_PERSONALITY_PROVIDER=openrouter, DEFAULT_PERSONALITY_MODEL=gpt-oss-20b:free (or from admin config)
+  - DEFAULT_PERSONALITY_WELCOME_ID=wm_default, DEFAULT_PERSONALITY_GUIDE_ID=gd_default
+  - DEFAULT_PERSONALITY_SET_DEFAULT=false, DEFAULT_PERSONALITY_ACTIVE=true
+
+Backup and restore
+There are two compatible paths: the advanced flow (with conflict preview) and the legacy simple admin flow.
+
+Advanced backup (used by Admin UI → Backup panel):
+  - Export ZIP: `GET /api/backup/export`
+    - Contains: prompts JSONs, welcome/guide JSON, database personalities (as JSON), and metadata.
+  - Import Preview: `POST /api/backup/import/preview` (multipart file=ZIP)
+    - Returns an `import_id`, `conflicts` with sections and items categorized as `add`, `update`, `missing_in_incoming`, plus `active_current` and `active_incoming` for applicable sections.
+  - Import Apply: `POST /api/backup/import/apply` with body `{ import_id, decisions }`
+    - Decisions per section: `{ apply_ids: string[], use_incoming_active?: boolean }`. Only selected IDs are applied; optional switch changes the active ID to the incoming one.
+  - Cleanup: `DELETE /api/backup/import/{import_id}` to remove the staged import.
+
+Legacy admin backup (also supported):
+  - Status / integrity: `GET /api/admin/config/status` (per‑file hashes + aggregate)
+  - Export ZIP: `GET /api/admin/config/backup?include_seed=true&include_avatars=false&include_db=true&dry_run=false`
+  - Restore: `POST /api/admin/config/restore?allow_seed=false&dry_run=true` (multipart file=backup.zip)
+    - `dry_run=true` validates without writing
+    - `allow_seed=true` permits writing seed files (usually you restore only runtime files)
+
+Admin UI guidance (Backup panel)
+  - You can run an Import Preview to see differences and select exactly which items to apply.
+  - For sections with an "active" concept (system prompts, summary prompts, welcome, guides), the UI shows both "Active (current)" and "Active (in import)" and lets you toggle "Use import active".
+  - A dry‑run/manifest generation is also available via the legacy export with `dry_run` option for auditing.
+
+Example: minimal seed file (`backend/config/seed/default_content.json`)
+
+```json
+{
+  "system_prompts": {
+    "active_id": "counselorbot",
+    "prompts": [
+      { "id": "counselorbot", "name": "Counselorbot (QSA)", "text": "You are Counselorbot... (IT text allowed)" }
+    ]
+  },
+  "summary_prompts": {
+    "active_id": "default",
+    "prompts": [
+      { "id": "default", "name": "Default", "text": "Summarize the conversation in Italian in 3-5 bullet points." }
+    ]
+  },
+  "welcome": {
+    "active_id": "wm_default",
+    "messages": [
+      { "id": "wm_default", "title": "Benvenuto", "content": "Ciao! Posso aiutarti a interpretare i risultati del QSA." }
+    ]
+  },
+  "guides": {
+    "active_id": "gd_default",
+    "guides": [
+      { "id": "gd_default", "title": "Guida rapida", "content": "1) Condividi i risultati C1–C7, poi A1–A7. 2) Fai domande..." }
+    ]
+  }
+}
+```
+
+Enable it with env (container):
+
+```env
+SEED_CONTENT_JSON=/app/config/seed/default_content.json
+SEED_CONTENT_OVERWRITE=false
+```
+
+---
+
+### Italiano
+
+Il progetto separa il seeding iniziale (una tantum o idempotente) dai dati operativi runtime. All’avvio del backend (lifespan in `app.main`), avviene quanto segue:
+
+1) Caricamento .env e diagnostica storage
+  - `.env` è caricato da `backend/.env` (nel container: `/app/backend/.env`).
+  - Una diagnostica leggera stampa una riga `[storage-diag]` per `/app/storage`, avatars e personalities.
+
+2) Admin e provider AI di default
+  - L’utente admin di default è garantito da env (idempotente):
+    - DEFAULT_ADMIN_EMAIL (default: ai4educ@gmail.com)
+    - DEFAULT_ADMIN_PASSWORD (default: admin123!)
+    - DEFAULT_ADMIN_OVERWRITE (0/1) per forzare il reset password
+  - È garantita una voce di provider/modello AI di default se assente.
+
+3) Seeding di prompt e contenuti (env + JSON)
+  - I file runtime dei prompt sono garantiti (creati in `/app/storage/...` se mancanti):
+    - Prompt di sistema: `/app/storage/prompts/system_prompts.json`
+    - Prompt di riassunto: `/app/storage/summary/summary_prompts.json`
+  - Import opzionale da JSON se configurato via env:
+    - SEED_CONTENT_JSON: percorso assoluto del file JSON; consigliato: `/app/config/seed/default_content.json`
+    - SEED_CONTENT_OVERWRITE: `true/false` (default false). Se false, l’import UNISCE (upsert) gli elementi; se true, SOVRASCRIVE l’intera sezione.
+    - Sezioni supportate nel JSON:
+      - `system_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `summary_prompts`: `{ active_id?: string, prompts: [{ id, name?, text }] }`
+      - `welcome`: `{ active_id?: string, messages: [{ id, title?, content }] }`
+      - `guides`: `{ active_id?: string, guides: [{ id, title?, content }] }`
+  - Upsert idempotente guidato da env dopo l’import (utile per imporre un default):
+    - DEFAULT_SYSTEM_PROMPT_ID | DEFAULT_SYSTEM_PROMPT_NAME | DEFAULT_SYSTEM_PROMPT_TEXT | DEFAULT_SYSTEM_PROMPT_SET_ACTIVE
+    - DEFAULT_SUMMARY_PROMPT_ID | DEFAULT_SUMMARY_PROMPT_NAME | DEFAULT_SUMMARY_PROMPT_TEXT | DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+
+4) Personalità di default in Postgres (idempotente)
+  - Una personalità Counselorbot è upsertata nel database con override da env:
+    - DEFAULT_PERSONALITY_ID | DEFAULT_PERSONALITY_NAME | DEFAULT_PERSONALITY_PROVIDER | DEFAULT_PERSONALITY_MODEL
+    - DEFAULT_PERSONALITY_WELCOME_ID | DEFAULT_PERSONALITY_GUIDE_ID
+    - DEFAULT_PERSONALITY_SET_DEFAULT (0/1), DEFAULT_PERSONALITY_ACTIVE (0/1)
+  - Nota: Le personalità vivono nel database, non nel seed JSON runtime.
+
+5) Warm‑up Whisper opzionale
+  - WHISPER_WARMUP (default 1/true) per scaldare in modo asincrono il modello "small" all’avvio.
+
+Dove stanno i dati (runtime vs. seed):
+  - File JSON runtime (persistenti con volumi Docker):
+    - Prompt di sistema: `/app/storage/prompts/system_prompts.json`
+    - Prompt di riassunto: `/app/storage/summary/summary_prompts.json`
+    - Welcome & Guide: `/app/storage/welcome-guide/welcome_guide.json`
+  - Database (PostgreSQL):
+    - Personalità (inclusi default e flag di attivazione)
+  - Contenuto seed versionato (nel repo):
+    - `backend/config/seed/default_content.json` (esempi per prompts di sistema/riassunto e welcome/guide). Montalo nel container come `/app/config/seed/default_content.json`.
+
+Variabili d’ambiente principali (estratto):
+  - SEED_CONTENT_JSON=/app/config/seed/default_content.json
+  - SEED_CONTENT_OVERWRITE=false
+  - DEFAULT_SYSTEM_PROMPT_ID=counselorbot
+  - DEFAULT_SYSTEM_PROMPT_NAME="Counselorbot (QSA)"
+  - DEFAULT_SYSTEM_PROMPT_TEXT="..."  (opzionale; se omessa, viene usato un testo italiano built‑in)
+  - DEFAULT_SYSTEM_PROMPT_SET_ACTIVE=true|false
+  - DEFAULT_SUMMARY_PROMPT_ID, DEFAULT_SUMMARY_PROMPT_NAME, DEFAULT_SUMMARY_PROMPT_TEXT, DEFAULT_SUMMARY_PROMPT_SET_ACTIVE
+  - DEFAULT_PERSONALITY_ID=counselorbot, DEFAULT_PERSONALITY_NAME=Counselorbot
+  - DEFAULT_PERSONALITY_PROVIDER=openrouter, DEFAULT_PERSONALITY_MODEL=gpt-oss-20b:free (o da config admin)
+  - DEFAULT_PERSONALITY_WELCOME_ID=wm_default, DEFAULT_PERSONALITY_GUIDE_ID=gd_default
+  - DEFAULT_PERSONALITY_SET_DEFAULT=false, DEFAULT_PERSONALITY_ACTIVE=true
+
+Backup e ripristino
+Sono disponibili due percorsi compatibili: il flusso avanzato (con anteprima conflitti) e quello admin semplice legacy.
+
+Backup avanzato (usato dal pannello Admin → Backup):
+  - Esporta ZIP: `GET /api/backup/export`
+    - Contiene: JSON dei prompt, JSON di welcome/guide, personalità DB (in JSON) e metadati.
+  - Anteprima Import: `POST /api/backup/import/preview` (multipart file=ZIP)
+    - Restituisce un `import_id`, `conflicts` con sezioni e voci classificate in `add`, `update`, `missing_in_incoming`, più `active_current` e `active_incoming` dove applicabile.
+  - Applica Import: `POST /api/backup/import/apply` con body `{ import_id, decisions }`
+    - Decisioni per sezione: `{ apply_ids: string[], use_incoming_active?: boolean }`. Solo gli ID selezionati vengono applicati; lo switch opzionale imposta l’attivo a quello dell’import.
+  - Pulizia: `DELETE /api/backup/import/{import_id}` per eliminare l’import in staging.
+
+Backup admin legacy (ancora supportato):
+  - Stato / integrità: `GET /api/admin/config/status` (hash per file + aggregato)
+  - Esporta ZIP: `GET /api/admin/config/backup?include_seed=true&include_avatars=false&include_db=true&dry_run=false`
+  - Ripristino: `POST /api/admin/config/restore?allow_seed=false&dry_run=true` (multipart file=backup.zip)
+    - `dry_run=true` valida senza scrivere
+    - `allow_seed=true` consente di scrivere anche i file seed (in genere si ripristinano solo i file runtime)
+
+Guida UI (pannello Backup)
+  - Puoi lanciare una Anteprima Import per vedere le differenze e selezionare esattamente cosa applicare.
+  - Per le sezioni con concetto di "attivo" (prompt di sistema, prompt di riassunto, welcome, guide), l’interfaccia mostra “Attivo corrente” e “Attivo nell’import” e permette di attivare “Usa active dell’import”.
+  - È disponibile anche un dry‑run/manifest (export legacy con `dry_run`) utile per audit.
+
+---
+
+### Config Test Scripts (Optional)
+
+Esecuzione rapida script di verifica (da directory `backend`):
+
+```
+python -m app.scripts.test_config_status http://localhost:8000 <ADMIN_TOKEN>
+python -m app.scripts.test_config_backup_restore http://localhost:8000 <ADMIN_TOKEN>
+```
+
+Variabili alternative: impostare `ADMIN_BEARER` e omettere il token negli argomenti.
+
 ## 🚀 Features
 
 An advanced AI chatbot with comprehensive RAG (Retrieval-Augmented Generation) system, user management, and multi-provider AI support. Features a complete admin panel for content management and user administration.
 
 ### Core Features
-- **🤖 Multiple AI Providers**: Gemini, OpenAI, Claude, OpenRouter, Ollama, Local
-- **🎵 Text-to-Speech**: Edge TTS, ElevenLabs, OpenAI Voice, Piper  
-- **🎤 Speech-to-Text**: Voice recording support with Whisper
-- **📚 Advanced RAG System**: PDF upload, document chunking, semantic search with HuggingFace embeddings
-- **👥 User Management**: Complete admin interface for user administration
-- **🎭 Advanced Personalities**: Granular control over AI behavior with pipeline topics, RAG groups, and MCP servers
-- **🔌 MCP Integration**: Model Context Protocol support for external services (Email, Calendar, Filesystem, etc.)
-- **🎛️ Admin Panel**: Full configuration dashboard (password: `Lagom192.`)
-- **🎨 Modern Interface**: Clean design with professional SVG icons
-- **💾 Chat Export**: JSON conversation export
-- **🔒 Security**: JWT authentication, encrypted conversations
-
-### Recent Improvements
-- **Collapsible Sources**: The "Topics and Sources" section in the chat is now collapsible for a cleaner interface.
-- **Clearer Document References**: The sources list now displays document IDs for better clarity.
-- **Controlled Source Display**: The backend no longer automatically appends a list of consulted sources, giving more control over the chat output.
+- Multiple AI Providers: Gemini, OpenAI, Claude, OpenRouter, Ollama, Local
+- Text-to-Speech: Edge TTS, ElevenLabs, OpenAI Voice, Piper  
+- Speech-to-Text: Voice recording support with Whisper
+- Advanced RAG System: PDF upload, document chunking, semantic search with HuggingFace embeddings
+- User Management: Complete admin interface for user administration
+- Advanced Personalities: Granular control over AI behavior with pipeline topics, RAG groups, and MCP servers
+- MCP Integration: Model Context Protocol support for external services (Email, Calendar, Filesystem, etc.)
+- Admin Panel: Full configuration dashboard (password: `Lagom192.`)
+- Modern Interface: Clean design with professional SVG icons
+- Chat Export: JSON conversation export
+- Security: JWT authentication, encrypted conversations
 
 ### RAG System
-- **📄 PDF Processing**: Automatic text extraction and intelligent chunking
+- PDF Processing: Automatic text extraction and intelligent chunking
 - **🧠 Semantic Search**: HuggingFace sentence-transformers with FAISS vector indexing
 - **📁 Document Groups**: Organize content by topics and contexts
 - **🎯 Context Selection**: Dynamic context switching during conversations
@@ -178,7 +431,7 @@ This advanced personality system enables creating specialized AI assistants for 
 - **🔒 Security**: JWT authentication, encrypted conversations
 
 ### RAG System
-- **📄 PDF Processing**: Automatic text extraction and intelligent chunking
+- **  PDF Processing**: Automatic text extraction and intelligent chunking
 - **🧠 Semantic Search**: HuggingFace sentence-transformers with FAISS vector indexing
 - **📁 Document Groups**: Organize content by topics and contexts
 - **🎯 Context Selection**: Dynamic context switching during conversations
@@ -361,6 +614,8 @@ make models  # downloads Whisper small, Piper it_IT-riccardo-x_low, and embeddin
 | **Ollama** | `OLLAMA_BASE_URL` | Local/remote server |
 | **Local** | None | Rule-based responses |
 
+> ℹ️ If you use project-scoped OpenAI keys (`sk-proj-*`), set `OPENAI_PROJECT_ID` (or `OPENAI_PROJECT`) in the environment so API requests include the required `OpenAI-Project` header. Organization-scoped headers are also supported via `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION`.
+
 ## 🎵 Supported TTS Providers
 
 | Provider | Configuration | Notes |
@@ -513,13 +768,8 @@ Un chatbot AI avanzato con sistema RAG (Retrieval-Augmented Generation) completo
 - **💾 Esportazione Chat**: Esportazione conversazioni in JSON
 - **🔒 Sicurezza**: Autenticazione JWT, conversazioni crittografate
 
-### Miglioramenti Recenti
-- **Fonti Comprimibili**: La sezione "Topic e Fonti" nella chat è ora comprimibile per un'interfaccia più pulita.
-- **Riferimenti ai Documenti più Chiari**: L'elenco delle fonti ora mostra gli ID dei documenti per una maggiore chiarezza.
-- **Visualizzazione Controllata delle Fonti**: Il backend non aggiunge più automaticamente un elenco di fonti consultate, offrendo un maggiore controllo sulla risposta del chat.
-
 ### Sistema RAG
-- **📄 Processamento PDF**: Estrazione automatica testo e chunking intelligente
+- **  Processamento PDF**: Estrazione automatica testo e chunking intelligente
 - **🧠 Ricerca Semantica**: HuggingFace sentence-transformers con indicizzazione FAISS
 - **📁 Gruppi Documenti**: Organizza contenuti per argomenti e contesti
 - **🎯 Selezione Contesto**: Cambio dinamico del contesto durante le conversazioni
@@ -763,7 +1013,7 @@ qsa-chatbot/
 └── README.md             # This file
 ```
 
-## 📄 License
+##   License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
@@ -901,6 +1151,8 @@ qsa-chatbot/
 | **Ollama** | `OLLAMA_BASE_URL` | Server locale o remoto |
 | **Local** | Nessuna | Per modelli locali |
 
+> ℹ️ Se utilizzi chiavi OpenAI legate a un progetto (`sk-proj-*`), definisci `OPENAI_PROJECT_ID` (o `OPENAI_PROJECT`) nelle variabili d'ambiente per includere l'header `OpenAI-Project`. Sono supportati anche gli header organizzativi tramite `OPENAI_ORG_ID` / `OPENAI_ORGANIZATION`.
+
 ## 🎵 Provider TTS Supportati
 
 | Provider | Configurazione | Note |
@@ -951,7 +1203,7 @@ pip install -r backend/requirements.txt
 
 # Multi Summary Prompts
 
-Il sistema supporta ora più profili di summary prompt memorizzati in `backend/storage/summary/SUMMARY_PROMPTS.json`.
+Il sistema supporta ora più profili di summary prompt memorizzati in `backend/storage/summary/summary_prompts.json`.
 Struttura file:
 ```
 {

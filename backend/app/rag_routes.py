@@ -2,7 +2,7 @@
 API Routes per il sistema RAG
 Gestisce gruppi, documenti, upload e ricerca
 """
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status, Header
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, status, Header, Query
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
@@ -17,6 +17,7 @@ from pathlib import Path
 from .rag_engine import rag_engine
 from .file_processing import extract_text_from_pdf, extract_text_from_docx
 from .auth import get_current_admin_user
+from .logging_utils import get_system_logger
 
 # Pydantic models
 class GroupCreate(BaseModel):
@@ -124,6 +125,16 @@ async def upload_documents(
                 temp_file.write(content)
                 temp_file_path = temp_file.name
             
+            # Salva file originale per download futuro
+            stored_filename = f"{uuid.uuid4().hex}_{filename}"
+            try:
+                # Copia contenuto binario nella directory originals del rag_engine
+                originals_path = rag_engine.originals_dir / stored_filename
+                with open(originals_path, 'wb') as of:
+                    of.write(content)
+            except Exception as e:
+                print(f"[RAG][upload] Impossibile salvare file originale: {e}")
+
             # Estrai testo
             try:
                 if file_ext == 'pdf':
@@ -145,7 +156,8 @@ async def upload_documents(
                     group_id=group_id,
                     filename=f"{uuid.uuid4().hex}_{filename}",
                     content=text_content,
-                    original_filename=filename
+                    original_filename=filename,
+                    stored_filename=stored_filename
                 )
                 
                 processed_files.append({
@@ -176,10 +188,39 @@ async def upload_documents(
 async def delete_document(document_id: int, current_user = Depends(get_current_admin_user)):
     """Elimina un documento"""
     try:
-        rag_engine.delete_document(document_id)
-        return {"success": True, "message": f"Documento {document_id} eliminato"}
+        result = rag_engine.delete_document(document_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail="Documento non trovato o non eliminato")
+        try:
+            get_system_logger().info(f"[RAG] Delete document id={document_id} (non-force) group={result.get('group_id')}")
+        except Exception:
+            pass
+        return {"success": True, "message": f"Documento {document_id} eliminato", "group_id": result.get("group_id")}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nell'eliminazione: {str(e)}")
+
+# ---- Admin maintenance & force operations ----
+@router.post("/admin/rag/maintenance/fix-orphans")
+async def fix_orphans(current_user = Depends(get_current_admin_user)):
+    try:
+        recovered = rag_engine.recover_missing_groups()
+        moved = rag_engine.reassign_orphan_documents()
+        removed = rag_engine.delete_orphan_chunks()
+        return {"success": True, "created_groups": recovered.get('created', 0), "recovered_groups": recovered.get('recovered', []), "moved_documents": moved, "removed_chunks": removed}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.delete("/admin/rag/documents/{document_id}/force")
+async def force_delete_document(document_id: int, current_user = Depends(get_current_admin_user)):
+    try:
+        deleted = rag_engine.force_delete_document(document_id)
+        try:
+            get_system_logger().info(f"[RAG] Force delete document via rag_routes id={document_id} deleted={bool(deleted)}")
+        except Exception:
+            pass
+        return {"success": True, "deleted": bool(deleted)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore eliminazione forzata: {str(e)}")
 
 @router.post("/rag/search")
 async def search_documents(search_request: SearchRequest):
@@ -265,41 +306,115 @@ def get_user_context(session_id: str = "default") -> List[int]:
     return user_contexts.get(session_id, [])
 
 @router.get("/rag/download/{document_id}")
-async def download_document(document_id: int):
-    """Download del documento originale (placeholder - implementazione futura)"""
-    # Questa funzionalità richiederebbe storage dei file originali
-    raise HTTPException(status_code=501, detail="Download non ancora implementato")
+async def download_document(document_id: int, disposition: Optional[str] = Query(None), mode: Optional[str] = Query(None)):
+    """Download o visualizzazione del documento originale se presente, altrimenti fallback testo ricostruito.
+
+    Il parametro `disposition` (o legacy `mode`) permette di forzare `inline` o `attachment`.
+    Valori supportati: auto/default, inline/preview, attachment/download.
+    """
+    from .rag_engine import rag_engine as _re
+    from fastapi.responses import Response
+    doc = _re.get_document(document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento non trovato")
+
+    # Determina se usare Content-Disposition: inline (visualizza) o attachment (scarica)
+    allow_preview = bool(doc.get('allow_preview', True))
+    allow_download = bool(doc.get('allow_download', True))
+
+    requested = (disposition or mode or 'auto').lower()
+    if requested not in {'auto', 'inline', 'attachment', 'preview', 'download'}:
+        requested = 'auto'
+
+    if requested in {'inline', 'preview'}:
+        if not allow_preview:
+            raise HTTPException(status_code=403, detail="Visualizzazione non consentita per questo documento")
+        effective_disposition = 'inline'
+    elif requested in {'attachment', 'download'}:
+        if not allow_download:
+            raise HTTPException(status_code=403, detail="Download non consentito per questo documento")
+        effective_disposition = 'attachment'
+    else:
+        # auto
+        if allow_download:
+            effective_disposition = 'attachment'
+        elif allow_preview:
+            effective_disposition = 'inline'
+        else:
+            raise HTTPException(status_code=403, detail="Visualizzazione non consentita per questo documento")
+
+    stored = doc.get('stored_filename')
+    if stored:
+        file_path = _re.originals_dir / stored
+        if file_path.exists():
+            media_type, _ = mimetypes.guess_type(str(file_path))
+            original_name = doc.get('original_filename') or stored
+
+            # Crea FileResponse senza specificare filename per evitare Content-Disposition automatico
+            response = FileResponse(
+                path=str(file_path),
+                media_type=media_type or 'application/octet-stream'
+            )
+
+            # Imposta manualmente Content-Disposition in base ai permessi
+            response.headers['Content-Disposition'] = f'{effective_disposition}; filename="{original_name}"'
+
+            return response
+    # Fallback ricostruzione testo
+    try:
+        export = _re.export_document(document_id)
+        chunks = export.get('chunks', [])
+        text = "\n".join(c.get('content','') for c in chunks)
+        content_bytes = text.encode('utf-8')
+        filename = doc.get('original_filename') or f'document_{document_id}.txt'
+
+        if effective_disposition == 'attachment':
+            # Forza download
+            return Response(
+                content=content_bytes,
+                media_type='text/plain',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"'
+                }
+            )
+        else:
+            # Visualizza inline
+            return Response(
+                content=content_bytes,
+                media_type='text/plain',
+                headers={
+                    'Content-Disposition': f'inline; filename="{filename}"'
+                }
+            )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Impossibile ricostruire il documento")
 
 # Route per testing e debugging
 @router.get("/rag/debug/groups/{group_id}/chunks")
 async def debug_group_chunks(group_id: int, current_user = Depends(get_current_admin_user)):
     """Debug: visualizza chunks di un gruppo"""
     try:
-        # Query diretta al database per debug
-        import sqlite3
-        conn = sqlite3.connect(rag_engine.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT c.id, c.chunk_index, c.content, d.filename, d.original_filename
-            FROM rag_chunks c
-            JOIN rag_documents d ON c.document_id = d.id
-            WHERE c.group_id = ?
-            ORDER BY d.id, c.chunk_index
-            LIMIT 100
-        """, (group_id,))
-        
+        from .database import db_manager
         chunks = []
-        for row in cursor.fetchall():
-            chunks.append({
-                "chunk_id": row[0],
-                "chunk_index": row[1],
-                "content": row[2][:200] + "..." if len(row[2]) > 200 else row[2],
-                "filename": row[3],
-                "original_filename": row[4]
-            })
-        
-        conn.close()
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, """
+                SELECT c.id, c.chunk_index, c.content, d.filename, d.original_filename
+                FROM rag_chunks c
+                JOIN rag_documents d ON c.document_id = d.id
+                WHERE c.group_id = ? AND (d.archived IS FALSE OR d.archived IS NULL)
+                ORDER BY d.id, c.chunk_index
+                LIMIT 100
+            """, (group_id,))
+            rows = cur.fetchall() or []
+            for r in rows:
+                chunks.append({
+                    "chunk_id": r["id"],
+                    "chunk_index": r["chunk_index"],
+                    "content": (r["content"][:200] + "...") if isinstance(r["content"], str) and len(r["content"]) > 200 else r["content"],
+                    "filename": r["filename"],
+                    "original_filename": r["original_filename"]
+                })
         return {"success": True, "chunks": chunks}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore debug: {str(e)}")

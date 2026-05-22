@@ -30,28 +30,34 @@ class SurveySubmission(BaseModel):
 
 @router.post('/survey/submit')
 async def submit_survey(payload: SurveySubmission):
-    data = payload.dict()
-    # Richiedi tutte le domande Likert (1-5)
-    if not all((data.get(f) is not None and 1 <= data.get(f) <= 5) for f in SurveyModel.FIELDS):
-        raise HTTPException(status_code=400, detail="Nessuna risposta Likert fornita")
-    # Validazione range 1-5
-    for f in SurveyModel.FIELDS:
-        v = data.get(f)
-        if v is not None and (v < 1 or v > 5):
-            raise HTTPException(status_code=400, detail=f"Valore fuori range per {f}")
-    # Validazione demografia obbligatoria
-    if data.get('demo_eta') is None:
-        raise HTTPException(status_code=400, detail="Età obbligatoria")
-    if not data.get('demo_sesso'):
-        raise HTTPException(status_code=400, detail="Sesso obbligatorio")
-    if not data.get('demo_istruzione'):
-        raise HTTPException(status_code=400, detail="Istruzione obbligatoria")
-    if not data.get('demo_tipo_istituto'):
-        raise HTTPException(status_code=400, detail="Tipo istituto obbligatorio")
-    if not data.get('demo_provenienza'):
-        raise HTTPException(status_code=400, detail="Provenienza obbligatoria")
-    if not data.get('demo_area'):
-        raise HTTPException(status_code=400, detail="Area di studio obbligatoria (STEM/Umanistiche)")
+    data = {}
+    for key, value in payload.dict().items():
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                value = None
+        data[key] = value
+
+    has_likert = any(data.get(f) is not None for f in SurveyModel.FIELDS)
+    has_text = bool(data.get('q_riflessioni')) or bool(data.get('q_commenti'))
+
+    if not has_likert and not has_text:
+        raise HTTPException(status_code=400, detail="Nessuna risposta fornita")
+
+    if has_likert:
+        for f in SurveyModel.FIELDS:
+            v = data.get(f)
+            if v is not None:
+                if v < 1 or v > 5:
+                    raise HTTPException(status_code=400, detail=f"Valore fuori range per {f}")
+        required_demo = ['demo_eta', 'demo_sesso', 'demo_istruzione', 'demo_tipo_istituto', 'demo_provenienza']
+        missing = [f for f in required_demo if data.get(f) in (None, '')]
+        if missing:
+            raise HTTPException(status_code=400, detail="Per inviare la parte quantitativa compila i dati di base")
+    else:
+        for f in SurveyModel.FIELDS:
+            data[f] = None
+
     if not data.get('session_id'):
         data['session_id'] = secrets.token_hex(8)
     ok = SurveyModel.add_response(data)

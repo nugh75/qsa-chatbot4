@@ -8,12 +8,13 @@ from .prompts import (
     set_active_summary_prompt,
     delete_summary_prompt
 )
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends, Query
+from pydantic import BaseModel, Field
 from typing import Dict, List, Any, Optional
 import json
 import os
 import logging
+import mimetypes
 from .prompts import (
     load_system_prompt,
     save_system_prompt,
@@ -27,8 +28,11 @@ from .prompts import (
 from fastapi import UploadFile
 from fastapi import File as FastFile
 from fastapi.staticfiles import StaticFiles
-from .topic_router import refresh_routes_cache
+# NOTE: Avoid importing topic_router at module import time to prevent circular import
+# (topic_router imports load_config from this module). We'll lazy-import refresh_routes_cache
+# where needed via the _refresh_routes_cache() helper below.
 from .rag import refresh_files_cache
+from .pipeline_history import log_change as log_pipeline_change, get_history as get_pipeline_history, get_history_count as get_pipeline_history_count
 from .usage import read_usage, usage_stats, reset_usage, query_usage
 from .memory import get_memory
 from .transcribe import whisper_service
@@ -39,18 +43,83 @@ import bcrypt
 import secrets
 import string
 from datetime import datetime, timedelta
-from .rag_engine import RAGEngine
+from .rag_engine import RAGEngine, rag_engine
 from .personalities import (
     load_personalities,
     upsert_personality,
     delete_personality,
     set_default_personality,
+    duplicate_personality,
 )
 from .logging_utils import LOG_DIR, get_system_logger
+from .database import db_manager
 import logging as _logging
 from fastapi.responses import FileResponse
 import glob
 import json as _json
+from fastapi import Response
+import hashlib
+import httpx
+import asyncio, uuid, time
+import threading
+from .openai_utils import build_openai_headers
+
+# ---- TTS Download Task Persistence Helpers ----
+# We add lightweight JSON persistence so that async download tasks survive process restarts.
+# File format: JSON Lines, each line a task dict. On save we rewrite the full file atomically.
+_TTS_TASKS_LOCK = threading.RLock()
+_TTS_TASKS_FILE = Path(__file__).parent.parent / 'storage' / 'tts_download_tasks.jsonl'
+
+def _load_tts_tasks_from_disk() -> dict[str, dict]:
+    tasks: dict[str, dict] = {}
+    try:
+        if _TTS_TASKS_FILE.exists():
+            with open(_TTS_TASKS_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        tid = obj.get('id') or obj.get('task_id')
+                        if isinstance(tid, str):
+                            tasks[tid] = obj
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    # Mark any running/pending tasks as 'stale' since we lost the in-flight coroutine on restart.
+    now = time.time()
+    for t in tasks.values():
+        if t.get('status') in ('running','pending'):
+            t['status'] = 'stale'
+            t.setdefault('ended_at', now)
+            t.setdefault('error', 'process_restarted')
+    return tasks
+
+def _save_tts_tasks_to_disk(tasks: dict[str, dict]):
+    try:
+        _TTS_TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = _TTS_TASKS_FILE.with_suffix('.tmp')
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            for t in tasks.values():
+                try:
+                    f.write(json.dumps(t, ensure_ascii=False) + '\n')
+                except Exception:
+                    continue
+        os.replace(tmp_path, _TTS_TASKS_FILE)
+    except Exception:
+        pass
+
+# Percorsi guida amministratore (root + storage copia)
+# Primary admin guide path moved into config directory (persistent & versioned)
+ADMIN_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent / 'config' / 'ADMIN_GUIDE.md'
+# Legacy fallback locations (checked only if primary missing)
+_ADMIN_GUIDE_FALLBACKS = [
+    Path(__file__).resolve().parent.parent / 'ADMIN_GUIDE.md',                # previous backend copy
+    Path(__file__).resolve().parent.parent.parent / 'ADMIN_GUIDE.md'          # repository root
+]
+ADMIN_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / 'storage' / 'admin' / 'ADMIN_GUIDE.md'
 
 # Configurazione database - usa il percorso relativo alla directory backend
 BASE_DIR = Path(__file__).parent.parent
@@ -165,10 +234,22 @@ DEFAULT_CONFIG = {
             "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"],
             "selected_voice": "nova"
         },
+        "coqui": {
+            "enabled": False,
+            "models": [
+                "tts_models/it/mai_female/vits",
+                "tts_models/it/mai_male/vits"
+            ],
+            "voices": [
+                "tts_models/it/mai_female/vits",
+                "tts_models/it/mai_male/vits"
+            ],
+            "selected_voice": "tts_models/it/mai_female/vits"
+        },
         "piper": {
             "enabled": True,
-            "voices": ["it_IT-riccardo-x_low", "it_IT-paola-medium"],
-            "selected_voice": "it_IT-riccardo-x_low"
+            "voices": ["it_IT-riccardo-low", "it_IT-paola-medium"],
+            "selected_voice": "it_IT-riccardo-low"
         }
     },
     "default_provider": "local",
@@ -184,8 +265,397 @@ DEFAULT_CONFIG = {
         "max_messages_per_session": 10,
         "auto_cleanup_hours": 24,
         "enabled": True
+    },
+    "context_settings": {
+        "total_tokens": 9000,            # target totale (token stimati)
+        "min_topics_tokens": 3000,       # minimo riservato ai topics
+        "min_rag_tokens": 2000,          # minimo riservato al RAG
+        "jaccard_threshold": 0.8,        # soglia dedup topic
+        "topics_extra_share": 0.7        # quota leftover ai topics
+    },
+    "pipeline_settings": {
+        "force_case_insensitive": False,
+        "normalize_accents": False
     }
 }
+
+def ensure_default_ai_provider(seed: bool = True, force: bool = False):
+    """Ensure a sane default provider/model (OpenRouter + gpt-oss-20b:free) without overwriting explicit admin choices.
+
+    Rules:
+    - Only run if seed True.
+    - If force True (env RESEED_DEFAULTS=1) apply even if values already set.
+    - If openrouter block missing, create it disabled (admin can enable later).
+    - If selected_model empty (or forcing) set to gpt-oss-20b:free (do not touch if already non-empty unless force).
+    - If default_provider not set or == 'local', set to 'openrouter'.
+    - Leave claude selected_model blank (only wipe if forcing and model equals the specific seed model we previously injected – conservative).
+    """
+    if not seed:
+        return
+    try:
+        cfg = load_config()
+        ai = cfg.setdefault('ai_providers', {})
+        or_cfg = ai.setdefault('openrouter', {"enabled": False, "name": "OpenRouter", "models": [], "selected_model": ""})
+        target_model = "gpt-oss-20b:free"
+        reseed_env = os.getenv('RESEED_DEFAULTS', '0').lower() in ('1','true','yes','on')
+        _force = force or reseed_env
+        # Set default provider if missing or still local
+        if _force or cfg.get('default_provider') in (None, '', 'local'):
+            cfg['default_provider'] = 'openrouter'
+        # Seed model only if empty or forcing
+        if _force or not (or_cfg.get('selected_model') or '').strip():
+            or_cfg['selected_model'] = target_model
+            if target_model not in or_cfg.get('models', []):
+                # Prepend to models list for visibility without losing existing
+                models_list = or_cfg.get('models', [])
+                or_cfg['models'] = [target_model] + [m for m in models_list if m != target_model]
+        # Wipe Claude selected_model only if forcing and we explicitly want it blank
+        if _force:
+            claude_cfg = ai.get('claude')
+            if claude_cfg and claude_cfg.get('selected_model') and claude_cfg.get('selected_model') == 'claude-3-5-sonnet-20241022':
+                claude_cfg['selected_model'] = ''
+        save_config(cfg)
+    except Exception as e:  # pragma: no cover
+        try:
+            print(f"[ensure_default_ai_provider] skipped: {e}")
+        except Exception:
+            pass
+
+# ---- Dynamic provider models listing (remote fetch + cache) ----
+_PROVIDER_MODELS_CACHE: dict[str, dict] = {}
+_PROVIDER_MODELS_TTL_DEFAULT = 600  # seconds
+
+def _cache_get(key: str):
+    import time
+    item = _PROVIDER_MODELS_CACHE.get(key)
+    if not item:
+        return None
+    if item['expires_at'] < time.time():
+        _PROVIDER_MODELS_CACHE.pop(key, None)
+        return None
+    return item['value']
+
+def _cache_set(key: str, value, ttl: int):
+    import time
+    _PROVIDER_MODELS_CACHE[key] = { 'value': value, 'expires_at': time.time() + ttl }
+
+async def _fetch_openrouter_models(api_key: str) -> list[str]:
+    import httpx
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://openrouter.ai/api/v1/models", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        models = []
+        for m in data.get('data', []):
+            mid = m.get('id') or m.get('name')
+            if isinstance(mid, str):
+                models.append(mid)
+        return models
+
+async def _fetch_openrouter_models_extended(api_key: str) -> list[dict]:
+    """Fetch OpenRouter models with extended info (is_free flag)."""
+    import httpx
+    headers = {"Authorization": f"Bearer {api_key}"}
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://openrouter.ai/api/v1/models", headers=headers)
+        r.raise_for_status()
+        data = r.json()
+        models = []
+        for m in data.get('data', []):
+            mid = m.get('id') or m.get('name')
+            if isinstance(mid, str):
+                # Check if model is free (has :free suffix or pricing is 0)
+                pricing = m.get('pricing', {})
+                prompt_price = float(pricing.get('prompt', '1') or '1')
+                completion_price = float(pricing.get('completion', '1') or '1')
+                is_free = ':free' in mid.lower() or (prompt_price == 0 and completion_price == 0)
+                models.append({
+                    'id': mid,
+                    'is_free': is_free
+                })
+        return models
+
+async def _fetch_openai_models(api_key: str) -> list[str]:
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.get("https://api.openai.com/v1/models", headers=build_openai_headers(api_key))
+        r.raise_for_status()
+        data = r.json()
+        keep = []
+        for m in data.get('data', []):
+            mid = m.get('id')
+            if not isinstance(mid, str):
+                continue
+            # Heuristic: include chat/capable new naming patterns
+            if any(tok in mid for tok in ["gpt-4", "gpt-4o", "gpt-4.1", "o3", "o1", "gpt-3.5", "mini"]):
+                keep.append(mid)
+    return sorted(set(keep))
+
+async def _fetch_gemini_models(api_key: str) -> list[str]:
+    """Fetch Gemini models list via Google Generative Language API.
+    Filters to chat-capable models (exclude embed/vision-only/edits when detectable).
+    """
+    import httpx
+    out: list[str] = []
+    # Prefer v1beta for broader compatibility
+    url = "https://generativelanguage.googleapis.com/v1beta/models"
+    params = {"key": api_key}
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.get(url, params=params)
+            r.raise_for_status()
+            data = r.json() or {}
+            for m in data.get('models', []):
+                # id may be in name as projects/*/models/{id} or directly
+                raw = m.get('name') or m.get('id') or ''
+                mid = raw.split('/')[-1]
+                if not isinstance(mid, str) or not mid:
+                    continue
+                # Keep only Gemini chat models
+                if not mid.startswith('gemini-'):
+                    continue
+                # Exclude embedding/edit models
+                if any(x in mid for x in ['embed', 'embedding', 'editor']):
+                    continue
+                out.append(mid)
+    except Exception:
+        out = []
+    # Stable curated order if API fails later
+    if not out:
+        out = [
+            'gemini-2.0-flash',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+        ]
+    # Dedup preserving seen order
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for m in out:
+        if m not in seen:
+            seen.add(m); ordered.append(m)
+    return ordered
+
+async def _fetch_anthropic_models(api_key: str) -> list[str]:
+    """Fetch Claude models list. If API fails, return a curated set."""
+    import httpx
+    out: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as cx:
+            r = await cx.get("https://api.anthropic.com/v1/models", headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+            if r.status_code == 200:
+                data = r.json() or {}
+                for m in data.get('data', []):
+                    mid = m.get('id') or m.get('name')
+                    if isinstance(mid, str) and mid.startswith('claude-'):
+                        out.append(mid)
+    except Exception:
+        out = []
+    if not out:
+        out = [
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-haiku-20241022',
+            'claude-3-opus-20240229',
+            'claude-3-sonnet-20240229',
+            'claude-3-haiku-20240307',
+        ]
+    # keep order
+    seen: set[str] = set(); ordered: list[str] = []
+    for m in out:
+        if m not in seen:
+            seen.add(m); ordered.append(m)
+    return ordered
+
+async def _fetch_ollama_models(base_url: str) -> list[str]:
+    import httpx
+    async with httpx.AsyncClient(timeout=20) as cx:
+        r = await cx.get(f"{base_url.rstrip('/')}/api/tags")
+        r.raise_for_status()
+        data = r.json()
+        out = []
+        for entry in data.get('models', []):
+            nm = entry.get('name')
+            if isinstance(nm, str):
+                out.append(nm)
+        return out
+
+def _static_models(provider: str) -> list[str]:
+    if provider == 'claude':
+        return [
+            'claude-3-5-sonnet-20241022',
+            'claude-3-5-sonnet-latest',
+            'claude-3-opus-latest',
+            'claude-3-haiku-20240307'
+        ]
+    if provider == 'gemini':
+        # Curated modern list (fallback if API listing not available)
+        return [
+            'gemini-2.0-flash',
+            'gemini-1.5-pro',
+            'gemini-1.5-flash',
+            'gemini-1.5-flash-8b',
+        ]
+    if provider == 'local':
+        return ['local-fallback']
+    return []
+
+@router.get('/admin/provider-models/{provider}')
+async def get_provider_models(provider: str, refresh: bool = False):
+    """Return dynamic model list for a provider.
+    Fallback order: cache -> remote -> config -> static -> []."""
+    provider = provider.lower()
+    import os, time
+    ttl = int(os.getenv('REMOTE_MODEL_LIST_CACHE_SECONDS', str(_PROVIDER_MODELS_TTL_DEFAULT)))
+    cache_key = f"prov_models:{provider}"
+    if not refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return {"success": True, "provider": provider, "cached": True, "models": cached}
+    models: list[str] = []
+    note = None
+    try:
+        if provider == 'openrouter':
+            api_key = _get_api_key('OPENROUTER_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openrouter_models(api_key)
+                except Exception as e:  # fallback
+                    note = f"openrouter_fetch_error:{e}"  # not exposed key
+            else:
+                note = 'missing_api_key'
+        elif provider == 'openai':
+            api_key = _get_api_key('OPENAI_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openai_models(api_key)
+                except Exception as e:
+                    note = f"openai_fetch_error:{e}"
+            else:
+                note = 'missing_api_key'
+        elif provider == 'ollama':
+            # ENV ha precedenza sul config file
+            base_url = os.getenv('OLLAMA_BASE_URL') or load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or 'http://localhost:11434'
+            try:
+                models = await _fetch_ollama_models(base_url)
+            except Exception as e:
+                note = f"ollama_fetch_error:{e}"
+        elif provider == 'gemini':
+            api_key = _get_api_key('GOOGLE_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_gemini_models(api_key)
+                except Exception as e:
+                    note = f"gemini_fetch_error:{e}"
+            if not models:
+                models = _static_models('gemini')
+        elif provider == 'claude':
+            api_key = _get_api_key('ANTHROPIC_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_anthropic_models(api_key)
+                except Exception as e:
+                    note = f"claude_fetch_error:{e}"
+            if not models:
+                models = _static_models('claude')
+        elif provider == 'local':
+            models = _static_models('local')
+        else:
+            return {"success": False, "error": "provider_not_supported"}
+    except Exception as e:
+        note = f"generic_error:{e}"
+
+    # Fallback a config se remote vuoto
+    if not models:
+        try:
+            cfg = load_config()
+            cfg_models = cfg.get('ai_providers', {}).get(provider, {}).get('models') or []
+            if cfg_models:
+                models = [m for m in cfg_models if isinstance(m, str) and m.strip()]
+        except Exception:
+            pass
+    # Fallback static if ancora vuoto
+    if not models:
+        static = _static_models(provider)
+        if static:
+            models = static
+    # Dedup & sort (keep order for openrouter for curated ranking)
+    if provider == 'openrouter':
+        # preserve order
+        seen = set()
+        ordered = []
+        for m in models:
+            if m not in seen:
+                seen.add(m); ordered.append(m)
+        models = ordered
+    else:
+        models = sorted(set(models))
+
+    _cache_set(cache_key, models, ttl)
+    resp = {"success": True, "provider": provider, "cached": False, "models": models}
+    if note:
+        resp['note'] = note
+    return resp
+
+@router.get('/admin/provider-models-extended/{provider}')
+async def get_provider_models_extended(provider: str, refresh: bool = False):
+    """Return extended model list with metadata (is_free for OpenRouter, is_cloud for Ollama).
+    Used by frontend to show filters and configure fallback models."""
+    provider = provider.lower()
+    import os, time
+    ttl = int(os.getenv('REMOTE_MODEL_LIST_CACHE_SECONDS', str(_PROVIDER_MODELS_TTL_DEFAULT)))
+    cache_key = f"prov_models_ext:{provider}"
+    if not refresh:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return {"success": True, "provider": provider, "cached": True, "models": cached}
+
+    models: list[dict] = []
+    note = None
+
+    try:
+        if provider == 'openrouter':
+            api_key = _get_api_key('OPENROUTER_API_KEY')
+            if api_key:
+                try:
+                    models = await _fetch_openrouter_models_extended(api_key)
+                except Exception as e:
+                    note = f"openrouter_fetch_error:{e}"
+            else:
+                note = 'missing_api_key'
+        elif provider == 'ollama':
+            # ENV ha precedenza sul config file
+            base_url = os.getenv('OLLAMA_BASE_URL') or load_config().get('ai_providers', {}).get('ollama', {}).get('base_url') or 'http://localhost:11434'
+            try:
+                raw_models = await _fetch_ollama_models(base_url)
+                # Add is_cloud flag based on model name containing 'cloud'
+                for m in raw_models:
+                    models.append({
+                        'id': m,
+                        'is_cloud': 'cloud' in m.lower()
+                    })
+            except Exception as e:
+                note = f"ollama_fetch_error:{e}"
+        else:
+            return {"success": False, "error": "provider_not_supported_for_extended"}
+    except Exception as e:
+        note = f"generic_error:{e}"
+
+    # Dedup preserving order
+    seen = set()
+    ordered = []
+    for m in models:
+        mid = m.get('id', '')
+        if mid not in seen:
+            seen.add(mid)
+            ordered.append(m)
+    models = ordered
+
+    _cache_set(cache_key, models, ttl)
+    resp = {"success": True, "provider": provider, "cached": False, "models": models}
+    if note:
+        resp['note'] = note
+    return resp
 
 def get_config_file_path():
     """Ottieni il percorso del file di configurazione"""
@@ -209,6 +679,15 @@ def save_config(config: dict):
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
+def _refresh_routes_cache():
+    """Lazy import per aggiornare la cache delle route senza creare import circolari."""
+    try:
+        from . import topic_router  # type: ignore
+        if hasattr(topic_router, 'refresh_routes_cache'):
+            topic_router.refresh_routes_cache()
+    except Exception:
+        pass
+
 def get_summary_provider():
     """Ottiene il provider configurato per i summary (mai 'local')"""
     config = load_config()
@@ -222,9 +701,307 @@ def get_summary_provider():
     
     return provider if enabled else "openrouter"  # Fallback sicuro
 
+def get_summary_model():
+    """Restituisce il modello configurato per i summary o un default coerente col provider."""
+    config = load_config()
+    ss = config.get("summary_settings", {})
+    model = ss.get("model")
+    if model:
+        return model
+    provider = ss.get("provider", "openrouter")
+    defaults = {
+        "openrouter": "anthropic/claude-sonnet-4.5",
+        "claude": "claude-sonnet-4-5-20250514",
+        "openai": "gpt-4o-mini",
+        "gemini": "gemini-1.5-pro",
+        "ollama": "llama3.1:8b"
+    }
+    return defaults.get(provider, "anthropic/claude-sonnet-4.5")
+
+# ---- TTS providers / voices management ----
+class TTSVoicesRequest(BaseModel):
+    provider: str
+    refresh: bool = False
+
+@router.get("/admin/tts/voices")
+async def list_tts_voices(provider: str, refresh: bool = False):
+    """Ritorna elenco voci per un provider TTS.
+    Provider supportati: edge (static), elevenlabs (API), openai (static), piper (installed + static config).
+    Se refresh True forza refetch remoto dove applicabile.
+    """
+    provider = provider.lower()
+    cfg = load_config()
+    out = []
+    note = None
+    try:
+        if provider == 'edge':
+            out = cfg.get('tts_providers', {}).get('edge', {}).get('voices', [])
+        elif provider == 'openai':
+            out = cfg.get('tts_providers', {}).get('openai', {}).get('voices', [])
+        elif provider == 'elevenlabs':
+            api_key = os.getenv('ELEVENLABS_API_KEY')
+            if not api_key:
+                note = 'missing_api_key'
+                out = cfg.get('tts_providers', {}).get('elevenlabs', {}).get('voices', [])
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        r = await client.get('https://api.elevenlabs.io/v1/voices', headers={'xi-api-key': api_key})
+                        if r.status_code == 200:
+                            data = r.json()
+                            out = [v['name'] for v in data.get('voices', []) if v.get('name')]
+                        else:
+                            note = f"remote_status_{r.status_code}"
+                except Exception as e:
+                    note = f"remote_error:{e}"  # fallback static
+                    if not out:
+                        out = cfg.get('tts_providers', {}).get('elevenlabs', {}).get('voices', [])
+        elif provider == 'coqui':
+            block = cfg.get('tts_providers', {}).get('coqui', {})
+            out = block.get('voices') or block.get('models') or []
+        elif provider == 'piper':
+            # Installed voices = file .onnx nel models/piper + static config voices
+            models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'piper')
+            installed = []
+            try:
+                if os.path.isdir(models_dir):
+                    for fn in os.listdir(models_dir):
+                        if fn.endswith('.onnx'):
+                            installed.append(fn[:-5])
+            except Exception:
+                pass
+            static = cfg.get('tts_providers', {}).get('piper', {}).get('voices', [])
+            # Unione mantenendo ordine static e aggiungendo installed nuove
+            seen = set()
+            merged = []
+            for v in static + installed:
+                if v not in seen:
+                    seen.add(v); merged.append(v)
+            out = merged
+        else:
+            return {"success": False, "error": "provider_not_supported"}
+        return {"success": True, "provider": provider, "voices": out, "note": note}
+    except Exception as e:
+        return {"success": False, "error": str(e), "provider": provider}
+
+class PiperDownloadRequest(BaseModel):
+    voice: str
+
+@router.post("/admin/tts/piper/download")
+async def download_piper_voice(req: PiperDownloadRequest):
+    """Scarica (o conferma già presente) un modello Piper specifico."""
+    try:
+        from .tts import ensure_piper_voice_downloaded, resolve_piper_voice_id
+        voice_id = resolve_piper_voice_id(req.voice)
+        model_path, cfg_path = await ensure_piper_voice_downloaded(voice_id)
+        ok = os.path.exists(model_path) and os.path.exists(cfg_path)
+        return {"success": ok, "voice": voice_id, "model_path": model_path, "config_path": cfg_path}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.get("/admin/tts/piper/installed")
+async def list_piper_installed():
+    try:
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'piper')
+        voices = []
+        if os.path.isdir(models_dir):
+            for fn in os.listdir(models_dir):
+                if fn.endswith('.onnx'):
+                    voices.append(fn[:-5])
+        voices.sort()
+        return {"success": True, "voices": voices}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ---- Generic async TTS model downloads (Piper + Coqui) ----
+class TTSDownloadStart(BaseModel):
+    provider: str  # piper | coqui
+    voice: str
+
+_TTS_DOWNLOAD_TASKS: dict[str, dict] = _load_tts_tasks_from_disk()
+
+@router.post("/admin/tts/download")
+async def start_tts_download(req: TTSDownloadStart):
+    provider = req.provider.lower()
+    voice = req.voice
+    task_id = uuid.uuid4().hex
+    started_at = time.time()
+    with _TTS_TASKS_LOCK:
+        _TTS_DOWNLOAD_TASKS[task_id] = {
+            "id": task_id,
+            "provider": provider,
+            "voice": voice,
+            "status": "pending",
+            "error": None,
+            "bytes": None,
+            "total_bytes": None,
+            "progress": 0.0,
+            "started_at": started_at,
+            "ended_at": None,
+        }
+        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    async def _run():
+        try:
+            with _TTS_TASKS_LOCK:
+                task = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if task:
+                    task["status"] = "running"
+                    _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+            if provider == 'piper':
+                from .tts import ensure_piper_voice_downloaded, resolve_piper_voice_id
+                v = resolve_piper_voice_id(voice)
+                bytes_holder = {"last": 0}
+                def _prog(b, total):
+                    with _TTS_TASKS_LOCK:
+                        t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                        if not t:
+                            return
+                        t['bytes'] = b
+                        if total and total > 0:
+                            t['total_bytes'] = total
+                            t['progress'] = min(1.0, b / total)
+                        else:
+                            # fallback unknown total (treat as indeterminate)
+                            if b and (t.get('progress',0) < 0.95):
+                                t['progress'] = 0.5  # mid as placeholder
+                        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+                m, c = await ensure_piper_voice_downloaded(v, progress_cb=_prog)
+                ok = os.path.exists(m) and os.path.exists(c)
+                if not ok:
+                    raise RuntimeError("download_incomplete")
+                sz = (os.path.getsize(m) if os.path.exists(m) else 0) + (os.path.getsize(c) if os.path.exists(c) else 0)
+                with _TTS_TASKS_LOCK:
+                    t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                    if t:
+                        t["bytes"] = sz
+                        t["total_bytes"] = sz or t.get('total_bytes')
+                        t['progress'] = 1.0 if sz else t.get('progress', 0.0)
+            elif provider == 'coqui':
+                # Caricamento modello Coqui (download implicito)
+                from TTS.api import TTS as _TTS
+                loop = asyncio.get_running_loop()
+                def _load():
+                    _ = _TTS(model_name=voice)
+                await loop.run_in_executor(None, _load)
+            else:
+                raise RuntimeError("provider_not_supported")
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["status"] = "done"
+                    t["progress"] = 1.0
+        except Exception as e:
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["status"] = "error"
+                    t["error"] = str(e)
+        finally:
+            with _TTS_TASKS_LOCK:
+                t = _TTS_DOWNLOAD_TASKS.get(task_id)
+                if t:
+                    t["ended_at"] = time.time()
+                _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    asyncio.create_task(_run())
+    return {"success": True, "task_id": task_id}
+
+@router.get("/admin/tts/download/{task_id}")
+async def get_tts_download_status(task_id: str):
+    with _TTS_TASKS_LOCK:
+        task = _TTS_DOWNLOAD_TASKS.get(task_id)
+        if not task:
+            return {"success": False, "error": "task_not_found"}
+        return {"success": True, "task": task}
+
+@router.get("/admin/tts/download")
+async def list_tts_downloads(limit: int = 50):
+    with _TTS_TASKS_LOCK:
+        items = list(_TTS_DOWNLOAD_TASKS.values())
+        items.sort(key=lambda x: x.get('started_at') or 0, reverse=True)
+        return {"success": True, "tasks": items[:limit], "total": len(items)}
+
+@router.delete("/admin/tts/download/{task_id}")
+async def delete_tts_download_task(task_id: str):
+    """Delete a finished (done/error/stale) task. Running/pending tasks are protected."""
+    with _TTS_TASKS_LOCK:
+        task = _TTS_DOWNLOAD_TASKS.get(task_id)
+        if not task:
+            return {"success": False, "error": "task_not_found"}
+        if task.get('status') in ('running','pending'):
+            return {"success": False, "error": "task_in_progress"}
+        _TTS_DOWNLOAD_TASKS.pop(task_id, None)
+        _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+        return {"success": True, "deleted": task_id}
+
+class TTSDownloadCleanupRequest(BaseModel):
+    older_than_seconds: int | None = None  # remove tasks ended more than X seconds ago
+    statuses: list[str] | None = None      # default: ['done','error','stale']
+    limit: int | None = None               # max tasks to remove
+
+@router.post("/admin/tts/download/cleanup")
+async def cleanup_tts_download_tasks(req: TTSDownloadCleanupRequest):
+    now = time.time()
+    removed = []
+    statuses = req.statuses or ['done','error','stale']
+    with _TTS_TASKS_LOCK:
+        # Build list of candidates
+        items = list(_TTS_DOWNLOAD_TASKS.values())
+        # Sort oldest first by ended_at
+        items.sort(key=lambda x: x.get('ended_at') or x.get('started_at') or 0)
+        for t in items:
+            if t.get('status') not in statuses:
+                continue
+            ended = t.get('ended_at') or 0
+            if req.older_than_seconds is not None:
+                if (now - ended) < req.older_than_seconds:
+                    continue
+            removed.append(t['id'])
+            _TTS_DOWNLOAD_TASKS.pop(t['id'], None)
+            if req.limit and len(removed) >= req.limit:
+                break
+        if removed:
+            _save_tts_tasks_to_disk(_TTS_DOWNLOAD_TASKS)
+    return {"success": True, "removed": removed, "count": len(removed)}
+
+class TTSPreloadItem(BaseModel):
+    provider: str
+    voice: str
+
+class TTSPreloadRequest(BaseModel):
+    items: list[TTSPreloadItem]
+
+@router.post("/admin/tts/preload")
+async def preload_tts_models(req: TTSPreloadRequest):
+    """Start multiple download tasks (bulk). Returns list of {voice,provider,task_id}."""
+    results = []
+    for item in req.items:
+        # Reuse existing endpoint logic by calling start_tts_download
+        try:
+            r = await start_tts_download(TTSDownloadStart(provider=item.provider, voice=item.voice))
+            if r.get('success'):
+                results.append({
+                    'provider': item.provider,
+                    'voice': item.voice,
+                    'task_id': r.get('task_id')
+                })
+            else:
+                results.append({
+                    'provider': item.provider,
+                    'voice': item.voice,
+                    'error': r.get('error') or 'unknown'
+                })
+        except Exception as e:
+            results.append({
+                'provider': item.provider,
+                'voice': item.voice,
+                'error': str(e)
+            })
+    return {"success": True, "items": results}
+
 # ---- UI settings (arena visibility) ----
 class UiSettingsIn(BaseModel):
     arena_public: bool
+    survey_results_public: bool | None = None
     contact_email: str | None = None
     research_project: str | None = None
     repository_url: str | None = None
@@ -243,9 +1020,11 @@ class UiSettingsIn(BaseModel):
 async def get_ui_settings():
     try:
         config = load_config()
-        ui = config.get("ui_settings", {"arena_public": False, "contact_email": None})
+        ui = config.get("ui_settings", {"arena_public": False, "survey_results_public": False, "contact_email": None})
         if "arena_public" not in ui:
             ui["arena_public"] = False
+        if "survey_results_public" not in ui:
+            ui["survey_results_public"] = False
         if "contact_email" not in ui:
             ui["contact_email"] = None
         # Ensure new research fields exist (even if None)
@@ -266,6 +1045,8 @@ async def update_ui_settings(payload: UiSettingsIn):
         config = load_config()
         config.setdefault("ui_settings", {})
         config["ui_settings"]["arena_public"] = bool(payload.arena_public)
+        if payload.survey_results_public is not None:
+            config["ui_settings"]["survey_results_public"] = bool(payload.survey_results_public)
         def _norm(v: Optional[str]):
             if v is None:
                 return None
@@ -303,6 +1084,84 @@ async def update_ui_settings(payload: UiSettingsIn):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore salvataggio impostazioni UI: {str(e)}")
 
+# ---- Context settings (topics/RAG budgeting) ----
+class ContextSettingsIn(BaseModel):
+    total_tokens: int
+    min_topics_tokens: int
+    min_rag_tokens: int
+    jaccard_threshold: float | None = None
+    topics_extra_share: float | None = None
+
+class PipelineSettingsIn(BaseModel):
+    force_case_insensitive: bool
+    normalize_accents: bool
+
+@router.get("/admin/context-settings")
+async def get_context_settings():
+    try:
+        cfg = load_config()
+        ctx = cfg.get("context_settings", {})
+        # fill defaults if missing
+        defaults = DEFAULT_CONFIG.get("context_settings", {})
+        merged = {**defaults, **ctx}
+        return {"settings": merged}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento context settings: {e}")
+
+@router.post("/admin/context-settings")
+async def update_context_settings(payload: ContextSettingsIn):
+    try:
+        if payload.total_tokens < 2000:
+            raise HTTPException(status_code=400, detail="total_tokens troppo basso")
+        if payload.min_topics_tokens + payload.min_rag_tokens > payload.total_tokens:
+            raise HTTPException(status_code=400, detail="Somma minimi supera total_tokens")
+        cfg = load_config()
+        cfg.setdefault("context_settings", {})
+        cfg["context_settings"].update({
+            "total_tokens": payload.total_tokens,
+            "min_topics_tokens": payload.min_topics_tokens,
+            "min_rag_tokens": payload.min_rag_tokens,
+        })
+        if payload.jaccard_threshold is not None:
+            cfg["context_settings"]["jaccard_threshold"] = payload.jaccard_threshold
+        if payload.topics_extra_share is not None:
+            cfg["context_settings"]["topics_extra_share"] = payload.topics_extra_share
+        save_config(cfg)
+        return {"success": True, "message": "Context settings aggiornati"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio context settings: {e}")
+
+@router.get("/admin/pipeline-settings")
+async def get_pipeline_settings():
+    try:
+        cfg = load_config()
+        defaults = DEFAULT_CONFIG.get("pipeline_settings", {})
+        merged = {**defaults, **cfg.get("pipeline_settings", {})}
+        return {"settings": merged}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento pipeline settings: {e}")
+
+@router.post("/admin/pipeline-settings")
+async def update_pipeline_settings(payload: PipelineSettingsIn):
+    try:
+        cfg = load_config()
+        cfg.setdefault("pipeline_settings", {})
+        cfg["pipeline_settings"].update({
+            "force_case_insensitive": bool(payload.force_case_insensitive),
+            "normalize_accents": bool(payload.normalize_accents)
+        })
+        save_config(cfg)
+        # Refresh routes cache per applicare subito
+        try:
+            _refresh_routes_cache()
+        except Exception:
+            pass
+        return {"success": True, "message": "Pipeline settings aggiornati"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio pipeline settings: {e}")
+
 @router.get("/admin/config")
 async def get_config():
     config = load_config()
@@ -322,6 +1181,9 @@ async def get_config():
         if provider in masked_config["ai_providers"]:
             masked_config["ai_providers"][provider]["api_key_status"] = "configured" if api_key else "missing"
             masked_config["ai_providers"][provider]["api_key_masked"] = "••••••••••••••••" if api_key else ""
+            # Abilita automaticamente il provider se la chiave API è configurata
+            if api_key:
+                masked_config["ai_providers"][provider]["enabled"] = True
     
     # Sovrascrivi l'URL di Ollama con quello dalle variabili di ambiente
     if "ollama" in masked_config["ai_providers"]:
@@ -344,6 +1206,276 @@ async def save_admin_config(config: AdminConfig):
         return {"success": True, "message": "Configurazione salvata con successo"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio: {str(e)}")
+
+# ==== API KEYS MANAGEMENT ====
+
+# Path per il file delle API keys (nella directory config che è scrivibile)
+API_KEYS_FILE = Path(__file__).parent.parent / 'config' / 'api_keys.json'
+
+def _load_api_keys_from_file() -> dict:
+    """Carica le API keys dal file JSON"""
+    if API_KEYS_FILE.exists():
+        try:
+            with open(API_KEYS_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_api_keys_to_file(keys: dict):
+    """Salva le API keys nel file JSON"""
+    API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(API_KEYS_FILE, 'w') as f:
+        json.dump(keys, f, indent=2)
+
+def _get_api_key(env_var: str) -> str:
+    """Ottiene una API key prima dal file, poi dalle variabili d'ambiente"""
+    # Prima controlla il file delle chiavi salvate
+    saved_keys = _load_api_keys_from_file()
+    if env_var in saved_keys and saved_keys[env_var]:
+        return saved_keys[env_var]
+    # Fallback alle variabili d'ambiente
+    return os.getenv(env_var, "")
+
+def init_api_keys_from_file():
+    """Inizializza le variabili d'ambiente con le API keys salvate nel file"""
+    saved_keys = _load_api_keys_from_file()
+    for env_var, value in saved_keys.items():
+        if value and not os.getenv(env_var):
+            os.environ[env_var] = value
+
+# Inizializza le API keys al caricamento del modulo
+init_api_keys_from_file()
+
+class APIKeyUpdate(BaseModel):
+    provider: str
+    api_key: str
+
+@router.get("/admin/api-keys")
+async def get_api_keys():
+    """Restituisce lo status delle API keys (mascherate) e lo stato enabled dei provider"""
+    try:
+        # Carica la configurazione per lo stato enabled
+        config = load_config()
+        ai_providers = config.get("ai_providers", {})
+        
+        # Mapping da provider API a provider config
+        provider_config_map = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "elevenlabs": None  # TTS, non ha enabled in ai_providers
+        }
+        
+        def get_enabled(provider_key: str) -> bool:
+            config_key = provider_config_map.get(provider_key)
+            if config_key:
+                return ai_providers.get(config_key, {}).get("enabled", False)
+            return False
+        
+        api_keys_status = {
+            "google": {
+                "status": "configured" if _get_api_key("GOOGLE_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("GOOGLE_API_KEY") else "",
+                "env_var": "GOOGLE_API_KEY",
+                "enabled": get_enabled("google")
+            },
+            "anthropic": {
+                "status": "configured" if _get_api_key("ANTHROPIC_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("ANTHROPIC_API_KEY") else "",
+                "env_var": "ANTHROPIC_API_KEY",
+                "enabled": get_enabled("anthropic")
+            },
+            "openai": {
+                "status": "configured" if _get_api_key("OPENAI_API_KEY") else "missing", 
+                "masked": "••••••••••••••••" if _get_api_key("OPENAI_API_KEY") else "",
+                "env_var": "OPENAI_API_KEY",
+                "enabled": get_enabled("openai")
+            },
+            "openrouter": {
+                "status": "configured" if _get_api_key("OPENROUTER_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("OPENROUTER_API_KEY") else "",
+                "env_var": "OPENROUTER_API_KEY",
+                "enabled": get_enabled("openrouter")
+            },
+            "elevenlabs": {
+                "status": "configured" if _get_api_key("ELEVENLABS_API_KEY") else "missing",
+                "masked": "••••••••••••••••" if _get_api_key("ELEVENLABS_API_KEY") else "",
+                "env_var": "ELEVENLABS_API_KEY",
+                "enabled": True  # ElevenLabs è TTS, sempre considerato enabled se ha la chiave
+            }
+        }
+        return {"success": True, "api_keys": api_keys_status}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel caricamento API keys: {str(e)}")
+
+
+@router.post("/admin/api-keys")
+async def update_api_key(payload: APIKeyUpdate):
+    """Aggiorna una API key specifica - salva in file JSON nella directory config"""
+    try:
+        provider_mapping = {
+            "google": "GOOGLE_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY", 
+            "openai": "OPENAI_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY",
+            "elevenlabs": "ELEVENLABS_API_KEY"
+        }
+        
+        # Mapping da provider frontend a provider config
+        provider_to_config = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter",
+            "elevenlabs": None  # TTS, non AI provider
+        }
+        
+        if payload.provider not in provider_mapping:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {payload.provider}")
+            
+        env_var = provider_mapping[payload.provider]
+        
+        # Aggiorna la variabile d'ambiente per la sessione corrente
+        os.environ[env_var] = payload.api_key
+        
+        # Salva nel file JSON (persistente)
+        saved_keys = _load_api_keys_from_file()
+        saved_keys[env_var] = payload.api_key
+        _save_api_keys_to_file(saved_keys)
+        
+        # Abilita automaticamente il provider AI se la chiave è valida
+        config_provider = provider_to_config.get(payload.provider)
+        if config_provider and payload.api_key:
+            try:
+                config = load_config()
+                if config_provider in config.get("ai_providers", {}):
+                    config["ai_providers"][config_provider]["enabled"] = True
+                    save_config(config)
+            except Exception as e:
+                # Non fallire se non riesci ad abilitare il provider
+                print(f"[API Keys] Warning: could not auto-enable provider {config_provider}: {e}")
+        
+        return {"success": True, "message": f"API key per {payload.provider} aggiornata con successo"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nell'aggiornamento API key: {str(e)}")
+
+
+class ProviderToggle(BaseModel):
+    provider: str
+    enabled: bool
+
+@router.post("/admin/api-keys/toggle")
+async def toggle_provider(payload: ProviderToggle):
+    """Abilita o disabilita un provider AI"""
+    try:
+        # Mapping da provider API a provider config
+        provider_to_config = {
+            "google": "gemini",
+            "anthropic": "claude",
+            "openai": "openai",
+            "openrouter": "openrouter"
+        }
+        
+        if payload.provider not in provider_to_config:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {payload.provider}")
+        
+        config_provider = provider_to_config[payload.provider]
+        config = load_config()
+        
+        if config_provider not in config.get("ai_providers", {}):
+            raise HTTPException(status_code=400, detail=f"Provider {config_provider} non trovato nella configurazione")
+        
+        config["ai_providers"][config_provider]["enabled"] = payload.enabled
+        save_config(config)
+        
+        status = "abilitato" if payload.enabled else "disabilitato"
+        return {"success": True, "message": f"Provider {payload.provider} {status}"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore nel toggle provider: {str(e)}")
+
+
+@router.post("/admin/api-keys/test/{provider}")
+async def test_api_key(provider: str):
+    """Testa una API key specifica"""
+    try:
+        provider_mapping = {
+            "google": "GOOGLE_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY", 
+            "openrouter": "OPENROUTER_API_KEY",
+            "elevenlabs": "ELEVENLABS_API_KEY"
+        }
+        
+        if provider not in provider_mapping:
+            raise HTTPException(status_code=400, detail=f"Provider non supportato: {provider}")
+            
+        api_key = os.getenv(provider_mapping[provider], "")
+        if not api_key:
+            return {"success": False, "message": f"API key per {provider} non configurata"}
+            
+        # Testa la chiave API con una chiamata semplice
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if provider == "google":
+                # Test Google Gemini
+                url = "https://generativelanguage.googleapis.com/v1/models"
+                params = {"key": api_key}
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key Google valida"}
+                else:
+                    return {"success": False, "message": f"API key Google non valida: {response.status_code}"}
+                    
+            elif provider == "anthropic":
+                # Test Anthropic Claude
+                url = "https://api.anthropic.com/v1/models"
+                headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key Anthropic valida"}
+                else:
+                    return {"success": False, "message": f"API key Anthropic non valida: {response.status_code}"}
+                    
+            elif provider == "openai":
+                # Test OpenAI
+                url = "https://api.openai.com/v1/models"
+                headers = build_openai_headers(api_key)
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key OpenAI valida"}
+                else:
+                    return {"success": False, "message": f"API key OpenAI non valida: {response.status_code}"}
+                    
+            elif provider == "openrouter":
+                # Test OpenRouter
+                url = "https://openrouter.ai/api/v1/models"
+                headers = build_openai_headers(api_key)
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key OpenRouter valida"}
+                else:
+                    return {"success": False, "message": f"API key OpenRouter non valida: {response.status_code}"}
+                    
+            elif provider == "elevenlabs":
+                # Test ElevenLabs
+                url = "https://api.elevenlabs.io/v1/user"
+                headers = {"xi-api-key": api_key}
+                response = await client.get(url, headers=headers)
+                if response.status_code == 200:
+                    return {"success": True, "message": "API key ElevenLabs valida"}
+                else:
+                    return {"success": False, "message": f"API key ElevenLabs non valida: {response.status_code}"}
+            
+    except Exception as e:
+        return {"success": False, "message": f"Errore nel test API key: {str(e)}"}
 
 @router.get("/admin/system-prompt")
 async def get_system_prompt():
@@ -369,7 +1501,9 @@ async def update_system_prompt(payload: SystemPromptIn):
 async def reset_system_prompt():
     """Ripristina un prompt di default minimale."""
     try:
-        default_text = "Sei Counselorbot, compagno di apprendimento. Guida l'utente attraverso i passi del QSA con tono positivo."
+        default_text = (
+            "Sei un assistente virtuale generico. Rispondi in italiano con tono cordiale e conciso, facendo domande per chiarire le esigenze dell'utente."
+        )
         save_system_prompt(default_text)
         return {"success": True, "prompt": default_text}
     except Exception as e:
@@ -471,7 +1605,10 @@ async def reset_summary_prompt():
 
 @router.post("/admin/summary-prompt/reset-seed")
 async def reset_summary_prompt_seed():
-    """Forza il reset copiando il file seed /app/data/SUMMARY_PROMPT.md (se presente)."""
+    """Forza il reset copiando il seed (backend/config/seed/summary_prompt.md) se presente.
+
+    Fallback legacy /app/data rimosso: se il seed manca usa il testo di default.
+    """
     try:
         text = reset_summary_prompt_from_seed()
         return {"success": True, "prompt": text, "seed": True}
@@ -482,6 +1619,19 @@ async def reset_summary_prompt_seed():
 class SummarySettingsIn(BaseModel):
     provider: str
     enabled: bool
+    model: str | None = None
+    min_messages: int | None = None  # soglia minima messaggi per generare summary
+    min_chars: int | None = None     # soglia minima caratteri (somma contenuti) per generare summary
+    auto_on_export: bool | None = None  # se false non tenta generazione automatica nell'export
+
+DEFAULT_SUMMARY_SETTINGS = {
+    "provider": "openrouter",
+    "enabled": True,
+    "model": None,
+    "min_messages": 4,
+    "min_chars": 200,
+    "auto_on_export": True,
+}
 
 # ---- Summary prompts (multi) endpoints ----
 class SummaryPromptIn(BaseModel):
@@ -523,10 +1673,20 @@ async def remove_summary_prompt(prompt_id: str):
 
 @router.get("/admin/summary-settings")
 async def get_summary_settings():
-    """Ottiene le impostazioni correnti per la generazione dei summary"""
+    """Ottiene le impostazioni correnti per la generazione dei summary."""
     try:
         config = load_config()
-        summary_settings = config.get("summary_settings", {"provider": "openrouter", "enabled": True})
+        raw = config.get("summary_settings", {}) or {}
+        summary_settings = DEFAULT_SUMMARY_SETTINGS.copy()
+        summary_settings.update({k: v for k, v in raw.items() if v is not None})
+        # Normalizza tipi / limiti
+        try:
+            if summary_settings.get("min_messages") is not None:
+                summary_settings["min_messages"] = max(0, int(summary_settings["min_messages"]))
+            if summary_settings.get("min_chars") is not None:
+                summary_settings["min_chars"] = max(0, int(summary_settings["min_chars"]))
+        except Exception:
+            pass
         return {"settings": summary_settings}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento impostazioni summary: {str(e)}")
@@ -535,21 +1695,75 @@ async def get_summary_settings():
 async def update_summary_settings(payload: SummarySettingsIn):
     """Aggiorna le impostazioni per la generazione dei summary"""
     try:
-        # Valida che il provider non sia "local"
         if payload.provider == "local":
-            raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary")
-        
+            raise HTTPException(status_code=400, detail="Il provider 'local' non può essere usato per i summary. Scegli un provider AI reale (es: openrouter, openai, gemini, ollama)")
+
+        # Validazioni soft
+        min_messages = payload.min_messages if payload.min_messages is not None else DEFAULT_SUMMARY_SETTINGS["min_messages"]
+        min_chars = payload.min_chars if payload.min_chars is not None else DEFAULT_SUMMARY_SETTINGS["min_chars"]
+        if min_messages < 0:
+            min_messages = 0
+        if min_chars < 0:
+            min_chars = 0
+        auto_on_export = payload.auto_on_export if payload.auto_on_export is not None else DEFAULT_SUMMARY_SETTINGS["auto_on_export"]
+
         config = load_config()
         config["summary_settings"] = {
             "provider": payload.provider,
-            "enabled": payload.enabled
+            "enabled": payload.enabled,
+            "model": payload.model,
+            "min_messages": min_messages,
+            "min_chars": min_chars,
+            "auto_on_export": auto_on_export,
         }
         save_config(config)
         return {"success": True, "message": "Impostazioni summary aggiornate"}
     except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio impostazioni summary: {str(e)}")
+
+class SummaryTestIn(BaseModel):
+    messages: list[str] | None = None  # lista di messaggi utente/assistant alternati (semplice)
+    provider: str | None = None
+    model: str | None = None
+    prompt_override: str | None = None
+
+@router.post("/admin/summary-test")
+async def summary_test(payload: SummaryTestIn):
+    """Esegue una generazione di summary di test usando i settings correnti o override forniti.
+
+    Se non vengono passati messaggi, usa una breve conversazione di esempio.
+    """
+    try:
+        from .llm import chat_with_provider
+        from .prompts import load_summary_prompt
+        cfg = load_config()
+        settings = cfg.get("summary_settings", {})
+        provider = payload.provider or settings.get("provider") or DEFAULT_SUMMARY_SETTINGS["provider"]
+        model = payload.model or settings.get("model")
+        enabled = settings.get("enabled", True)
+        if not enabled:
+            return {"success": False, "error": "Summary disabilitato"}
+        base_prompt = payload.prompt_override or load_summary_prompt()
+        if not base_prompt:
+            base_prompt = "You are a helpful assistant generating a concise Italian summary of the following chat."
+        raw_messages = payload.messages or [
+            "Ciao, potresti spiegarmi come funziona il sistema di prenotazioni?",
+            "Certamente! Il sistema consente di prenotare risorse ...",
+            "Posso cancellare una prenotazione?",
+            "Sì, puoi cancellarla entro 24 ore prima dell'orario previsto." 
+        ]
+        # Costruisci struttura LLM: semplice sequenza alternata user/assistant a partire da primo user
+        llm_msgs = [ {"role":"system","content": base_prompt} ]
+        role = "user"
+        for txt in raw_messages:
+            llm_msgs.append({"role": role, "content": txt})
+            role = "assistant" if role == "user" else "user"
+        summary_text = await chat_with_provider(llm_msgs, provider=provider, model=model, is_summary_request=True)
+        return {"success": True, "provider": provider, "model": model, "summary": summary_text, "chars": len(summary_text or '')}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # ---- Personalities (presets) management ----
 class PersonalityIn(BaseModel):
@@ -572,7 +1786,33 @@ class PersonalityIn(BaseModel):
     enabled_pipeline_topics: Optional[List[str]] = None  # topics di pipeline abilitati
     enabled_rag_groups: Optional[List[int]] = None  # gruppi RAG abilitati
     enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
-    enabled_mcp_servers: Optional[List[str]] = None  # server MCP abilitati
+    enabled_data_tables: Optional[List[str]] = None  # tabelle dati abilitate
+    enabled_forms: Optional[List[str]] = None  # questionari abilitati
+    starter_prompts: Optional[List[str]] = None  # starter prompts specifici per personalità
+    # UI visibility flags
+    show_pipeline_topics: Optional[bool] = True
+    show_source_docs: Optional[bool] = True
+    hide_rag_links: Optional[bool] = False  # nasconde i link ai documenti RAG
+    # Webhook configuration
+    webhook_url: Optional[str] = None  # URL del webhook esterno (es. n8n)
+    webhook_enabled: Optional[bool] = False  # se abilitato, inoltra al webhook invece di usare LLM
+    webhook_timeout: Optional[int] = 60  # timeout in secondi per la chiamata webhook
+    webhook_auth_header: Optional[str] = None  # header Authorization opzionale
+    webhook_include_history: Optional[bool] = True  # se includere la cronologia nella richiesta
+    # Delegation rules (pattern-based - legacy)
+    delegate_rules: Optional[List[Dict]] = None  # regole di delega a altre personalità
+    # AI-driven delegation (la personalità decide autonomamente quando delegare)
+    delegation_instructions: Optional[str] = None  # istruzioni per l'AI su quando delegare
+    delegation_targets: Optional[List[Dict]] = None  # [{id, name, description}] personalità target
+    # Fallback model configuration
+    fallback_provider: Optional[str] = None  # provider per il modello di fallback
+    fallback_model: Optional[str] = None  # modello di fallback se il primario fallisce
+
+
+class PersonalityDuplicateIn(BaseModel):
+    name: Optional[str] = None
+    new_id: Optional[str] = None
+    set_default: bool = False
 
 @router.get("/admin/personalities")
 async def list_personalities_admin():
@@ -622,11 +1862,47 @@ async def upsert_personality_admin(p: PersonalityIn):
             enabled_pipeline_topics=p.enabled_pipeline_topics,
             enabled_rag_groups=p.enabled_rag_groups,
             enabled_mcp_servers=p.enabled_mcp_servers,
-            max_tokens=p.max_tokens
+            enabled_data_tables=p.enabled_data_tables,
+            enabled_forms=p.enabled_forms,
+            max_tokens=p.max_tokens,
+            hide_rag_links=p.hide_rag_links,
+            show_pipeline_topics=p.show_pipeline_topics,
+            show_source_docs=p.show_source_docs,
+            starter_prompts=p.starter_prompts,
+            webhook_url=p.webhook_url,
+            webhook_enabled=p.webhook_enabled,
+            webhook_timeout=p.webhook_timeout,
+            webhook_auth_header=p.webhook_auth_header,
+            webhook_include_history=p.webhook_include_history,
+            delegate_rules=p.delegate_rules,
+            delegation_instructions=p.delegation_instructions,
+            delegation_targets=p.delegation_targets,
+            fallback_provider=p.fallback_provider,
+            fallback_model=p.fallback_model,
         )
-        return {"success": True, **res}
+        return {"success": True, "id": res['id']}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Errore salvataggio personalità: {str(e)}")
+
+
+@router.post("/admin/personalities/{personality_id}/duplicate")
+async def duplicate_personality_admin(personality_id: str, payload: Optional[PersonalityDuplicateIn] = None):
+    try:
+        data = payload or PersonalityDuplicateIn()
+        res = duplicate_personality(
+            personality_id,
+            new_name=data.name,
+            new_id=data.new_id,
+            set_default=data.set_default,
+        )
+        return {"success": True, **res}
+    except ValueError as e:
+        message = str(e)
+        status = 404 if 'non trovata' in message.lower() else 400
+        raise HTTPException(status_code=status, detail=message)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Errore duplicazione personalità: {str(e)}")
+
 
 @router.delete("/admin/personalities/{personality_id}")
 async def delete_personality_admin(personality_id: str):
@@ -654,10 +1930,14 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
         ext = filename.rsplit('.',1)[-1].lower() if '.' in filename else 'png'
         if ext not in allowed:
             raise HTTPException(status_code=400, detail="Formato immagine non supportato")
-        # Prepara path salvataggio (usare directory persistente /app/storage/avatars)
-        avatars_dir = Path('/app/storage/avatars')
+        # Prepara path salvataggio (supporta override tramite STORAGE_ROOT, fallback a backend/storage)
+        storage_root_env = os.getenv('STORAGE_ROOT')
+        here = Path(__file__).resolve().parent.parent
+        base_storage = Path(storage_root_env).expanduser() if storage_root_env else (here / 'storage')
+        avatars_dir = base_storage / 'avatars'
         # Diagnostic: ensure directory is writable
         try:
+            base_storage.mkdir(parents=True, exist_ok=True)
             avatars_dir.mkdir(parents=True, exist_ok=True)
             if not os.access(avatars_dir, os.W_OK):
                 # Attempt to open a temp file to confirm
@@ -674,7 +1954,7 @@ async def upload_personality_avatar(personality_id: str, file: UploadFile = File
             raise HTTPException(status_code=500, detail=f"Errore preparazione directory avatars: {_e}")
         # Migrazione automatica: se vecchia dir esiste ed è diversa, copia file mancanti una volta
         try:
-            old_dir = Path(__file__).parent.parent / 'storage' / 'avatars'
+            old_dir = here / 'storage' / 'avatars'
             if old_dir.exists() and old_dir.resolve() != avatars_dir.resolve():
                 avatars_dir.mkdir(parents=True, exist_ok=True)
                 for p in old_dir.iterdir():
@@ -755,47 +2035,23 @@ async def get_pipeline_options():
     except Exception as e:
         return {"success": False, "topics": [], "error": str(e)}
 
-@router.get("/admin/rag-options") 
+@router.get("/admin/rag-options")
 async def get_rag_options():
     """Ottieni gruppi RAG disponibili"""
     try:
         from .rag_engine import rag_engine
         groups = rag_engine.get_groups()
-        # Filtra solo gruppi con documenti
+        # Includi tutti i gruppi, anche se al momento con 0 documenti (utile per pre-configurare le personalità)
         available_groups = [
-            {"id": g["id"], "name": g["name"], "document_count": g["document_count"]}
-            for g in groups 
-            if g["document_count"] > 0
+            {"id": g.get("id"), "name": g.get("name"), "document_count": g.get("document_count", 0)}
+            for g in (groups or [])
+            if g and g.get("id") is not None
         ]
         return {"success": True, "groups": available_groups}
     except Exception as e:
         return {"success": False, "groups": [], "error": str(e)}
 
 # ---- MCP Servers Management ----
-from .mcp_manager import mcp_manager, MCPServerConfig
-
-@router.get("/admin/mcp-servers")
-async def get_mcp_servers():
-    """Ottieni lista di tutti i server MCP configurati"""
-    try:
-        servers = mcp_manager.get_servers()
-        return {"success": True, "servers": servers}
-    except Exception as e:
-        return {"success": False, "servers": [], "error": str(e)}
-
-@router.post("/admin/mcp-servers")
-async def create_mcp_server(server_data: MCPServerConfig):
-    """Crea un nuovo server MCP"""
-    try:
-        if mcp_manager.add_server(server_data):
-            return {"success": True, "message": f"Server MCP '{server_data.name}' creato"}
-        else:
-            raise HTTPException(status_code=400, detail="Errore nella creazione del server")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore creazione server MCP: {str(e)}")
-
-@router.put("/admin/mcp-servers/{server_id}")
-async def update_mcp_server(server_id: str, server_data: MCPServerConfig):
     """Aggiorna un server MCP esistente"""
     try:
         if mcp_manager.update_server(server_id, server_data):
@@ -1328,6 +2584,542 @@ async def download_interactions_log(date: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore download interactions log: {str(e)}")
 
+    # (fine funzione download_interactions_log)
+
+# ---- Config backup & restore ----
+@router.get('/admin/config/backup')
+async def backup_config(include_seed: bool = False, include_avatars: bool = False, include_regex_guide: bool = False, include_db: bool = True, dry_run: bool = False):
+    """Esporta le configurazioni in un archivio ZIP.
+
+    Parametri:
+      include_seed: include anche i file seed (read-only) – di solito non necessario.
+      include_avatars: include avatar (può aumentare dimensione).
+      include_regex_guide: include guida regex pipeline copia runtime se presente.
+      dry_run: se True restituisce solo manifest simulato (no zip) con elenco file selezionati.
+    """
+    try:
+        from . import config_backup
+        if dry_run:
+            # Simula selezione
+            data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide, include_db=include_db)
+            import zipfile, io, json
+            buf = io.BytesIO(data)
+            with zipfile.ZipFile(buf, 'r') as zf:
+                manifest = json.loads(zf.read('manifest.json').decode('utf-8')) if 'manifest.json' in zf.namelist() else {}
+            return {"success": True, "dry_run": True, "manifest": manifest}
+        bin_data = config_backup.create_backup_zip(include_seed=include_seed, include_avatars=include_avatars, include_regex_guide=include_regex_guide, include_db=include_db)
+        return Response(content=bin_data, media_type='application/zip', headers={
+            'Content-Disposition': 'attachment; filename="config-backup.zip"'
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore backup: {e}")
+
+@router.get('/admin/db/dump')
+async def db_dump(tables: Optional[str] = None):
+    """Scarica solo il dump del database (JSONL + summary + personalities)."""
+    try:
+        from . import config_backup
+        table_list = None
+        if tables:
+            table_list = [t.strip() for t in tables.split(',') if t.strip()]
+        bin_data = config_backup.create_db_dump_zip(table_list)
+        return Response(content=bin_data, media_type='application/zip', headers={
+            'Content-Disposition': 'attachment; filename="db-dump.zip"'
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore DB dump: {e}")
+
+# ---- DB Explorer: tables, rows, columns, search, query, CRUD ----
+def _safe_table_name(name: str) -> str:
+    if not isinstance(name, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        raise HTTPException(status_code=400, detail='Invalid table name')
+    return name
+
+@router.get('/admin/db/tables')
+async def list_db_tables_api():
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+            tables = [r[0] for r in cur.fetchall()]
+        return {"tables": tables}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lista tabelle: {e}")
+
+@router.get('/admin/db/table/{table}')
+async def get_table_rows_api(table: str, limit: int = 100, offset: int = 0):
+    t = _safe_table_name(table)
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            sql = f'SELECT * FROM "{t}" LIMIT ? OFFSET ?'
+            db_manager.exec(cur, sql, (limit, offset))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura tabella: {e}")
+
+@router.get('/admin/db/columns/{table}')
+async def get_table_columns_api(table: str):
+    t = _safe_table_name(table)
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            out = []
+            db_manager.exec(cur, """
+                SELECT c.column_name, c.data_type, (c.is_nullable='YES') AS is_nullable,
+                       EXISTS (
+                           SELECT 1 FROM information_schema.table_constraints tc
+                           JOIN information_schema.key_column_usage k
+                             ON k.constraint_name=tc.constraint_name AND k.table_name=tc.table_name
+                           WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_name=c.table_name AND k.column_name=c.column_name
+                       ) AS is_primary
+                FROM information_schema.columns c
+                WHERE c.table_schema='public' AND c.table_name=%s
+                ORDER BY c.ordinal_position
+            """, (t,))
+            for r in cur.fetchall():
+                out.append({"name": r[0], "type": r[1], "is_nullable": bool(r[2]), "is_primary": bool(r[3])})
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore colonne tabella: {e}")
+
+@router.post('/admin/db/query')
+async def run_free_query_api(payload: dict):
+    sql = (payload or {}).get('sql') or ''
+    limit = int((payload or {}).get('limit') or 100)
+    if not sql.strip().lower().startswith('select'):
+        raise HTTPException(status_code=400, detail='Only SELECT queries allowed')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            q = sql.strip().rstrip(';')
+            if ' limit ' not in q.lower():
+                q = f"{q} LIMIT {limit}"
+            cur.execute(db_manager.adapt_sql(q))
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description] if cur.description else []
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore esecuzione query: {e}")
+
+@router.get('/admin/db/search')
+async def search_table_api(table: str, q: str, limit: int = 50):
+    t = _safe_table_name(table)
+    like = f"%{q}%"
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema='public' AND table_name=%s AND data_type IN ('text','character varying','character')
+            """, (t,))
+            text_cols = [r[0] for r in cur.fetchall()] or []
+            if not text_cols:
+                sql = f"SELECT * FROM \"{t}\" WHERE CAST(row_to_json(\"{t}\") AS text) ILIKE %s LIMIT %s"
+                db_manager.exec(cur, sql, (like, limit))
+            else:
+                where = ' OR '.join([f'"{c}" ILIKE %s' for c in text_cols])
+                params = tuple([like]*len(text_cols) + [limit])
+                db_manager.exec(cur, f'SELECT * FROM "{t}" WHERE {where} LIMIT %s', params)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            data = [dict(zip(cols, r)) for r in rows]
+        return {"columns": cols, "rows": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore ricerca: {e}")
+
+@router.post('/admin/db/update')
+async def update_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    key = (payload or {}).get('key') or {}
+    setv = (payload or {}).get('set') or {}
+    if not key or not setv:
+        raise HTTPException(status_code=400, detail='key and set are required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            set_parts = []
+            params = []
+            for k, v in setv.items():
+                set_parts.append(f'"{k}" = ?')
+                params.append(v)
+            where_parts = []
+            for k, v in key.items():
+                where_parts.append(f'"{k}" = ?')
+                params.append(v)
+            sql = f'UPDATE "{table}" SET ' + ', '.join(set_parts) + ' WHERE ' + ' AND '.join(where_parts)
+            db_manager.exec(cur, sql, tuple(params))
+            affected = cur.rowcount if hasattr(cur, 'rowcount') else None
+            conn.commit()
+        return {"updated": affected or 0}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore update: {e}")
+
+@router.post('/admin/db/insert')
+async def insert_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    values = (payload or {}).get('values') or {}
+    if not values:
+        raise HTTPException(status_code=400, detail='values required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            cols = list(values.keys())
+            placeholders = ','.join(['?']*len(cols))
+            sql = f'INSERT INTO "{table}" (' + ','.join([f'"{c}"' for c in cols]) + f') VALUES ({placeholders})'
+            db_manager.exec(cur, sql, tuple(values[c] for c in cols))
+            conn.commit()
+        return {"inserted": 1}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore insert: {e}")
+
+@router.post('/admin/db/delete')
+async def delete_row_api(payload: dict):
+    table = _safe_table_name((payload or {}).get('table') or '')
+    key = (payload or {}).get('key') or {}
+    if not key:
+        raise HTTPException(status_code=400, detail='key required')
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            where_parts = []
+            params = []
+            for k, v in key.items():
+                where_parts.append(f'"{k}" = ?')
+                params.append(v)
+            sql = f'DELETE FROM "{table}" WHERE ' + ' AND '.join(where_parts)
+            db_manager.exec(cur, sql, tuple(params))
+            affected = cur.rowcount if hasattr(cur, 'rowcount') else None
+            conn.commit()
+        return {"deleted": affected or 0}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore delete: {e}")
+
+# ---- Query Builder (structured, safe) ----
+class QBFilter(BaseModel):
+    column: str
+    op: str  # '=', '!=', '>', '<', '>=', '<=', 'like', 'ilike', 'contains', 'startswith', 'endswith', 'in', 'not in', 'is null', 'is not null', 'between'
+    value: Any | None = None  # list for IN, tuple/list for BETWEEN, ignored for IS NULL
+
+class QBMetric(BaseModel):
+    fn: str  # count | sum | avg | min | max
+    column: Optional[str] = None  # None allowed for count(*)
+    alias: Optional[str] = None
+
+class QBOrder(BaseModel):
+    by: str
+    dir: str = 'ASC'  # ASC | DESC
+
+class QueryBuilderIn(BaseModel):
+    table: str
+    select: Optional[List[str]] = None        # columns when not aggregating
+    filters: Optional[List[QBFilter]] = None
+    group_by: Optional[List[str]] = None
+    metrics: Optional[List[QBMetric]] = None  # when aggregating
+    order_by: Optional[QBOrder] = None
+    limit: Optional[int] = 100
+    offset: Optional[int] = 0
+    distinct: Optional[bool] = False
+
+def _safe_ident(name: str) -> str:
+    """Validate identifier and return quoted version for SQL."""
+    if not isinstance(name, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name):
+        raise HTTPException(status_code=400, detail='Invalid identifier')
+    return '"' + name + '"'
+
+def _list_columns_for_table(conn, table: str) -> list[str]:
+    cur = conn.cursor()
+    db_manager.exec(cur, """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position
+    """, (table,))
+    return [r[0] for r in cur.fetchall()]
+@router.post('/admin/db/query-builder')
+async def query_builder(req: QueryBuilderIn):
+    """Esegue una SELECT costruita in modo sicuro a partire da un payload strutturato.
+
+    Supporta filtri semplici, group by + metriche e ordinamento. Forza limiti ragionevoli.
+    """
+    table = _safe_table_name(req.table)
+    limit = int(req.limit or 100)
+    if limit <= 0:
+        limit = 100
+    limit = min(limit, 1000)
+    offset = int(req.offset or 0)
+    if offset < 0:
+        offset = 0
+    distinct = bool(req.distinct or False)
+
+    allowed_ops = {
+        '=', '!=', '>', '<', '>=', '<=', 'like', 'ilike',
+        'contains', 'startswith', 'endswith', 'in', 'not in', 'is null', 'is not null', 'between'
+    }
+    allowed_fns = {'count', 'sum', 'avg', 'min', 'max'}
+
+    try:
+        with db_manager.get_connection() as conn:
+            cols = set(_list_columns_for_table(conn, table))
+            if not cols:
+                raise HTTPException(status_code=400, detail='Table has no columns or not found')
+
+            params: list[Any] = []
+            select_parts: list[str] = []
+            group_by_parts: list[str] = []
+            metrics_aliases: set[str] = set()
+
+            # Build SELECT
+            if req.group_by or req.metrics:
+                # Aggregation mode
+                gb = list(req.group_by or [])
+                for c in gb:
+                    if c not in cols:
+                        raise HTTPException(status_code=400, detail=f'group_by invalid column: {c}')
+                    group_by_parts.append(_safe_ident(c))
+                    select_parts.append(_safe_ident(c))
+                for m in req.metrics or []:
+                    fn = (m.fn or '').lower()
+                    if fn not in allowed_fns:
+                        raise HTTPException(status_code=400, detail=f'Invalid metric fn: {fn}')
+                    if fn == 'count' and not m.column:
+                        alias = m.alias or 'count'
+                        # validate alias if present
+                        if alias and not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', alias):
+                            raise HTTPException(status_code=400, detail='Invalid alias')
+                        select_parts.append(f"COUNT(*) AS {alias}")
+                        metrics_aliases.add(alias)
+                    else:
+                        if not m.column or m.column not in cols:
+                            raise HTTPException(status_code=400, detail='Invalid metric column')
+                        colq = _safe_ident(m.column)
+                        alias = m.alias or f"{fn}_{m.column}"
+                        if alias and not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', alias):
+                            raise HTTPException(status_code=400, detail='Invalid alias')
+                        select_parts.append(f"{fn.upper()}({colq}) AS {alias}")
+                        metrics_aliases.add(alias)
+                if not select_parts:
+                    raise HTTPException(status_code=400, detail='Empty select in aggregation mode')
+            else:
+                # Row mode
+                if req.select:
+                    for c in req.select:
+                        if c == '*':
+                            select_parts.append('*')
+                        else:
+                            if c not in cols:
+                                raise HTTPException(status_code=400, detail=f'select invalid column: {c}')
+                            select_parts.append(_safe_ident(c))
+                else:
+                    select_parts.append('*')
+
+            # Build WHERE
+            where_parts: list[str] = []
+            for f in (req.filters or []):
+                op = (f.op or '').lower().strip()
+                if op not in allowed_ops:
+                    raise HTTPException(status_code=400, detail=f'Invalid operator: {op}')
+                if op in {'is null', 'is not null'}:
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    where_parts.append(f"{_safe_ident(f.column)} IS {'NOT ' if op=='is not null' else ''}NULL")
+                    continue
+                if op == 'between':
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    if not isinstance(f.value, (list, tuple)) or len(f.value) != 2:
+                        raise HTTPException(status_code=400, detail='between requires [min,max]')
+                    where_parts.append(f"{_safe_ident(f.column)} BETWEEN ? AND ?")
+                    params.extend([f.value[0], f.value[1]])
+                    continue
+                if op in {'in', 'not in'}:
+                    if f.column not in cols:
+                        raise HTTPException(status_code=400, detail='Invalid filter column')
+                    if not isinstance(f.value, (list, tuple)) or len(f.value) == 0:
+                        raise HTTPException(status_code=400, detail='in/not in requires non-empty array')
+                    placeholders = ','.join(['?']*len(f.value))
+                    where_parts.append(f"{_safe_ident(f.column)} {'NOT ' if op=='not in' else ''}IN ({placeholders})")
+                    params.extend(list(f.value))
+                    continue
+                # LIKE family
+                if f.column not in cols:
+                    raise HTTPException(status_code=400, detail='Invalid filter column')
+                if op in {'like', 'ilike', 'contains', 'startswith', 'endswith'}:
+                    pattern = str(f.value or '')
+                    if op == 'contains':
+                        pattern = f"%{pattern}%"
+                        oper = 'ILIKE'
+                    elif op == 'startswith':
+                        pattern = f"{pattern}%"
+                        oper = 'ILIKE'
+                    elif op == 'endswith':
+                        pattern = f"%{pattern}"
+                        oper = 'ILIKE'
+                    else:
+                        oper = 'ILIKE' if (op=='ilike' and True) else 'LIKE'
+                    where_parts.append(f"{_safe_ident(f.column)} {oper} ?")
+                    params.append(pattern)
+                else:
+                    # Binary comparisons
+                    where_parts.append(f"{_safe_ident(f.column)} {op} ?")
+                    params.append(f.value)
+
+            # ORDER BY
+            order_sql = ''
+            if req.order_by and req.order_by.by:
+                by = req.order_by.by
+                direction = (req.order_by.dir or 'ASC').upper()
+                if direction not in ('ASC','DESC'):
+                    direction = 'ASC'
+                # Allow ordering by group_by columns or metric aliases
+                if (req.group_by and by in req.group_by) or (by in metrics_aliases) or (by in cols):
+                    order_sql = f" ORDER BY {by} {direction}"
+
+            sql = 'SELECT ' + (('DISTINCT ' if distinct else '') + ', '.join(select_parts))
+            sql += f" FROM {_safe_ident(table)}"
+            if where_parts:
+                sql += ' WHERE ' + ' AND '.join(where_parts)
+            if group_by_parts:
+                sql += ' GROUP BY ' + ', '.join(group_by_parts)
+            sql += order_sql
+            # LIMIT/OFFSET as params for safety
+            # use placeholders, adapted by db_manager
+            sql += ' LIMIT ? OFFSET ?'
+            params.extend([limit, offset])
+            cur = conn.cursor()
+            db_manager.exec(cur, sql, tuple(params))
+            rows = cur.fetchall()
+            cols_out = [d[0] for d in cur.description] if cur.description else []
+            data = [dict(zip(cols_out, r)) for r in rows]
+            return {"columns": cols_out, "rows": data}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore query builder: {e}")
+
+class RestoreOptions(BaseModel):
+    allow_seed: bool = False
+    dry_run: bool = False
+
+@router.post('/admin/config/restore')
+async def restore_config(file: UploadFile = File(...), allow_seed: bool = False, dry_run: bool = False):
+    """Ripristina configurazioni da un archivio ZIP generato dal backup.
+
+    Parametri:
+      allow_seed: se True permette di sovrascrivere file seed.
+      dry_run: valida senza scrivere.
+    """
+    try:
+        from . import config_backup
+        data = await file.read()
+        result = config_backup.restore_from_zip(data, dry_run=dry_run, allow_seed=allow_seed)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore restore: {e}")
+
+@router.get('/admin/config/status')
+async def config_status(include_seed: bool = False, include_optional: bool = True, include_uppercase_variants: bool = True):
+    """Ritorna hash SHA256 dei file di configurazione + hash aggregato.
+
+    include_seed: include i seed.
+    include_optional: include opzionali se presenti.
+    include_uppercase_variants: se True rileva varianti UPPERCASE dei file runtime (compat legacy) e le mostra.
+    """
+    try:
+        from . import config_backup
+        file_defs = config_backup._file_list()  # type: ignore (internal use)
+        entries = []
+        hasher = hashlib.sha256()
+        # Tracciamo canonical runtime per evitare duplicazioni
+        canonical_runtime_map = {
+            'system_prompts.json': ('runtime_system_prompts', 'prompts'),
+            'summary_prompts.json': ('runtime_summary_prompts', 'summary'),
+            'personalities.json': ('runtime_personalities', 'personalities')
+        }
+        seen_upper = []
+        for f in file_defs:
+            if f.kind == 'seed' and not include_seed:
+                continue
+            if not include_optional and (not f.required):
+                continue
+            exists = f.path.exists()
+            info = {
+                'id': f.id,
+                'path': str(f.path),
+                'kind': f.kind,
+                'required': f.required,
+                'exists': exists,
+                'filename': f.path.name,
+                'relative': f.path.name,
+            }
+            if exists:
+                try:
+                    data = f.path.read_bytes()
+                    h = hashlib.sha256(data).hexdigest()
+                    info['sha256'] = h
+                    info['bytes'] = len(data)
+                    hasher.update(h.encode('utf-8'))
+                except Exception as e:
+                    info['error'] = str(e)
+            entries.append(info)
+            # Uppercase variant detection (runtime only)
+            if include_uppercase_variants and f.kind == 'runtime':
+                base = f.path.name
+                if base in canonical_runtime_map:
+                    upper_candidate = f.path.parent / base.upper()
+                    if (not exists) and upper_candidate.exists():
+                        # canonical missing, uppercase present → treat as active variant
+                        try:
+                            data_u = upper_candidate.read_bytes()
+                            h_u = hashlib.sha256(data_u).hexdigest()
+                            hasher.update(h_u.encode('utf-8'))
+                            entries.append({
+                                'id': f"{f.id}_uppercase_variant",
+                                'path': str(upper_candidate),
+                                'kind': f.kind,
+                                'required': False,
+                                'exists': True,
+                                'filename': upper_candidate.name,
+                                'relative': upper_candidate.name,
+                                'sha256': h_u,
+                                'bytes': len(data_u),
+                                'uppercase_fallback_for': base,
+                                'note': 'uppercase variant in uso (canonical lowercase assente)'
+                            })
+                            seen_upper.append(str(upper_candidate))
+                        except Exception as ue:
+                            entries.append({
+                                'id': f"{f.id}_uppercase_variant_error",
+                                'path': str(upper_candidate),
+                                'kind': f.kind,
+                                'required': False,
+                                'exists': True,
+                                'filename': upper_candidate.name,
+                                'relative': upper_candidate.name,
+                                'error': str(ue)
+                            })
+                    elif exists and upper_candidate.exists():
+                        # Both exist (inconsistency) -> report uppercase as shadowed
+                        entries.append({
+                            'id': f"{f.id}_uppercase_shadowed",
+                            'path': str(upper_candidate),
+                            'kind': f.kind,
+                            'required': False,
+                            'exists': True,
+                            'filename': upper_candidate.name,
+                            'relative': upper_candidate.name,
+                            'shadowed_by': f.path.name,
+                            'note': 'variant uppercase presente ma ignorata (usa lowercase)'
+                        })
+        aggregate = hasher.hexdigest()
+        return {"success": True, "aggregate_sha256": aggregate, "files": entries}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore status config: {e}")
+
 
 # ---- Avatar upload/list ----
 @router.post("/admin/avatars/upload")
@@ -1372,6 +3164,9 @@ async def list_avatars():
 
 # ---------------- Pipeline (routing + files) -----------------
 PIPELINE_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "pipeline_config.json"
+# Prefer storage copy (editable/persisted) for regex guide; fallback to root project file.
+PIPELINE_REGEX_GUIDE_STORAGE_PATH = Path(__file__).resolve().parent.parent / "storage" / "pipeline" / "PIPELINE_REGEX_GUIDE.md"
+PIPELINE_REGEX_GUIDE_ROOT_PATH = Path(__file__).resolve().parent.parent.parent / "PIPELINE_REGEX_GUIDE.md"
 
 class PipelineConfig(BaseModel):
     routes: List[Dict[str, str]]
@@ -1396,13 +3191,260 @@ class FileUpdate(BaseModel):
     new_topic: str
     new_filename: str
 
+# ---- Pipeline pattern validation helpers ----
+class PatternIssue(BaseModel):
+    pattern: str
+    topic: Optional[str] = None
+    severity: str  # INFO | WARN | ERROR
+    code: str      # machine readable code
+    message: str   # human readable explanation
+
+def _analyze_pattern(raw: str) -> List[PatternIssue]:
+    issues: List[PatternIssue] = []
+    p = raw.strip()
+    if not p:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="EMPTY", message="Pattern vuoto"))
+        return issues
+    # Check for newline characters
+    if '\n' in raw or '\r' in raw:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="CONTAINS_NEWLINE", message="Il pattern contiene caratteri newline che devono essere rimossi"))
+    # Compile validity
+    try:
+        re.compile(p)
+    except re.error as e:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="INVALID", message=f"Regex non valida: {e}"))
+        return issues
+    # Heuristics
+    if p.endswith('|') or '||' in p:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="EMPTY_ALTERNATIVE", message="Alternativa vuota (| finale o doppio ||) causa match universale"))
+    # Overly generic catch-all suspicious patterns
+    if p in ['.*', '.+', '.?']:
+        issues.append(PatternIssue(pattern=raw, severity="ERROR", code="TRIVIAL", message="Pattern triviale matcha qualsiasi testo"))
+    # Suspicious any-char repetition
+    if re.search(r"\.[*+]{2,}", p):
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="REDUNDANT_REPEAT", message="Ripetizione eccessiva (.*+ ecc.)"))
+    if '.*.*' in p:
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="DOUBLE_ANY", message="Uso ripetuto di .* consecutivi"))
+    # Long unbounded dot-star segment
+    if '.*' in p and not re.search(r"\[\\n\]", p):
+        issues.append(PatternIssue(pattern=raw, severity="INFO", code="DOTSTAR", message="Usa .* con cautela: valuta limitare con [^\\n]{0,80}"))
+    # Missing word boundaries for simple word (heuristic: only letters/spaces)
+    if re.fullmatch(r"[a-zàèéìòù ]{3,}", p, flags=re.IGNORECASE):
+        if '\\b' not in p:
+            issues.append(PatternIssue(pattern=raw, severity="WARN", code="NO_WORD_BOUNDARY", message="Considera aggiungere \\b ai confini per evitare match parziali"))
+    # Potential catastrophic backtracking (nested quantifiers) simplistic detection
+    if re.search(r"(\(.{0,20}\*[^)]*\+)|\(.{0,20}\+[^)]*\*\)", p):
+        issues.append(PatternIssue(pattern=raw, severity="WARN", code="NESTED_QUANTIFIERS", message="Possibile backtracking pesante (quantificatori annidati)"))
+    # Length check
+    if len(p) > 220:
+        issues.append(PatternIssue(pattern=raw, severity="INFO", code="LONG", message="Pattern molto lungo: valuta semplificazione"))
+    return issues
+
+def validate_pipeline_patterns(cfg: dict) -> List[PatternIssue]:
+    out: List[PatternIssue] = []
+    for r in cfg.get('routes', []):
+        pat = r.get('pattern','')
+        topic = r.get('topic')
+        for issue in _analyze_pattern(pat):
+            issue.topic = topic
+            out.append(issue)
+    # Detect duplicate patterns mapping to different topics
+    seen: dict[str,str] = {}
+    for r in cfg.get('routes', []):
+        pat = r.get('pattern','')
+        t = r.get('topic')
+        if pat in seen and seen[pat] != t:
+            out.append(PatternIssue(pattern=pat, topic=t, severity="WARN", code="DUPLICATE_PATTERN", message=f"Pattern duplicato usato anche per topic '{seen[pat]}'"))
+        else:
+            seen[pat] = t
+    # Detect pattern conflicts (different patterns matching same test phrases)
+    conflict_issues = _detect_pattern_conflicts(cfg.get('routes', []))
+    out.extend(conflict_issues)
+    return out
+
+# Corpus di test per rilevare conflitti tra pattern
+_CONFLICT_TEST_CORPUS = [
+    "analisi di secondo livello",
+    "analisi secondo livello fattori",
+    "C1 strategie elaborative",
+    "fattore C3 disorientamento",
+    "autoregolazione e mindset",
+    "artefice di se stesso",
+    "cosa significa la scheda QSA",
+    "come interpretare i fattori",
+    "spaced repetition e mappe concettuali",
+    "A1 ansia di base",
+    "volizione e perseveranza",
+    "interferenze emotive A7",
+]
+
+def _detect_pattern_conflicts(routes: List[dict]) -> List[PatternIssue]:
+    """Rileva pattern che matchano gli stessi testi nel corpus di test."""
+    issues: List[PatternIssue] = []
+    patterns = [(r.get('pattern',''), r.get('topic','')) for r in routes]
+
+    # Per ogni coppia di pattern diversi
+    for i, (pat1, topic1) in enumerate(patterns):
+        for j, (pat2, topic2) in enumerate(patterns[i+1:], i+1):
+            if topic1 == topic2:
+                continue
+            # Testa su corpus
+            conflicts = []
+            for text in _CONFLICT_TEST_CORPUS:
+                try:
+                    match1 = re.search(pat1, text, re.IGNORECASE)
+                    match2 = re.search(pat2, text, re.IGNORECASE)
+                    if match1 and match2:
+                        conflicts.append(text[:40])
+                except re.error:
+                    continue
+            if conflicts:
+                issues.append(PatternIssue(
+                    pattern=pat1,
+                    topic=topic1,
+                    severity="INFO",
+                    code="PATTERN_CONFLICT",
+                    message=f"Possibile conflitto con '{topic2}' su {len(conflicts)} testi: {', '.join(conflicts[:2])}"
+                ))
+    return issues
+
 @router.get("/admin/pipeline")
 async def get_pipeline_config():
     try:
         data = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        # Attach validation summary (non bloccante)
+        try:
+            issues = validate_pipeline_patterns(data)
+            data['validation'] = {
+                'issues': [i.dict() for i in issues],
+                'counts': {
+                    'ERROR': sum(1 for x in issues if x.severity=='ERROR'),
+                    'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                    'INFO': sum(1 for x in issues if x.severity=='INFO')
+                }
+            }
+        except Exception as _ve:
+            data['validation'] = {'error': str(_ve)}
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel caricamento pipeline: {str(e)}")
+
+@router.get('/admin/pipeline/regex-guide')
+async def get_pipeline_regex_guide():
+    """Ritorna il contenuto markdown della guida regex (preferendo la copia in storage)."""
+    try:
+        # Auto-sync: se esiste root ed è più recente o storage mancante, copia root -> storage
+        try:
+            if PIPELINE_REGEX_GUIDE_ROOT_PATH.exists():
+                root_mtime = PIPELINE_REGEX_GUIDE_ROOT_PATH.stat().st_mtime
+                storage_exists = PIPELINE_REGEX_GUIDE_STORAGE_PATH.exists()
+                storage_mtime = PIPELINE_REGEX_GUIDE_STORAGE_PATH.stat().st_mtime if storage_exists else 0
+                if (not storage_exists) or root_mtime > storage_mtime:
+                    PIPELINE_REGEX_GUIDE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    PIPELINE_REGEX_GUIDE_STORAGE_PATH.write_text(PIPELINE_REGEX_GUIDE_ROOT_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+        except Exception as sync_err:
+            # Non blocca la lettura: logga soltanto
+            logging.getLogger(__name__).warning(f"Sync guida regex fallita: {sync_err}")
+
+        path = PIPELINE_REGEX_GUIDE_STORAGE_PATH if PIPELINE_REGEX_GUIDE_STORAGE_PATH.exists() else (PIPELINE_REGEX_GUIDE_ROOT_PATH if PIPELINE_REGEX_GUIDE_ROOT_PATH.exists() else None)
+        if not path:
+            return {"success": False, "error": "Guida non trovata"}
+        text = path.read_text(encoding='utf-8')
+        return {"success": True, "content": text, "source": str(path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura guida: {e}")
+
+# Directory per i file di contenuto pipeline
+PIPELINE_FILES_DIR = Path(__file__).resolve().parent.parent / "storage" / "pipeline_files"
+RAG_PIPELINE_MIRROR_DIR = Path(__file__).resolve().parent.parent / "storage" / "rag_data"
+
+def _sync_pipeline_file_to_rag(filename: str, source_path: Path) -> None:
+    try:
+        RAG_PIPELINE_MIRROR_DIR.mkdir(parents=True, exist_ok=True)
+        target = (RAG_PIPELINE_MIRROR_DIR / filename).resolve()
+        if RAG_PIPELINE_MIRROR_DIR not in target.parents and RAG_PIPELINE_MIRROR_DIR != target:
+            raise ValueError("Target path outside rag_data")
+        if (not target.exists()) or source_path.stat().st_mtime > target.stat().st_mtime:
+            target.write_bytes(source_path.read_bytes())
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Sync pipeline file to rag_data failed: {e}")
+
+@router.get('/admin/pipeline/preview-context')
+async def preview_pipeline_context(topic: str):
+    """Restituisce anteprima del contenuto file associato al topic per il RAG."""
+    try:
+        # Carica configurazione per trovare il file associato
+        if not PIPELINE_CONFIG_PATH.exists():
+            return {"success": False, "error": "Configurazione pipeline non trovata"}
+
+        cfg = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding='utf-8'))
+        files_mapping = cfg.get('files', {})
+
+        if topic not in files_mapping:
+            return {
+                "success": True,
+                "exists": False,
+                "topic": topic,
+                "message": f"Nessun file associato al topic '{topic}'"
+            }
+
+        filename = files_mapping[topic]
+        filepath = PIPELINE_FILES_DIR / filename
+
+        if not filepath.exists():
+            return {
+                "success": True,
+                "exists": False,
+                "topic": topic,
+                "filename": filename,
+                "message": f"File '{filename}' non trovato in storage/pipeline_files/"
+            }
+
+        content = filepath.read_text(encoding='utf-8')
+        preview_length = 500
+        preview = content[:preview_length] + ('...' if len(content) > preview_length else '')
+
+        return {
+            "success": True,
+            "exists": True,
+            "topic": topic,
+            "filename": filename,
+            "content_length": len(content),
+            "preview": preview,
+            "full_content": content
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore preview contesto: {e}")
+
+@router.get('/admin/admin-guide')
+async def get_admin_general_guide():
+    """Restituisce la guida amministratore generale (auto-sync root→storage)."""
+    try:
+        try:
+            # Determine effective source: primary or first existing fallback
+            source_path = None
+            if ADMIN_GUIDE_ROOT_PATH.exists():
+                source_path = ADMIN_GUIDE_ROOT_PATH
+            else:
+                for fp in _ADMIN_GUIDE_FALLBACKS:
+                    if fp.exists():
+                        source_path = fp
+                        break
+            if source_path:
+                root_mtime = source_path.stat().st_mtime
+                storage_exists = ADMIN_GUIDE_STORAGE_PATH.exists()
+                storage_mtime = ADMIN_GUIDE_STORAGE_PATH.stat().st_mtime if storage_exists else 0
+                if (not storage_exists) or root_mtime > storage_mtime:
+                    ADMIN_GUIDE_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    ADMIN_GUIDE_STORAGE_PATH.write_text(source_path.read_text(encoding='utf-8'), encoding='utf-8')
+        except Exception as sync_err:
+            logging.getLogger(__name__).warning(f"Sync guida admin fallita: {sync_err}")
+        path = ADMIN_GUIDE_STORAGE_PATH if ADMIN_GUIDE_STORAGE_PATH.exists() else (ADMIN_GUIDE_ROOT_PATH if ADMIN_GUIDE_ROOT_PATH.exists() else None)
+        if not path:
+            return {"success": False, "error": "Guida amministratore non trovata"}
+        return {"success": True, "content": path.read_text(encoding='utf-8'), "source": str(path)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura guida amministratore: {e}")
 
 @router.post("/admin/pipeline")
 async def update_pipeline_config(cfg: PipelineConfig):
@@ -1416,13 +3458,48 @@ async def update_pipeline_config(cfg: PipelineConfig):
             invalid.append({"pattern": pat, "error": str(e)})
     if invalid:
         raise HTTPException(status_code=400, detail={"message": "Pattern regex non valido", "invalid": invalid})
+    # Heuristic validation (non-blocking except HARD errors)
+    cfg_dict = cfg.dict()
+    issues = validate_pipeline_patterns(cfg_dict)
+    hard_errors = [i for i in issues if i.severity == 'ERROR']
+    if hard_errors:
+        # Block saving if there are HARD errors to enforce quality
+        raise HTTPException(status_code=400, detail={
+            'message': 'Errori di validazione pattern',
+            'issues': [i.dict() for i in hard_errors]
+        })
     try:
         PIPELINE_CONFIG_PATH.write_text(json.dumps(cfg.dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
+        _refresh_routes_cache()
         refresh_files_cache()
-        return {"success": True, "message": "Pipeline salvata"}
+        return {"success": True, "message": "Pipeline salvata", "validation": {
+            'issues': [i.dict() for i in issues],
+            'counts': {
+                'ERROR': 0,
+                'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                'INFO': sum(1 for x in issues if x.severity=='INFO')
+            }
+        }}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nel salvataggio pipeline: {str(e)}")
+
+@router.get('/admin/pipeline/validate')
+async def validate_pipeline_only():
+    """Endpoint dedicato alla sola validazione (senza salvataggio)."""
+    try:
+        data = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding='utf-8'))
+        issues = validate_pipeline_patterns(data)
+        return {
+            'success': True,
+            'issues': [i.dict() for i in issues],
+            'counts': {
+                'ERROR': sum(1 for x in issues if x.severity=='ERROR'),
+                'WARN': sum(1 for x in issues if x.severity=='WARN'),
+                'INFO': sum(1 for x in issues if x.severity=='INFO')
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Errore validazione pipeline: {e}')
 
 @router.post("/admin/pipeline/reset")
 async def reset_pipeline_config():
@@ -1436,7 +3513,7 @@ async def reset_pipeline_config():
             original = {"routes": [], "files": {}}
         # Sovrascrive
         PIPELINE_CONFIG_PATH.write_text(json.dumps(original, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
+        _refresh_routes_cache()
         refresh_files_cache()
         return {"success": True, "pipeline": original}
     except Exception as e:
@@ -1461,12 +3538,16 @@ async def add_pipeline_route(route: PipelineRoute):
                 raise HTTPException(status_code=400, detail="Pattern già esistente")
         
         # Aggiungi la nuova route
-        data["routes"].append({"pattern": route.pattern, "topic": route.topic})
-        
+        new_route = {"pattern": route.pattern, "topic": route.topic}
+        data["routes"].append(new_route)
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
+
+        # Log storico
+        log_pipeline_change("add_route", after=new_route)
+
         return {"success": True, "message": "Route aggiunta con successo"}
     except HTTPException:
         raise
@@ -1495,17 +3576,21 @@ async def update_pipeline_route(update: RouteUpdate):
                     if j != i and existing_route["pattern"] == update.new_pattern:
                         raise HTTPException(status_code=400, detail="Il nuovo pattern è già in uso")
                 
-                data["routes"][i] = {"pattern": update.new_pattern, "topic": update.new_topic}
+                old_route = {"pattern": update.old_pattern, "topic": update.old_topic}
+                new_route = {"pattern": update.new_pattern, "topic": update.new_topic}
+                data["routes"][i] = new_route
                 route_found = True
+
+                # Log storico
+                log_pipeline_change("update_route", before=old_route, after=new_route)
                 break
-        
+
         if not route_found:
             raise HTTPException(status_code=404, detail="Route non trovata")
-        
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
         return {"success": True, "message": "Route aggiornata con successo"}
     except HTTPException:
         raise
@@ -1521,19 +3606,23 @@ async def delete_pipeline_route(pattern: str, topic: str):
         
         # Trova e rimuovi la route
         route_found = False
+        deleted_route = None
         for i, route in enumerate(data["routes"]):
             if route["pattern"] == pattern and route["topic"] == topic:
-                data["routes"].pop(i)
+                deleted_route = data["routes"].pop(i)
                 route_found = True
                 break
-        
+
         if not route_found:
             raise HTTPException(status_code=404, detail="Route non trovata")
-        
+
         # Salva
         PIPELINE_CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        refresh_routes_cache()
-        
+        _refresh_routes_cache()
+
+        # Log storico
+        log_pipeline_change("delete_route", before=deleted_route)
+
         return {"success": True, "message": "Route eliminata con successo"}
     except HTTPException:
         raise
@@ -1641,6 +3730,7 @@ async def get_available_files():
         available_files = []
         for file_path in data_dir.iterdir():
             if file_path.is_file() and file_path.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
+                _sync_pipeline_file_to_rag(file_path.name, file_path)
                 available_files.append(file_path.name)
         
         return {"files": sorted(available_files)}
@@ -1648,39 +3738,15 @@ async def get_available_files():
         raise HTTPException(status_code=500, detail=f"Errore nel recupero file disponibili: {str(e)}")
 
 # ---- Pipeline file content edit/upload ----
-import shutil
 def _pipeline_data_dir() -> Path:
-    """Restituisce la directory pipeline_files persistente, con migrazione automatica e log diagnostico."""
+    """Directory pipeline_files persistente (niente più migrazione /data)."""
     import os
     env_dir = os.getenv("PIPELINE_FILES_DIR")
     here = Path(__file__).resolve()
     storage_dir = here.parent.parent / "storage" / "pipeline_files"
-    legacy_data_dir = here.parent.parent.parent / "data"
-    # Priorità: env, storage, legacy
-    if env_dir:
-        d = Path(env_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        print(f"[Pipeline] PIPELINE_FILES_DIR attivo: {d}")
-        return d
-    migrated = 0
-    if not storage_dir.exists():
-        storage_dir.mkdir(parents=True, exist_ok=True)
-        # Migrazione automatica
-        if legacy_data_dir.exists():
-            for f in legacy_data_dir.iterdir():
-                if f.is_file() and f.suffix.lower() in ['.txt', '.md', '.pdf', '.docx']:
-                    target = storage_dir / f.name
-                    if not target.exists():
-                        try:
-                            shutil.copy2(f, target)
-                            migrated += 1
-                        except Exception as e:
-                            print(f"[Pipeline] Errore migrazione file: {e}")
-            # Marker file
-            marker = storage_dir / ".pipeline_migrated"
-            marker.write_text(f"Migrati {migrated} file da {legacy_data_dir} all'avvio\n", encoding="utf-8")
-    print(f"[Pipeline] pipeline_files dir: {storage_dir} (migrati {migrated} nuovi file)")
-    return storage_dir
+    target = Path(env_dir) if env_dir else storage_dir
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 def _safe_pipeline_file(filename: str) -> Path:
     if not filename or any(sep in filename for sep in ["..", "/", "\\"]):
@@ -1698,6 +3764,7 @@ async def get_pipeline_file_content(filename: str):
         path = _safe_pipeline_file(filename)
         if not path.exists():
             raise HTTPException(status_code=404, detail="File non trovato")
+        _sync_pipeline_file_to_rag(filename, path)
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
@@ -1717,6 +3784,7 @@ async def save_pipeline_file_content(payload: PipelineFileContentIn):
     try:
         path = _safe_pipeline_file(payload.filename)
         path.write_text(payload.content, encoding="utf-8")
+        _sync_pipeline_file_to_rag(payload.filename, path)
         return {"success": True}
     except HTTPException:
         raise
@@ -1736,11 +3804,105 @@ async def upload_pipeline_file(file: UploadFile = FastFile(...)):
             target = target.with_name(f"{target.stem}-{int(time.time())}{target.suffix}")
         with open(target, "wb") as out:
             out.write(await file.read())
+        _sync_pipeline_file_to_rag(target.name, target)
         return {"success": True, "filename": target.name}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore upload file: {str(e)}")
+
+# --------------- Pipeline History & Export endpoints ---------------
+@router.get("/admin/pipeline/history")
+async def get_pipeline_change_history(limit: int = 50, offset: int = 0):
+    """Restituisce lo storico delle modifiche alla configurazione pipeline."""
+    try:
+        history = get_pipeline_history(limit=limit, offset=offset)
+        total = get_pipeline_history_count()
+        return {
+            "success": True,
+            "history": history,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore lettura storico: {str(e)}")
+
+@router.get("/admin/pipeline/export")
+async def export_pipeline_config():
+    """Esporta la configurazione pipeline completa come JSON."""
+    try:
+        if not PIPELINE_CONFIG_PATH.exists():
+            raise HTTPException(status_code=404, detail="Configurazione non trovata")
+        config = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+        from fastapi.responses import Response
+        return Response(
+            content=json.dumps(config, indent=2, ensure_ascii=False),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=pipeline_config_export.json"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore export: {str(e)}")
+
+class PipelineImportData(BaseModel):
+    routes: List[Dict[str, str]]
+    files: Dict[str, str]
+    merge: bool = False  # Se True, unisce con configurazione esistente
+
+@router.post("/admin/pipeline/import")
+async def import_pipeline_config(data: PipelineImportData):
+    """Importa configurazione pipeline da JSON."""
+    try:
+        # Validazione pattern
+        invalid = []
+        for route in data.routes:
+            pat = route.get("pattern", "")
+            try:
+                re.compile(pat)
+            except re.error as e:
+                invalid.append({"pattern": pat, "error": str(e)})
+        if invalid:
+            raise HTTPException(status_code=400, detail={"message": "Pattern regex non validi", "invalid": invalid})
+
+        # Carica configurazione esistente per merge o backup
+        existing = {"routes": [], "files": {}}
+        if PIPELINE_CONFIG_PATH.exists():
+            existing = json.loads(PIPELINE_CONFIG_PATH.read_text(encoding="utf-8"))
+
+        if data.merge:
+            # Merge: aggiungi solo route/file non esistenti
+            existing_patterns = {r["pattern"] for r in existing.get("routes", [])}
+            for route in data.routes:
+                if route["pattern"] not in existing_patterns:
+                    existing["routes"].append(route)
+            for topic, filename in data.files.items():
+                if topic not in existing.get("files", {}):
+                    existing["files"][topic] = filename
+            new_config = existing
+        else:
+            # Replace: sostituisci completamente
+            new_config = {"routes": data.routes, "files": data.files}
+
+        # Log storico
+        log_pipeline_change("import_config", before=existing, after=new_config, metadata={"merge": data.merge})
+
+        # Salva
+        PIPELINE_CONFIG_PATH.write_text(json.dumps(new_config, indent=2, ensure_ascii=False), encoding="utf-8")
+        _refresh_routes_cache()
+        refresh_files_cache()
+
+        return {
+            "success": True,
+            "message": "Configurazione importata con successo",
+            "routes_count": len(new_config["routes"]),
+            "files_count": len(new_config["files"])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore import: {str(e)}")
 
 # --------------- Usage logging endpoints ---------------
 @router.get("/admin/usage")
@@ -1841,7 +4003,7 @@ async def get_available_voices(tts_provider: str):
             # Voci Piper per italiano
             return {
                 "voices": [
-                    "it_IT-riccardo-x_low",
+                    "it_IT-riccardo-low",
                     "it_IT-paola-medium"
                 ]
             }
@@ -1874,6 +4036,20 @@ async def get_available_voices(tts_provider: str):
             return {
                 "voices": ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
             }
+        elif tts_provider == "coqui":
+            # Coqui TTS: recupera dinamicamente le voci dalla configurazione admin se presenti,
+            # altrimenti fornisce un fallback statico.
+            try:
+                cfg = load_config()
+                voices = cfg.get("tts_providers", {}).get("coqui", {}).get("voices") or []
+            except Exception:
+                voices = []
+            if not voices:
+                voices = [
+                    "tts_models/it/mai_female/vits",
+                    "tts_models/multilingual/multi-dataset/your_tts"
+                ]
+            return {"voices": voices}
         else:
             return {"voices": []}
             
@@ -1929,7 +4105,7 @@ async def get_available_models(ai_provider: str):
                     async with httpx.AsyncClient() as client:
                         response = await client.get(
                             "https://api.openai.com/v1/models",
-                            headers={"Authorization": f"Bearer {api_key}"}
+                            headers=build_openai_headers(api_key)
                         )
                         if response.status_code == 200:
                             data = response.json()
@@ -1957,7 +4133,7 @@ async def get_available_models(ai_provider: str):
             
             try:
                 import httpx
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                headers = build_openai_headers(api_key) if api_key else {}
                 async with httpx.AsyncClient() as client:
                     response = await client.get("https://openrouter.ai/api/v1/models", headers=headers)
                     if response.status_code == 200:
@@ -2163,6 +4339,996 @@ async def set_whisper_model(request: WhisperSetModelRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore impostazione modello: {str(e)}")
 
+# ==== ADMIN RAG ENDPOINTS ====
+from .rag_engine import rag_engine
+from . import embedding_manager
+
+class RAGGroupRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class RAGGroupUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+# ==== EMBEDDING CONFIG ENDPOINTS ====
+class EmbeddingSetRequest(BaseModel):
+    provider_type: str
+    model_name: str
+
+class EmbeddingDownloadRequest(BaseModel):
+    model_name: str
+
+@router.get("/admin/rag/embedding/config")
+async def get_embedding_config():
+    try:
+        cfg = embedding_manager.get_config()
+        # Augment with runtime provider info
+        try:
+            prov = embedding_manager.get_provider()
+            cfg["runtime"] = prov.info()
+        except Exception as e:  # provider non caricato
+            cfg["runtime_error"] = str(e)
+        return {"success": True, "config": cfg}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore caricamento embedding config: {e}")
+
+@router.get("/admin/rag/embedding/local-models")
+async def list_local_embedding_models():
+    try:
+        return {"success": True, "models": embedding_manager.list_local_models()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore elenco modelli: {e}")
+
+@router.post("/admin/rag/embedding/set")
+async def set_embedding_provider(req: EmbeddingSetRequest):
+    try:
+        embedding_manager.set_provider(req.provider_type, req.model_name)
+        info = embedding_manager.get_config()
+        # Nota: cambiamento di dimensione potrebbe richiedere reindicizzazione manuale
+        return {"success": True, "message": "Provider embedding aggiornato", "config": info}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore set provider: {e}")
+
+@router.post("/admin/rag/embedding/download/start")
+async def start_embedding_download(req: EmbeddingDownloadRequest):
+    try:
+        task_id = embedding_manager.start_model_download(req.model_name)
+        return {"success": True, "task_id": task_id}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore avvio download: {e}")
+
+@router.get("/admin/rag/embedding/download/status")
+async def get_embedding_download_status(task_id: str):
+    try:
+        status = embedding_manager.download_status(task_id)
+        if not status:
+            raise HTTPException(status_code=404, detail="Task non trovato")
+        return {"success": True, "status": status}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore status download: {e}")
+
+@router.get("/admin/rag/embedding/download/tasks")
+async def list_embedding_download_tasks():
+    try:
+        tasks = embedding_manager.download_tasks()
+        return {"success": True, "tasks": tasks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore elenco tasks: {e}")
+
+@router.get("/admin/rag/stats")
+async def admin_get_rag_stats():
+    """Get RAG statistics for admin panel"""
+    try:
+        stats = rag_engine.get_stats()
+        return {"success": True, "stats": stats}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/debug/env")
+async def admin_rag_debug_env(document_id: int | None = None):
+    """Diagnostica rapida backend RAG: tipo DB, path SQLite, presenza documento opzionale."""
+    try:
+        info: dict[str, Any] = {
+            "backend": "postgres",
+            "rag_db_path": str(rag_engine.db_path),
+            "originals_dir": str(rag_engine.originals_dir),
+        }
+        if document_id is not None:
+            try:
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    db_manager.exec(cur, "SELECT id, group_id, filename FROM rag_documents WHERE id = ?", (document_id,))
+                    row = cur.fetchone()
+                    if row:
+                        info["document"] = {"id": row[0], "group_id": row[1], "filename": row[2]}
+                    else:
+                        info["document"] = None
+            except Exception as e:
+                info["error"] = f"lookup_error:{e}"
+        return {"success": True, "env": info}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore debug env: {e}")
+
+@router.get("/admin/rag/groups")
+async def admin_get_rag_groups():
+    """Get all RAG groups for admin panel"""
+    try:
+        # Prima riassegna automaticamente eventuali documenti orfani (idempotente)
+        try:
+            moved = rag_engine.reassign_orphan_documents()
+            if moved:
+                get_system_logger().info(f"[RAG] Riassegnati automaticamente {moved} documenti orfani")
+        except Exception as _e:
+            # Non bloccare la risposta se fallisce la riassegnazione
+            get_system_logger().warning(f"[RAG] Errore auto-riassegnazione orfani: {_e}")
+
+        groups = rag_engine.get_groups()
+        return {"success": True, "groups": groups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/groups")
+async def admin_create_rag_group(request: RAGGroupRequest):
+    """Create new RAG group for admin panel"""
+    try:
+        group_id = rag_engine.create_group(request.name, request.description)
+        return {"success": True, "group_id": group_id, "message": f"Gruppo '{request.name}' creato con successo"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/admin/rag/groups/{group_id}")
+async def admin_delete_rag_group(group_id: int):
+    """Delete RAG group for admin panel"""
+    try:
+        rag_engine.delete_group(group_id)
+        return {"success": True, "message": "Gruppo eliminato con successo"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/admin/rag/groups/{group_id}")
+async def admin_update_rag_group(group_id: int, request: RAGGroupUpdateRequest):
+    """Update RAG group for admin panel"""
+    try:
+        rag_engine.update_group(group_id, request.name, request.description)
+        return {"success": True, "message": "Gruppo aggiornato con successo"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/upload")
+async def admin_upload_rag_document(
+    group_id: int = Form(...),
+    file: UploadFile = File(...)
+):
+    """Upload document to RAG group for admin panel with extraction diagnostics."""
+    import tempfile
+    import os
+    
+    try:
+        # Check if file is PDF
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Solo file PDF sono supportati")
+        
+        # Save file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            content_bytes = await file.read()
+            temp_file.write(content_bytes)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Verifica che il gruppo esista usando il backend attivo
+            with db_manager.get_connection() as conn:
+                cur = conn.cursor()
+                db_manager.exec(cur, "SELECT id FROM rag_groups WHERE id = ?", (group_id,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=400, detail=f"Gruppo {group_id} inesistente (recuperare o crearne uno)")
+            # Salva copia persistente del PDF grezzo nella directory originals del rag_engine
+            originals_dir = rag_engine.originals_dir
+            originals_dir.mkdir(parents=True, exist_ok=True)
+            import time, shutil
+            safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", file.filename.rsplit('/',1)[-1]) or 'document.pdf'
+            stored_name = f"{int(time.time())}_{safe_base}"
+            stored_path = originals_dir / stored_name
+            try:
+                shutil.copy2(temp_file_path, stored_path)
+            except Exception as ce:
+                raise HTTPException(status_code=500, detail=f"Errore salvataggio copia PDF: {ce}")
+
+            # Extract text from PDF
+            from .file_processing import extract_text_from_pdf_with_diagnostics
+            diag = extract_text_from_pdf_with_diagnostics(temp_file_path)
+            text_content = diag.get("text", "")
+            if not text_content.strip():
+                raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
+
+            # Calcola hash per rilevare duplicati prima di inserire
+            import hashlib
+            content_hash = hashlib.sha256(text_content.encode()).hexdigest()
+            duplicate = False
+            duplicate_existing_chunk_count = 0
+            document_id = None
+            existing_filename = ""
+            # Usa backend attivo per deduplica e aggiornamento timestamp
+            with db_manager.get_connection() as conn:
+                cur_h = conn.cursor()
+                db_manager.exec(cur_h, "SELECT id, filename FROM rag_documents WHERE file_hash = ? AND group_id = ?", (content_hash, group_id))
+                row_h = cur_h.fetchone()
+                if row_h:
+                    document_id, existing_filename = row_h
+                    duplicate = True
+                    get_system_logger().info(f"Documento duplicato rilevato. File caricato '{file.filename}' ha lo stesso contenuto di '{existing_filename}' (ID: {document_id}).")
+                    try:
+                        db_manager.exec(cur_h, "UPDATE rag_documents SET updated_at = NOW() WHERE id = ?", (document_id,))
+                        conn.commit()
+                    except Exception:
+                        pass
+                else:
+                    duplicate = False
+                    document_id = rag_engine.add_document(
+                        group_id=group_id,
+                        filename=file.filename,
+                        content=text_content,
+                        original_filename=file.filename,
+                        stored_filename=stored_name
+                    )
+                if duplicate and document_id:
+                    try:
+                        db_manager.exec(cur_h, "SELECT chunk_count FROM rag_documents WHERE id = ?", (document_id,))
+                        rcc = cur_h.fetchone()
+                        if rcc:
+                            duplicate_existing_chunk_count = rcc[0] or 0
+                    except Exception:
+                        pass
+            # Recupera dettagli documento per facilitare aggiornamento frontend immediato
+            # Recupera dettagli documento via backend attivo
+            doc_details = None
+            with db_manager.get_connection() as conn:
+                cur_d = conn.cursor()
+                # In Postgres archived è già definito come boolean, COALESCE per updated_at
+                db_manager.exec(cur_d,
+                    "SELECT id, group_id, filename, original_filename, stored_filename, file_size, content_preview, chunk_count, created_at, COALESCE(updated_at, created_at) as updated_at, archived FROM rag_documents WHERE id = ?",
+                    (document_id,)
+                )
+                row = cur_d.fetchone()
+                if row:
+                    doc_details = {
+                        "id": row[0],
+                        "group_id": row[1],
+                        "filename": row[2],
+                        "original_filename": row[3],
+                        "stored_filename": row[4],
+                        "file_size": row[5],
+                        "content_preview": row[6],
+                        "chunk_count": row[7],
+                        "created_at": row[8],
+                        "updated_at": row[9],
+                        "archived": bool(row[10])
+                    }
+            message = f"Documento '{file.filename}' caricato con successo."
+            if duplicate:
+                message = f"File '{file.filename}' è un duplicato di '{existing_filename}' e non è stato aggiunto."
+
+            return {
+                "success": True,
+                "document_id": document_id,
+                "stored_filename": stored_name,
+                "duplicate": duplicate,
+                "duplicate_existing_chunk_count": duplicate_existing_chunk_count,
+                "document": doc_details,
+                "message": message,
+                "extraction": {
+                    "method": diag.get("method"),
+                    "pages": diag.get("pages"),
+                    "chars": diag.get("chars"),
+                    "short_text": diag.get("short_text"),
+                    "fallback_used": diag.get("fallback_used"),
+                    "errors": diag.get("errors", [])[:5]
+                }
+            }
+            
+        finally:
+            # Clean up temporary file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace/init")
+async def admin_rag_replace_init(document_id: int):
+    """Inizializza una sessione di upload chunked."""
+    import uuid
+    try:
+        upload_id = str(uuid.uuid4())
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "upload_id": upload_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace/append")
+async def admin_rag_replace_append(
+    document_id: int,
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...)
+):
+    """Carica un chunk del file."""
+    try:
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        if not upload_dir.exists():
+            raise HTTPException(status_code=404, detail="Sessione upload non trovata")
+        
+        chunk_path = upload_dir / f"{chunk_index:05d}.part"
+        content = await file.read()
+        with open(chunk_path, "wb") as f:
+            f.write(content)
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace/commit")
+async def admin_rag_replace_commit(
+    document_id: int,
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    chunk_size: Optional[int] = Form(None),
+    chunk_overlap: Optional[int] = Form(None)
+):
+    """Finalizza l'upload chunked e processa il file."""
+    import shutil
+    import time
+    import re
+    import logging
+    from .file_processing import extract_text_from_pdf_with_diagnostics
+
+    logger = logging.getLogger(__name__)
+    try:
+        upload_dir = rag_engine.originals_dir.parent / "temp_uploads" / upload_id
+        if not upload_dir.exists():
+            raise HTTPException(status_code=404, detail="Sessione upload non trovata")
+
+        # Ricostruisci il file completo
+        parts = sorted([p for p in upload_dir.glob("*.part")], key=lambda x: x.name)
+        if not parts:
+            raise HTTPException(status_code=400, detail="Nessun chunk trovato")
+            
+        originals_dir = rag_engine.originals_dir
+        originals_dir.mkdir(parents=True, exist_ok=True)
+        
+        safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", filename.rsplit('/', 1)[-1]) or 'document.pdf'
+        if not safe_base.lower().endswith('.pdf'):
+            safe_base += '.pdf'
+            
+        stored_name = f"{int(time.time())}_{safe_base}"
+        stored_path = originals_dir / stored_name
+        
+        with open(stored_path, "wb") as outfile:
+            for part in parts:
+                with open(part, "rb") as infile:
+                    shutil.copyfileobj(infile, outfile)
+                    
+        # Clean up chunks
+        try:
+            shutil.rmtree(upload_dir)
+        except Exception:
+            pass
+            
+        logger.info(f"[RAG-REPLACE-CHUNKED] File ricostruito in {stored_path}")
+        
+        # Estrazione e Replace (logica duplicata da replace standard)
+        logger.info(f"[RAG-REPLACE-CHUNKED] Estrazione testo da {stored_path}")
+        diagnostics = extract_text_from_pdf_with_diagnostics(str(stored_path))
+        text_content = diagnostics.get("text", "")
+        
+        if not text_content.strip():
+            logger.warning(f"[RAG-REPLACE-CHUNKED] Nessun testo estratto")
+            try: stored_path.unlink(missing_ok=True) 
+            except: pass
+            raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
+            
+        try:
+            result = rag_engine.replace_document_file(
+                document_id,
+                new_text=text_content,
+                original_filename=filename,
+                stored_filename=stored_name,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        except Exception as e:
+            logger.error(f"[RAG-REPLACE-CHUNKED] Errore replace: {e}")
+            try: stored_path.unlink(missing_ok=True) 
+            except: pass
+            raise HTTPException(status_code=400, detail=str(e))
+            
+        # Cleanup vecchio file
+        old_stored = result.get("old_stored_filename")
+        if old_stored and old_stored != stored_name:
+            try:
+                old_path = originals_dir / old_stored
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:
+                pass
+
+        updated_doc = rag_engine.get_document(document_id)
+        return {
+            "success": True,
+            "document": updated_doc,
+            "chunk_count": result.get("chunk_count"),
+            "stored_filename": stored_name,
+            "stored_path": str(stored_path)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/groups/{group_id}/documents")
+async def admin_get_rag_documents(group_id: int):
+    """Get documents in RAG group for admin panel"""
+    try:
+        documents = rag_engine.get_group_documents(group_id)
+        return {"success": True, "documents": documents}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/documents")
+async def admin_list_all_rag_documents(search: str | None = None, group_id: int | None = None, limit: int = 100, offset: int = 0):
+    """Lista globale documenti RAG con filtri opzionali.
+    Params:
+      - search: substring su filename/original_filename
+      - group_id: filtra per gruppo
+      - limit/offset: paginazione (default 100)
+    """
+    try:
+        conds = []
+        params: list[Any] = []
+        if group_id is not None:
+            conds.append("d.group_id = ?")
+            params.append(group_id)
+        if search:
+            conds.append("(LOWER(d.filename) LIKE ? OR LOWER(d.original_filename) LIKE ?)")
+            like = f"%{search.lower()}%"
+            params.extend([like, like])
+        where_clause = f" WHERE {' AND '.join(conds)}" if conds else ""
+        order_clause = " ORDER BY d.created_at DESC"
+        limit_clause = " LIMIT ? OFFSET ?"
+        allow_select = ", d.allow_preview AS allow_preview, d.allow_download AS allow_download"
+        base = (
+            "SELECT d.id, d.group_id, g.name as group_name, d.filename, d.original_filename, d.stored_filename, d.file_size, d.chunk_count, d.created_at"
+            f"{allow_select} "
+            "FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id"
+        )
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, f"SELECT COUNT(*) FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id{where_clause}", params)
+            total = cur.fetchone()[0]
+            db_manager.exec(cur, base + where_clause + order_clause + limit_clause, [*params, limit, offset])
+            rows = cur.fetchall()
+        docs = [
+            {
+                "id": r[0],
+                "group_id": r[1],
+                "group_name": r[2],
+                "filename": r[3],
+                "original_filename": r[4],
+                "stored_filename": r[5],
+                "file_size": r[6],
+                "chunk_count": r[7],
+                "created_at": r[8],
+                "allow_preview": bool(r[9]) if r[9] is not None else True,
+                "allow_download": bool(r[10]) if r[10] is not None else True,
+                "stored_path": str(rag_engine.originals_dir / r[5]) if r[5] else None,
+                "download_url": f"/api/admin/rag/documents/{r[0]}/download"
+            } for r in rows
+        ]
+        return {"success": True, "total": total, "documents": docs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/document/search")
+async def admin_search_rag_document(q: str):
+    """Ricerca rapida documento per nome (filename o original_filename LIKE). Ritorna lista snella.
+    Parametri:
+      - q: substring case-insensitive
+    """
+    if not q or len(q.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Query troppo corta (min 2 caratteri)")
+    try:
+        like = f"%{q.lower()}%"
+        sql = (
+            "SELECT d.id, d.group_id, g.name, d.filename, d.original_filename, d.chunk_count "
+            "FROM rag_documents d "
+            "LEFT JOIN rag_groups g ON d.group_id = g.id "
+            "WHERE LOWER(d.filename) LIKE ? OR LOWER(d.original_filename) LIKE ? "
+            "ORDER BY d.created_at DESC LIMIT 50"
+        )
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, sql, (like, like))
+            rows = cur.fetchall()
+        results = [
+            {
+                "id": r[0],
+                "group_id": r[1],
+                "group_name": r[2],
+                "filename": r[3],
+                "original_filename": r[4],
+                "chunk_count": r[5]
+            } for r in rows
+        ]
+        return {"success": True, "results": results}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/orphans")
+async def admin_list_rag_orphans():
+    """Elenca documenti orfani: group_id NULL/0 o riferito a gruppo inesistente."""
+    try:
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(cur, "SELECT id, group_id, filename, created_at FROM rag_documents WHERE group_id IS NULL OR group_id = 0 ORDER BY created_at DESC")
+            nulls = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+            db_manager.exec(cur,
+                """
+                SELECT d.id, d.group_id, d.filename, d.created_at
+                FROM rag_documents d
+                LEFT JOIN rag_groups g ON d.group_id = g.id
+                WHERE d.group_id IS NOT NULL AND d.group_id != 0 AND g.id IS NULL
+                ORDER BY d.created_at DESC
+                """
+            )
+            dangling = [ { 'id': r[0], 'group_id': r[1], 'filename': r[2], 'created_at': r[3] } for r in cur.fetchall() ]
+        return { 'success': True, 'null_group': nulls, 'dangling_group': dangling, 'total': len(nulls) + len(dangling) }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/recover-groups")
+async def admin_recover_rag_groups():
+    """Ricostruisce gruppi mancanti presenti nei documenti (placeholder)."""
+    try:
+        result = rag_engine.recover_missing_groups()
+        return {"success": True, "created": result["created"], "recovered": result["recovered"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/documents/{document_id}/download")
+async def admin_download_rag_document(document_id: int, disposition: Optional[str] = Query(None), mode: Optional[str] = Query(None)):
+    """Scarica il PDF originale se salvato (stored_filename)."""
+    try:
+        stored_filename = None
+        original_filename = None
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            db_manager.exec(
+                cur,
+                "SELECT stored_filename, original_filename FROM rag_documents WHERE id = ?",
+                (document_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                stored_filename, original_filename = row[0], row[1]
+        if stored_filename is None and original_filename is None:
+            raise HTTPException(status_code=404, detail="Documento non trovato")
+        if not stored_filename:
+            raise HTTPException(status_code=404, detail="File originale non disponibile")
+
+        path = rag_engine.originals_dir / stored_filename
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="File mancante su disco")
+
+        import mimetypes
+
+        requested = (disposition or mode or 'attachment').lower()
+        if requested not in {'attachment', 'inline', 'download', 'preview'}:
+            requested = 'attachment'
+        header_value = 'inline' if requested in {'inline', 'preview'} else 'attachment'
+
+        media_type, _ = mimetypes.guess_type(str(path))
+        response = FileResponse(
+            str(path),
+            media_type=media_type or "application/octet-stream",
+        )
+        safe_name = original_filename or stored_filename
+        response.headers['Content-Disposition'] = f'{header_value}; filename="{safe_name}"'
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/replace")
+async def admin_rag_replace_document(
+    document_id: int,
+    file: UploadFile = File(...),
+    chunk_size: Optional[int] = Form(None),
+    chunk_overlap: Optional[int] = Form(None)
+):
+    """Ricarica un file PDF per un documento esistente e rigenera i chunk."""
+    import tempfile
+    import shutil
+    import time
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"[RAG-REPLACE] Inizio replace per document_id={document_id}, file={file.filename}")
+
+    if not file.filename.lower().endswith('.pdf'):
+        logger.warning(f"[RAG-REPLACE] File non PDF: {file.filename}")
+        raise HTTPException(status_code=400, detail="Sono supportati solo file PDF")
+
+    originals_dir = rag_engine.originals_dir
+    originals_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"[RAG-REPLACE] originals_dir={originals_dir}, exists={originals_dir.exists()}")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+        content_bytes = await file.read()
+        tmp.write(content_bytes)
+        temp_path = Path(tmp.name)
+    logger.info(f"[RAG-REPLACE] File temporaneo creato: {temp_path}, size={len(content_bytes)}")
+
+    safe_base = re.sub(r"[^a-zA-Z0-9_.-]", "-", file.filename.rsplit('/', 1)[-1]) or 'document.pdf'
+    stored_name = f"{int(time.time())}_{safe_base}"
+    stored_path = originals_dir / stored_name
+
+    try:
+        shutil.copy2(temp_path, stored_path)
+        logger.info(f"[RAG-REPLACE] File copiato in {stored_path}")
+    except Exception as e:
+        logger.error(f"[RAG-REPLACE] Errore copia file: {e}")
+        try:
+            temp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Impossibile salvare il file: {e}")
+
+    try:
+        from .file_processing import extract_text_from_pdf_with_diagnostics
+
+        logger.info(f"[RAG-REPLACE] Estrazione testo da {temp_path}")
+        diagnostics = extract_text_from_pdf_with_diagnostics(str(temp_path))
+        text_content = diagnostics.get("text", "")
+        logger.info(f"[RAG-REPLACE] Testo estratto, lunghezza={len(text_content)}, metodo={diagnostics.get('method')}")
+        if not text_content.strip():
+            logger.warning(f"[RAG-REPLACE] Nessun testo estratto dal PDF")
+            raise HTTPException(status_code=400, detail="Impossibile estrarre testo dal PDF")
+
+        try:
+            logger.info(f"[RAG-REPLACE] Chiamata replace_document_file per doc={document_id}")
+            result = rag_engine.replace_document_file(
+                document_id,
+                new_text=text_content,
+                original_filename=file.filename,
+                stored_filename=stored_name,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            logger.info(f"[RAG-REPLACE] Replace completato: {result}")
+        except Exception as e:
+            logger.error(f"[RAG-REPLACE] Errore replace_document_file: {e}", exc_info=True)
+            try:
+                stored_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            raise HTTPException(status_code=400, detail=str(e))
+
+        old_stored = result.get("old_stored_filename")
+        if old_stored and old_stored != stored_name:
+            try:
+                old_path = originals_dir / old_stored
+                if old_path.exists():
+                    old_path.unlink()
+            except Exception:
+                pass
+
+        updated_doc = rag_engine.get_document(document_id)
+        return {
+            "success": True,
+            "document": updated_doc,
+            "chunk_count": result.get("chunk_count"),
+            "stored_filename": stored_name,
+            "stored_path": str(stored_path),
+            "diagnostics": {
+                "method": diagnostics.get("method"),
+                "pages": diagnostics.get("pages"),
+                "chars": diagnostics.get("chars"),
+                "short_text": diagnostics.get("short_text"),
+                "errors": diagnostics.get("errors", [])[:5]
+            }
+        }
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+@router.post("/admin/rag/fix-orphans")
+async def admin_fix_rag_orphans():
+    """Forza la creazione del gruppo 'Orfani' e sposta i documenti senza gruppo.
+    Ritorna quanti documenti sono stati spostati e l'id del gruppo risultante."""
+    try:
+        moved = rag_engine.reassign_orphan_documents()
+        # Recupera id del gruppo Orfani (esiste sicuramente dopo la chiamata)
+        orphan_group_id = None
+        for g in rag_engine.get_groups():
+            if g["name"] == "Orfani":
+                orphan_group_id = g["id"]
+                break
+        return {"success": True, "moved": moved, "group_id": orphan_group_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/admin/rag/orphans/status")
+async def admin_rag_orphans_status():
+    """Restituisce conteggi di elementi orfani (documenti già gestiti altrove, qui chunks)."""
+    try:
+        chunks = rag_engine.count_orphan_chunks()
+        return {"success": True, "orphan_chunks": chunks}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/reassign-orphans")
+async def admin_rag_reassign_single_orphan(document_id: int):
+    """Riassegna un documento specifico al gruppo speciale 'Orfani'.
+
+    Crea il gruppo se mancante e aggiorna anche i chunks. Ritorna l'id del gruppo.
+    """
+    try:
+        gid = rag_engine.reassign_document_to_orphans(document_id)
+        info = getattr(rag_engine, 'last_reassign_info', None) or {}
+        try:
+            get_system_logger().info(f"[RAG] Reassigned document id={document_id} to Orfani group_id={gid}")
+        except Exception:
+            pass
+        return {"success": True, "group_id": gid, "duplicate_removed": bool(info.get('duplicate_removed')), "already_in_orphans": bool(info.get('already_in_orphans'))}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/admin/rag/orphans/cleanup-chunks")
+async def admin_rag_cleanup_orphan_chunks():
+    """Elimina tutti i chunks orfani."""
+    try:
+        removed = rag_engine.delete_orphan_chunks()
+        try:
+            get_system_logger().info(f"[RAG] Cleanup orphan chunks removed={removed}")
+        except Exception:
+            pass
+        return {"success": True, "removed": removed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/admin/rag/orphans/cleanup-documents")
+async def admin_rag_cleanup_orphan_documents():
+    """Elimina tutti i documenti orfani (senza gruppo o con gruppo mancante).
+
+    Criteri:
+    - rag_documents.group_id IS NULL o = 0
+    - rag_documents.group_id riferito a un gruppo inesistente in rag_groups
+    """
+    try:
+        # Elenco documenti orfani usando il backend attivo (Postgres o SQLite)
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            # Documenti con group_id NULL o 0
+            db_manager.exec(cur, "SELECT id, stored_filename FROM rag_documents WHERE group_id IS NULL OR group_id = 0", ())
+            null_rows = cur.fetchall()
+            # Documenti con group_id che punta a gruppo inesistente
+            db_manager.exec(
+                cur,
+                "SELECT d.id, d.stored_filename FROM rag_documents d LEFT JOIN rag_groups g ON d.group_id = g.id WHERE d.group_id IS NOT NULL AND d.group_id <> 0 AND g.id IS NULL",
+                (),
+            )
+            dangling_rows = cur.fetchall()
+        # Mappa {id: stored_filename}
+        to_delete_map: dict[int, str | None] = {}
+        for did, sf in null_rows + dangling_rows:
+            to_delete_map[int(did)] = sf
+
+        to_delete = list(to_delete_map.keys())
+        try:
+            get_system_logger().info(f"[RAG] Cleanup orphan documents start requested={len(to_delete)}")
+        except Exception:
+            pass
+
+        deleted = 0
+        removed_files = 0
+        for did in to_delete:
+            try:
+                sf = to_delete_map.get(did)
+                ok = rag_engine.force_delete_document(did)
+                if ok:
+                    deleted += 1
+                    # Prova a rimuovere anche il file originale se presente
+                    if sf:
+                        try:
+                            fpath = rag_engine.originals_dir / sf
+                            if fpath.exists():
+                                fpath.unlink()
+                                removed_files += 1
+                        except Exception:
+                            pass
+                try:
+                    get_system_logger().info(
+                        f"[RAG] Cleanup orphan document id={did} deleted={bool(ok)} stored='{sf}' removed_file={'true' if sf else 'false'}"
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                # Continua con i successivi anche se uno fallisce
+                pass
+
+        try:
+            get_system_logger().info(
+                f"[RAG] Cleanup orphan documents done requested={len(to_delete)} deleted={deleted} removed_files={removed_files}"
+            )
+        except Exception:
+            pass
+        return {"success": True, "deleted": deleted, "requested": len(to_delete), "removed_files": removed_files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/admin/rag/documents/{document_id}")
+async def admin_delete_rag_document(document_id: int):
+    """Delete RAG document for admin panel"""
+    try:
+        result = rag_engine.delete_document(document_id)
+        if not result.get("deleted"):
+            raise HTTPException(status_code=404, detail="Documento non trovato o non eliminato")
+        return {"success": True, "message": "Documento eliminato con successo", "group_id": result.get("group_id")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ====== Advanced RAG document actions ======
+class RAGDocumentRename(BaseModel):
+    filename: str
+
+@router.post("/admin/rag/documents/{document_id}/rename")
+async def admin_rag_rename_document(document_id: int, payload: RAGDocumentRename):
+    try:
+        rag_engine.rename_document(document_id, payload.filename)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentMove(BaseModel):
+    group_id: int
+
+@router.post("/admin/rag/documents/{document_id}/move")
+async def admin_rag_move_document(document_id: int, payload: RAGDocumentMove):
+    try:
+        rag_engine.move_document(document_id, payload.group_id)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentDuplicate(BaseModel):
+    target_group_id: int
+
+@router.post("/admin/rag/documents/{document_id}/duplicate")
+async def admin_rag_duplicate_document(document_id: int, payload: RAGDocumentDuplicate):
+    try:
+        new_id = rag_engine.duplicate_document(document_id, payload.target_group_id)
+        return {"success": True, "new_document_id": new_id}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentReprocess(BaseModel):
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+
+@router.post("/admin/rag/documents/{document_id}/reprocess")
+async def admin_rag_reprocess_document(document_id: int, payload: RAGDocumentReprocess):
+    try:
+        new_count = rag_engine.reprocess_document(document_id, chunk_size=payload.chunk_size, chunk_overlap=payload.chunk_overlap)
+        return {"success": True, "chunk_count": new_count}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/admin/rag/documents/{document_id}/export")
+async def admin_rag_export_document(document_id: int):
+    try:
+        data = rag_engine.export_document(document_id)
+        return {"success": True, **data}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentArchive(BaseModel):
+    archived: bool
+
+class RAGDocumentPermissions(BaseModel):
+    allow_preview: bool
+    allow_download: bool
+
+@router.post("/admin/rag/documents/{document_id}/archive")
+async def admin_rag_archive_document(document_id: int, payload: RAGDocumentArchive):
+    try:
+        rag_engine.set_document_archived(document_id, payload.archived)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/admin/rag/documents/{document_id}/metadata")
+async def admin_rag_document_metadata(document_id: int):
+    try:
+        doc = rag_engine.get_document(document_id)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Documento non trovato")
+        return {"success": True, "document": doc}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/admin/rag/documents/{document_id}/permissions")
+async def admin_rag_update_document_permissions(document_id: int, payload: RAGDocumentPermissions, current_user = Depends(get_current_admin_user)):
+    """Aggiorna i permessi di visualizzazione e download di un documento"""
+    try:
+        rag_engine.set_document_permissions(document_id, payload.allow_preview, payload.allow_download)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+class RAGDocumentNameUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=500)
+
+@router.put("/admin/rag/documents/{document_id}/name")
+async def admin_rag_update_document_name(document_id: int, payload: RAGDocumentNameUpdate, current_user = Depends(get_current_admin_user)):
+    """Aggiorna il nome di un documento"""
+    try:
+        rag_engine.update_document_name(document_id, payload.name)
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/admin/rag/documents/{document_id}/force")
+async def admin_rag_force_delete_document(document_id: int):
+    """Eliminazione forzata di un documento RAG, con rimozione del file originale se presente."""
+    try:
+        # Prova a leggere stored_filename prima della cancellazione
+        stored_filename = None
+        try:
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                db_manager.exec(cursor, "SELECT stored_filename FROM rag_documents WHERE id = ?", (document_id,))
+                row = cursor.fetchone()
+                if row:
+                    stored_filename = row[0]
+        except Exception:
+            pass
+
+        deleted = rag_engine.force_delete_document(document_id)
+        # Rimuovi file originale se presente
+        removed_file = False
+        if deleted and stored_filename:
+            try:
+                fpath = (rag_engine.originals_dir / stored_filename)
+                if fpath.exists():
+                    fpath.unlink()
+                    removed_file = True
+            except Exception:
+                pass
+        try:
+            get_system_logger().info(f"[RAG] Force delete document id={document_id} deleted={bool(deleted)} stored='{stored_filename}' removed_file={removed_file}")
+        except Exception:
+            pass
+        return {"success": True, "deleted": bool(deleted), "removed_file": removed_file}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 # ==== ADMIN USER MANAGEMENT ENDPOINTS ====
 import bcrypt
 import secrets
@@ -2171,102 +5337,102 @@ import string
 class UserResetPasswordRequest(BaseModel):
     user_id: int
 
-import sqlite3
-@router.get("/admin/users")
+@router.get("/admin/legacy-users")
 async def admin_get_users():
     """Get all users for admin panel (without sensitive data)"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT id, email, created_at, last_login, is_admin 
-            FROM users 
-            ORDER BY created_at DESC
-        """)
-        
-        users = []
-        for row in cursor.fetchall():
-            users.append({
-                "id": row[0],
-                "email": row[1],
-                "created_at": row[2],
-                "last_login": row[3],
-                "is_admin": bool(row[4]) if row[4] is not None else False
-            })
-        
-        conn.close()
-        return {"success": True, "users": users}
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            # Unified query compatible with SQLite and Postgres
+            db_manager.exec(cursor, """
+                SELECT id, email, created_at, last_login, is_admin
+                FROM users
+                ORDER BY created_at DESC
+            """)
+
+            users = []
+            for row in cursor.fetchall():
+                users.append({
+                    "id": row[0],
+                    "email": row[1],
+                    "created_at": row[2],
+                    "last_login": row[3],
+                    "is_admin": bool(row[4]) if row[4] is not None else False
+                })
+            return {"success": True, "users": users}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/admin/users/{user_id}")
+@router.delete("/admin/legacy-users/{user_id}")
 async def admin_delete_user(user_id: int):
     """Delete user account for admin panel"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        # First check if user exists
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        user = cursor.fetchone()
-        
-        if not user:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        
-        # Delete user conversations first (foreign key constraint)
-        cursor.execute("DELETE FROM conversations WHERE user_id = ?", (user_id,))
-        
-        # Delete user
-        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return {"success": True, "message": f"Utente {user[0]} eliminato con successo"}
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # First check if user exists
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+
+            # Delete user conversations first (compatibility with SQLite when FKs off)
+            db_manager.exec(cursor, "DELETE FROM conversations WHERE user_id = ?", (user_id,))
+            # Optionally delete devices as well for robustness
+            try:
+                db_manager.exec(cursor, "DELETE FROM user_devices WHERE user_id = ?", (user_id,))
+            except Exception:
+                pass
+
+            # Delete user (Postgres will cascade to children; above deletes help SQLite)
+            db_manager.exec(cursor, "DELETE FROM users WHERE id = ?", (user_id,))
+
+            conn.commit()
+            return {"success": True, "message": f"Utente {user[0]} eliminato con successo"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/admin/users/{user_id}/reset-password")
+@router.post("/admin/legacy-users/{user_id}/reset-password")
 async def admin_reset_user_password(user_id: int):
     """Reset user password and return new temporary password.
     Also clears failed attempts and lock, and updates user_key_hash.
     """
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        email = row[0]
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+            email = row[0]
 
-        # Generate new temporary password
-        characters = string.ascii_letters + string.digits + "!@#$%&*"
-        temp_password = ''.join(secrets.choice(characters) for _ in range(12))
+            # Generate new temporary password
+            characters = string.ascii_letters + string.digits + "!@#$%&*"
+            temp_password = ''.join(secrets.choice(characters) for _ in range(12))
 
-        # Hashes
-        new_hash = AuthManager.hash_password(temp_password)
-        new_user_key_hash = AuthManager.generate_user_key_hash(temp_password, email)
+            # Hashes
+            new_hash = AuthManager.hash_password(temp_password)
+            new_user_key_hash = AuthManager.generate_user_key_hash(temp_password, email)
 
-        # Update user
-        cursor.execute(
-            """
-            UPDATE users 
-            SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL, must_change_password = 1
-            WHERE id = ?
-            """,
-            (new_hash, new_user_key_hash, user_id)
-        )
-        conn.commit()
-        conn.close()
+            # Update user (parameterize boolean for cross-DB compatibility)
+            db_manager.exec(
+                cursor,
+                """
+                UPDATE users 
+                SET password_hash = ?, user_key_hash = ?, failed_login_attempts = 0, locked_until = NULL, must_change_password = ?
+                WHERE id = ?
+                """,
+                (new_hash, new_user_key_hash, True, user_id)
+            )
+            conn.commit()
 
-        return {
-            "success": True,
-            "message": f"Password reset per {email}",
-            "temporary_password": temp_password,
-            "email": email
-        }
+            return {
+                "success": True,
+                "message": f"Password reset per {email}",
+                "temporary_password": temp_password,
+                "email": email
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -2275,32 +5441,32 @@ async def admin_reset_user_password(user_id: int):
 class UserRoleRequest(BaseModel):
     is_admin: bool
 
-@router.put("/admin/users/{user_id}/role")
+@router.put("/admin/legacy-users/{user_id}/role")
 async def admin_change_user_role(user_id: int, request: UserRoleRequest):
     """Change user role (admin/user)"""
     try:
-        conn = sqlite3.connect(str(DATABASE_PATH))
-        cursor = conn.cursor()
-        
-        # Check if user exists
-        cursor.execute("SELECT email FROM users WHERE id = ?", (user_id,))
-        user = cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail="Utente non trovato")
-        
-        # Update user role
-        cursor.execute(
-            "UPDATE users SET is_admin = ? WHERE id = ?",
-            (1 if request.is_admin else 0, user_id)
-        )
-        conn.commit()
-        conn.close()
-        
-        role_name = "amministratore" if request.is_admin else "utente"
-        return {
-            "success": True,
-            "message": f"Ruolo cambiato a {role_name} per {user[0]}"
-        }
+        with db_manager.get_connection() as conn:
+            cursor = conn.cursor()
+
+            # Check if user exists
+            db_manager.exec(cursor, "SELECT email FROM users WHERE id = ?", (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="Utente non trovato")
+
+            # Update user role (parameterized boolean)
+            db_manager.exec(
+                cursor,
+                "UPDATE users SET is_admin = ? WHERE id = ?",
+                (bool(request.is_admin), user_id)
+            )
+            conn.commit()
+
+            role_name = "amministratore" if request.is_admin else "utente"
+            return {
+                "success": True,
+                "message": f"Ruolo cambiato a {role_name} per {user[0]}"
+            }
     except HTTPException:
         raise
     except Exception as e:
@@ -2320,3 +5486,62 @@ async def admin_test_users():
         "current_working_directory": os.getcwd(),
         "absolute_database_path": str(DATABASE_PATH.absolute())
     }
+
+# ---- Data Tables Agent settings (provider/model indipendenti) ----
+class DataTablesSettingsIn(BaseModel):
+    enabled: bool = True
+    provider: str = 'openrouter'
+    model: str | None = None
+    temperature: float | None = 0.2
+    limit_per_table: int | None = 8
+    system_prompt: str | None = None
+
+@router.get('/admin/data-tables/settings')
+async def get_data_tables_settings():
+    try:
+        cfg = load_config()
+        defaults = {"enabled": True, "provider": "openrouter", "model": None, "temperature": 0.2, "limit_per_table": 8, "system_prompt": None}
+        settings = cfg.get('data_tables_settings') or {}
+        return {"success": True, "settings": {**defaults, **settings}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@router.post('/admin/data-tables/settings')
+async def set_data_tables_settings(payload: DataTablesSettingsIn):
+    try:
+        cfg = load_config()
+        ai = cfg.get('ai_providers', {}) or {}
+        prov = (payload.provider or 'openrouter').lower()
+        if prov not in ai:
+            return {"success": False, "error": f"provider_unknown:{prov}"}
+        cfg['data_tables_settings'] = {
+            'enabled': bool(payload.enabled),
+            'provider': prov,
+            'model': (payload.model or '').strip() or None,
+            'temperature': float(payload.temperature or 0.2),
+            'limit_per_table': int(payload.limit_per_table or 8),
+            'system_prompt': (payload.system_prompt or '').strip() or None
+        }
+        save_config(cfg)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+class DataTablesAgentTestIn(BaseModel):
+    q: str
+    table_ids: list[str] | None = None
+
+@router.post('/admin/data-tables/agent-test')
+async def data_tables_agent_test(req: DataTablesAgentTestIn):
+    try:
+        from .data_tables import list_tables as _list
+        from .data_tables_agent import run_agent
+        if req.table_ids:
+            tids = req.table_ids
+        else:
+            tids = [t.get('id') for t in _list() if t.get('id')]
+        # Pass schemas via tids; lasciamo results vuoto (NL2SQL decide le condizioni)
+        answer = await run_agent(req.q, [], tids)
+        return {"success": True, "answer": answer, "table_ids": tids}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

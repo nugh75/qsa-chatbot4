@@ -4,18 +4,19 @@ export interface AdminConfig {
     gemini:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
     claude:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
     openai:     { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
-    openrouter: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string }
-    ollama:     { enabled: boolean; name: string; base_url: string; models: string[]; selected_model: string }
+    openrouter: { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; models: string[]; selected_model: string; fallback_model?: string; fallback_ollama_model?: string }
+    ollama:     { enabled: boolean; name: string; base_url: string; models: string[]; selected_model: string; fallback_model?: string; fallback_openrouter_model?: string }
   }
   tts_providers: {
     edge:        { enabled: boolean; name: string; voices: string[]; selected_voice: string }
     elevenlabs:  { enabled: boolean; name: string; api_key_status: string; api_key_masked: string; voices: string[]; selected_voice: string }
     openai_voice:{ enabled: boolean; name: string; voices: string[]; selected_voice: string }
     piper:       { enabled: boolean; name: string; voices: string[]; selected_voice: string }
+  coqui?:      { enabled: boolean; name: string; voices: string[]; selected_voice: string }
   }
   default_provider: string
   default_tts: string
-  summary_settings?: { provider: string; enabled: boolean }
+  summary_settings?: { provider: string; enabled: boolean; model?: string | null }
   memory_settings?:  { max_messages_per_session: number }
 }
 
@@ -35,6 +36,7 @@ export interface PersonalityEntry {
   model: string;
   system_prompt_id: string;
   avatar_url?: string | null;
+  avatar?: string | null; // raw filename returned by admin endpoint
   active?: boolean; // active personalities appear in chat dropdown
   tts_provider?: string | null;
   tts_voice?: string | null;
@@ -52,6 +54,29 @@ export interface PersonalityEntry {
   enabled_pipeline_topics?: string[];
   enabled_rag_groups?: number[];
   enabled_mcp_servers?: string[];
+  // Data tables abilitati per questa personalità
+  enabled_data_tables?: string[];
+  // Questionari (forms) abilitati per questa personalità
+  enabled_forms?: string[];
+  // Visibilità in chat
+  show_pipeline_topics?: boolean;
+  show_source_docs?: boolean;
+  hide_rag_links?: boolean;
+  starter_prompts?: string[];
+  // Webhook configuration
+  webhook_url?: string | null;
+  webhook_enabled?: boolean;
+  webhook_timeout?: number;
+  webhook_auth_header?: string | null;
+  webhook_include_history?: boolean;
+  // Delegation rules
+  delegate_rules?: DelegateRule[];
+}
+
+export interface DelegateRule {
+  pattern: string;
+  target_personality_id: string;
+  mode: 'full' | 'partial';
 }
 
 export interface PipelineOption {

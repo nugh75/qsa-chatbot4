@@ -91,8 +91,7 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onAuthSuccess }) => {
           { id: response.data.user_id, email: formData.email }
         );
 
-        // Inizializza crittografia
-        await chatCrypto.deriveKeyFromPassword(formData.password, formData.email);
+  // Client-side encryption disabled: no key derivation
 
         // Registra dispositivo
         const deviceId = DeviceManager.generateDeviceId();
@@ -136,8 +135,7 @@ export const AuthPanel: React.FC<AuthPanelProps> = ({ onAuthSuccess }) => {
           { id: response.data.user_id, email: formData.email }
         );
 
-        // Inizializza crittografia
-        await chatCrypto.deriveKeyFromPassword(formData.password, formData.email);
+  // Client-side encryption disabled: no key derivation
 
         // Registra dispositivo
         const deviceId = DeviceManager.generateDeviceId();

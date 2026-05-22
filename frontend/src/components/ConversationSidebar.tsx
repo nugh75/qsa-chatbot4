@@ -47,6 +47,7 @@ interface ConversationSidebarProps {
   userAvatar?: string | null;
   onUserAvatarChange?: (dataUrl: string | null) => void;
   isAuthenticated?: boolean;
+  userEmail?: string;
 }
 
 interface DecryptedConversation {
@@ -71,6 +72,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   userAvatar = null,
   onUserAvatarChange,
   isAuthenticated = false,
+  userEmail,
 }) => {
   const theme = useTheme();
   const [conversations, setConversations] = useState<DecryptedConversation[]>([]);
@@ -84,68 +86,46 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const [syncing, setSyncing] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
 
-  const { crypto: userCrypto, needsCryptoReauth } = useAuth();
+  const { crypto: userCrypto, needsCryptoReauth, impersonatedUser } = useAuth();
 
   // Carica conversazioni
   const loadConversations = useCallback(async () => {
     try {
       setLoading(true);
-      console.log('🔄 Caricamento conversazioni...');
-      console.log('🔑 UserCrypto disponibile:', !!userCrypto);
-      console.log('🔐 UserCrypto inizializzato:', userCrypto?.isKeyInitialized());
-      
-      const response = await apiService.getConversations();
-      console.log('📥 Risposta API conversazioni:', response);
-      
-      if (response.success && response.data) {
-        // Decripta i titoli delle conversazioni
-        const decryptedConversations = await Promise.all(
+  console.log('Caricamento conversazioni...', { impersonatedUserId: impersonatedUser?.id });
+
+  // Se l'admin sta impersonando un utente, passiamo l'ID come query param
+  const response = await apiService.getConversations(impersonatedUser?.id);
+  console.log('Risposta API conversazioni:', response);
+
+  if (response.success && response.data) {
+        // Preferisci titolo in chiaro fornito dal server; in alternativa, decritta lato client
+        const normalized = await Promise.all(
           response.data.map(async (conv: ConversationData): Promise<DecryptedConversation> => {
-            try {
-              if (userCrypto?.isKeyInitialized()) {
-                const decryptedTitle = await userCrypto.decryptMessage(conv.title_encrypted);
-                return {
-                  ...conv,
-                  title_decrypted: decryptedTitle,
-                  decryption_error: false,
-                };
-              } else {
-                // Nessuna chiave crypto disponibile - mostra un fallback user-friendly
-                const fallbackTitle = `Conversazione ${conv.id.slice(-8)} (${conv.message_count} messaggi)`;
-                return {
-                  ...conv,
-                  title_decrypted: fallbackTitle,
-                  decryption_error: false, // Non è un errore, è solo che non abbiamo la chiave
-                };
-              }
-            } catch (error) {
-              console.warn(`Failed to decrypt title for conversation ${conv.id}:`, error);
-              // Solo qui è un vero errore di decriptazione
-              return {
-                ...conv,
-                title_decrypted: `Conversazione ${conv.id.slice(-8)}`,
-                decryption_error: true,
-              };
+            // If server returned plaintext title use it; otherwise fallback to generated label
+            if (conv.title && conv.title.trim()) {
+              return { ...conv, title_decrypted: conv.title.trim(), decryption_error: false } as DecryptedConversation;
             }
+            const fallbackTitle = `Conversazione ${conv.id.slice(-8)} (${conv.message_count} messaggi)`;
+            return { ...conv, title_decrypted: fallbackTitle, decryption_error: false } as DecryptedConversation;
           })
         );
-        
-        setConversations(decryptedConversations);
+        setConversations(normalized);
         setError('');
-        console.log('✅ Conversazioni caricate e decrittate:', decryptedConversations.length);
+        console.log('✅ Conversazioni caricate e decrittate:', normalized.length);
       } else {
         console.warn('❌ Errore nel caricamento conversazioni:', response.error);
         setError(response.error || 'Errore nel caricamento conversazioni');
       }
     } catch (error) {
-      console.error('💥 Errore nel caricamento conversazioni:', error);
+  console.error('Errore nel caricamento conversazioni:', error);
       setError('Errore di connessione');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [impersonatedUser?.id]);
 
-  // Carica conversazioni all'apertura
+  // Carica conversazioni all'apertura e quando cambia l'utente impersonato
   useEffect(() => {
     if (open) {
       loadConversations();
@@ -180,21 +160,15 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
   const saveTitle = async () => {
     if (!editingId || !editTitle.trim()) return;
     
-    if (!userCrypto?.isKeyInitialized()) {
-      setError('Crittografia non disponibile. Effettua nuovamente il login.');
-      return;
-    }
-
     try {
-      const encryptedTitle = await userCrypto.encryptMessage(editTitle.trim());
-      const response = await apiService.updateConversationTitle(editingId, encryptedTitle);
-      
+      // Server-side encryption disabled: send plaintext title
+      const response = await apiService.updateConversationTitle(editingId, editTitle.trim());
       if (response.success) {
-        // Aggiorna lista locale
+        // Update local list
         setConversations(prev =>
           prev.map(conv =>
             conv.id === editingId
-              ? { ...conv, title_decrypted: editTitle.trim(), title_encrypted: encryptedTitle }
+              ? { ...conv, title_decrypted: editTitle.trim(), title_encrypted: editTitle.trim() }
               : conv
           )
         );
@@ -204,7 +178,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
         setError(response.error || 'Errore nell\'aggiornamento titolo');
       }
     } catch (error) {
-      setError('Errore nella crittografia del titolo');
+      setError('Errore nella richiesta di aggiornamento titolo');
     }
   };
 
@@ -314,7 +288,12 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
       {/* Avatar Utente (solo se loggato) */}
       {isAuthenticated && (
         <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Avatar Utente</Typography>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>Profilo</Typography>
+          {userEmail && (
+            <Typography variant="body2" sx={{ mb: 1, fontWeight: 500, wordBreak: 'break-all' }}>
+              {userEmail}
+            </Typography>
+          )}
           <Box sx={{ display:'flex', alignItems:'center', gap:1 }}>
             <Avatar src={userAvatar || undefined} alt="Tu" sx={{ width: 40, height: 40 }} />
             <Button
@@ -416,26 +395,9 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
                         primary={
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             {/* Icona lucchetto solo se serve re-auth crypto e non è un errore di decriptazione */}
-                            {needsCryptoReauth && !conversation.decryption_error && (
-                              <Box component="span" sx={{ display:'inline-flex', alignItems:'center' }}>
-                                <Box component="span" sx={{ width:14, height:14, mr:0.5, opacity:0.7 }}>
-                                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <rect x="3" y="11" width="18" height="10" rx="2" ry="2" />
-                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                  </svg>
-                                </Box>
-                              </Box>
-                            )}
+                            {/* No lock icon needed when encryption disabled */}
                             <Typography variant="body2" noWrap>{conversation.title_decrypted}</Typography>
-                            {/* Chip errore solo per veri errori di decriptazione */}
-                            {conversation.decryption_error && (
-                              <Chip
-                                label="Errore"
-                                size="small"
-                                color="warning"
-                                variant="outlined"
-                              />
-                            )}
+                            {/* decryption_error not relevant when encryption disabled */}
                           </Box>
                         }
                         secondary={
@@ -463,7 +425,7 @@ export const ConversationSidebar: React.FC<ConversationSidebarProps> = ({
       {/* Footer con info */}
       <Box sx={{ p: 1, borderTop: 1, borderColor: 'divider', textAlign: 'center' }}>
         <Typography variant="caption" color="text.secondary">
-          {conversations.length} conversazioni • Crittografate
+          {conversations.length} conversazioni • Private
         </Typography>
       </Box>
     </Box>

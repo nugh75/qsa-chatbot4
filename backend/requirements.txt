@@ -11,8 +11,11 @@ bcrypt
 cryptography
 # Whisper dependencies
 openai-whisper
-torch
-torchaudio
+# Use CPU-only PyTorch wheels to greatly reduce image size and avoid downloading large CUDA runtime libs.
+# The extra index provides access to the +cpu wheels.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.1+cpu
+torchaudio==2.3.1+cpu
 # File processing dependencies
 pypdf
 PyMuPDF
@@ -27,6 +30,16 @@ numpy
 scikit-learn
 langchain-text-splitters
 tiktoken
+
+# Database driver per PostgreSQL
+psycopg2-binary>=2.9
+
+# Coqui TTS (for Italian voices)
+TTS==0.22.0
+soundfile
 openpyxl
-beautifulsoup4
-striprtf
+
+# Web sources dependencies
+beautifulsoup4==4.12.3
+markdownify==0.11.6
+lxml==5.1.0

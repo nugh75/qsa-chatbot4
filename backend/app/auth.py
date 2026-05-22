@@ -11,6 +11,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 import hashlib
 import os
+import base64
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 # Configuration
 # In sviluppo senza docker-compose vogliamo una chiave stabile anche senza variabile d'ambiente.
@@ -46,6 +48,18 @@ LOCKOUT_DURATION_MINUTES = 30
 
 security = HTTPBearer()
 
+# Admin configuration loaded from environment variables
+ADMIN_EMAILS = [
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+]
+ADMIN_ROLES = [
+    r.strip().lower()
+    for r in os.getenv("ADMIN_ROLES", "").split(",")
+    if r.strip()
+]
+
 # Pydantic models
 class UserRegistration(BaseModel):
     email: EmailStr
@@ -67,22 +81,35 @@ class TokenData(BaseModel):
     user_id: Optional[int] = None
     email: Optional[str] = None
 
+from .password_utils import verify_password as _verify_pw_util, hash_password_bcrypt as _hash_bcrypt, is_legacy_sha256 as _is_legacy_sha256
+
 class AuthManager:
     """Gestisce autenticazione, JWT tokens e sicurezza password"""
     
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash password con bcrypt"""
-        salt = bcrypt.gensalt()
-        return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+        """Hash password (bcrypt)."""
+        return _hash_bcrypt(password)
     
     @staticmethod
     def verify_password(password: str, hashed: str) -> bool:
-        """Verifica password contro hash"""
-        try:
-            return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
-        except:
-            return False
+        """Verifica password e aggiorna (upgrade) se legacy SHA256.
+        NOTA: l'upgrade va gestito dal chiamante dopo aver verificato con successo.
+        """
+        ok, needs_upgrade = _verify_pw_util(password, hashed)
+        if ok and needs_upgrade:
+            # Esegue upgrade hash salvando bcrypt
+            try:
+                from .database import db_manager
+                with db_manager.get_connection() as conn:
+                    cur = conn.cursor()
+                    new_hash = _hash_bcrypt(password)
+                    # Usa adattamento placeholder centralizzato
+                    db_manager.exec(cur, "UPDATE users SET password_hash = ? WHERE password_hash = ?", (new_hash, hashed))
+                    conn.commit()
+            except Exception as e:  # pragma: no cover
+                print(f"[AUTH] Password upgrade failed: {e}")
+        return ok
     
     @staticmethod
     def generate_user_key_hash(password: str, email: str) -> str:
@@ -150,10 +177,17 @@ class AuthManager:
         if user_data.get("failed_login_attempts", 0) >= MAX_LOGIN_ATTEMPTS:
             locked_until = user_data.get("locked_until")
             if locked_until:
-                # Controlla se il blocco è ancora attivo
-                lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
-                if datetime.utcnow() < lock_time:
-                    return True
+                # Controlla se il blocco è ancora attivo (gestisce str o datetime)
+                try:
+                    if isinstance(locked_until, str):
+                        lock_time = datetime.fromisoformat(locked_until.replace('Z', '+00:00'))
+                    else:
+                        lock_time = locked_until  # expected datetime from Postgres driver
+                    if datetime.utcnow() < lock_time:
+                        return True
+                except Exception:
+                    # Se parsing fallisce, considera non bloccato per non bloccare login
+                    return False
         return False
 
 # Dependency per autenticazione
@@ -183,6 +217,60 @@ async def get_current_active_user(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
+security_optional = HTTPBearer(auto_error=False)
+
+async def get_optional_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional)):
+    """Dependency per ottenere l'utente corrente opzionale (ritorna None se non autenticato/Guest)"""
+    if not credentials:
+        return None
+    
+    try:
+        token_data = AuthManager.verify_token(credentials.credentials)
+        if token_data is None:
+            return None
+        
+        from .database import UserModel
+        user = UserModel.get_user_by_id(token_data.user_id)
+        if user is None or not user.get("is_active"):
+            return None
+        
+        return user
+    except Exception:
+        return None
+
+async def get_effective_user(
+    current_user: dict = Depends(get_current_active_user),
+    impersonate_user_id: Optional[int] = None
+):
+    """
+    Dependency che restituisce l'utente effettivo considerando l'impersonazione.
+    Se l'utente è admin e viene passato impersonate_user_id, restituisce l'utente impersonato.
+    Altrimenti restituisce l'utente corrente.
+    
+    Nota: impersonate_user_id deve essere passato esplicitamente come parametro della funzione route.
+    """
+    # Se non c'è impersonazione, ritorna utente corrente
+    if impersonate_user_id is None:
+        return current_user
+    
+    # Solo admin possono impersonare
+    if not is_admin_user(current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can impersonate users"
+        )
+    
+    # Recupera utente impersonato
+    from .database import UserModel
+    impersonated_user = UserModel.get_user_by_id(impersonate_user_id)
+    if impersonated_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User {impersonate_user_id} not found"
+        )
+    
+    return impersonated_user
+
 async def get_current_admin_user(current_user: dict = Depends(get_current_active_user)):
     """Dependency per ottenere utente amministratore"""
     if not is_admin_user(current_user):
@@ -194,17 +282,13 @@ async def get_current_admin_user(current_user: dict = Depends(get_current_active
 
 def is_admin_user(user: dict) -> bool:
     """Controlla se l'utente ha privilegi di amministratore"""
-    # Verifica se l'utente è admin tramite email o ruolo
-    admin_emails = [
-        "admin@qsa-chatbot.com",
-        "desi76@example.com",  # Aggiungi qui email degli admin
-        "daniele.dragoni@gmail.com",
-    ]
-    
+    user_email = (user.get("email") or "").lower()
+    user_role = (user.get("role") or "").lower()
+
     return (
-        user.get("email") in admin_emails or 
-        user.get("role") == "admin" or
-        user.get("is_admin", False)
+        user_email in ADMIN_EMAILS
+        or user_role in ADMIN_ROLES
+        or user.get("is_admin", False)
     )
 
 # Funzioni per password reset con escrow
@@ -218,24 +302,29 @@ class EscrowManager:
     
     @staticmethod
     def encrypt_with_escrow(data: str, escrow_key: str) -> str:
-        """Cripta dati con chiave escrow (placeholder per vera implementazione)"""
-        # Qui andrebbe implementata vera crittografia AES-256-GCM
-        # Per ora ritorna placeholder
-        import base64
-        combined = f"{escrow_key}:{data}"
-        return base64.b64encode(combined.encode()).decode()
+        """Cripta dati con chiave escrow usando AES-256-GCM"""
+        key = escrow_key.encode()[:32].ljust(32, b'0')
+        nonce = os.urandom(12)
+        cipher = Cipher(algorithms.AES(key), modes.GCM(nonce))
+        encryptor = cipher.encryptor()
+        ciphertext = encryptor.update(data.encode()) + encryptor.finalize()
+        package = nonce + encryptor.tag + ciphertext
+        return base64.b64encode(package).decode()
     
     @staticmethod
     def decrypt_with_escrow(encrypted_data: str, escrow_key: str) -> Optional[str]:
         """Decripta dati con chiave escrow"""
         try:
-            import base64
-            decoded = base64.b64decode(encrypted_data.encode()).decode()
-            stored_key, data = decoded.split(":", 1)
-            if stored_key == escrow_key:
-                return data
-            return None
-        except:
+            decoded = base64.b64decode(encrypted_data.encode())
+            nonce = decoded[:12]
+            tag = decoded[12:28]
+            ciphertext = decoded[28:]
+            key = escrow_key.encode()[:32].ljust(32, b'0')
+            cipher = Cipher(algorithms.AES(key), modes.GCM(nonce, tag))
+            decryptor = cipher.decryptor()
+            plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+            return plaintext.decode()
+        except Exception:
             return None
     
     @staticmethod

@@ -3,7 +3,8 @@
  */
 
 import { CredentialManager } from './crypto';
-import type { PersonalityEntry } from './types/admin';
+import type { PersonalityEntry, SystemPromptEntry } from './types/admin';
+import type Msg from './types/message';
 
 // Dynamic API base resolution to avoid hard-coded localhost in deployed/tunneled environments.
 // Priority order:
@@ -55,19 +56,27 @@ export interface UserInfo {
 export interface ConversationData {
   id: string;
   title_encrypted: string;
+  // Server-side decrypted title when authenticated
+  title?: string;
   created_at: string;
   updated_at: string;
   message_count: number;
+  device_id?: string;
 }
 
 export interface MessageData {
   id: string;
   content_encrypted: string;
+  // Server-side decrypted content when authenticated
+  content?: string;
   role: 'user' | 'assistant';
   timestamp: string;
   token_count?: number;
   processing_time?: number;
 }
+
+// Typed message alias (frontend internal type)
+export type ApiMessage = Msg
 
 export interface SummaryPrompt {
   id: string;
@@ -89,7 +98,6 @@ class ApiService {
     try {
       // Aggiungi header di autenticazione se disponibile
       const accessToken = CredentialManager.getAccessToken();
-      console.log('🔑 makeRequest - Access token from storage:', accessToken?.substring(0, 20) + '...');
       
       if (accessToken) {
         options.headers = {
@@ -97,15 +105,11 @@ class ApiService {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         };
-        console.log('🔑 makeRequest - Added Authorization header');
       } else if (!options.headers) {
         options.headers = {
           'Content-Type': 'application/json'
         };
-        console.log('🔑 makeRequest - No token found, only Content-Type header');
       }
-
-      console.log('📡 makeRequest - Making request to:', `${API_BASE_URL}${endpoint}`);
       const response = await fetch(url, options);
       
       // Se token scaduto, prova refresh
@@ -136,22 +140,53 @@ class ApiService {
   }
 
   private async handleResponse<T>(response: Response): Promise<ApiResponse<T>> {
-    try {
-      const data = await response.json();
-      
-      if (response.ok) {
-        return { success: true, data };
-      } else {
+    // Fast path: no content
+    if (response.status === 204 || response.headers.get('content-length') === '0') {
+      return { success: true };
+    }
+
+    const isDev = (import.meta as any)?.env?.DEV;
+    const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+
+    // Helper to trim a long text for error snippets
+    const trimSnippet = (txt: string, max = 400) => {
+      if (txt.length <= max) return txt;
+      return txt.slice(0, max) + '…';
+    };
+
+    // If JSON (or looks like it) try to parse as JSON first
+    if (contentType.includes('application/json') || contentType.includes('+json')) {
+      try {
+        const data = await response.json();
+        if (response.ok) {
+          return { success: true, data };
+        }
         return {
           success: false,
-          error: data.detail || data.message || 'Request failed'
+          error: (data && (data.detail || data.message || data.error)) || `Request failed (${response.status})`
+        };
+      } catch (e: any) {
+        // Fall through to attempt raw text for diagnostics
+        if (isDev) console.warn('[apiService] JSON parse failed, attempting text fallback:', e?.message);
+      }
+    }
+
+    // Not JSON or JSON parse failed: read as text
+    try {
+      const rawText = await response.text();
+      if (!response.ok) {
+        // Provide a more informative error including status & snippet
+        const snippet = trimSnippet(rawText.replace(/\s+/g, ' ').trim());
+        return {
+          success: false,
+            error: snippet || `Request failed (${response.status})`
         };
       }
-    } catch (error) {
-      return {
-        success: false,
-        error: 'Failed to parse response'
-      };
+      // If OK but not JSON, return the raw text inside data (caller must handle)
+      return { success: true, data: rawText as any };
+    } catch (e: any) {
+      if (isDev) console.error('[apiService] Failed to read response body:', e?.message);
+      return { success: false, error: 'Failed to parse response' };
     }
   }
 
@@ -233,12 +268,14 @@ class ApiService {
   }
 
   // Conversation endpoints (da implementare nel backend)
-  async getConversations(): Promise<ApiResponse<ConversationData[]>> {
-    return this.makeRequest<ConversationData[]>('/conversations');
+  async getConversations(impersonateUserId?: number | null): Promise<ApiResponse<ConversationData[]>> {
+    const params = impersonateUserId ? `?impersonate_user_id=${impersonateUserId}` : '';
+    // Usa trailing slash per evitare redirect FastAPI (307) che può perdere la porta via proxy
+    return this.makeRequest<ConversationData[]>(`/conversations/${params}`.replace('//','/'));
   }
 
   async createConversation(titleEncrypted: string): Promise<ApiResponse<{ conversation_id: string }>> {
-    return this.makeRequest<{ conversation_id: string }>('/conversations', {
+    return this.makeRequest<{ conversation_id: string }>('/conversations/', {
       method: 'POST',
       body: JSON.stringify({
         title_encrypted: titleEncrypted
@@ -246,8 +283,9 @@ class ApiService {
     });
   }
 
-  async getConversationMessages(conversationId: string): Promise<ApiResponse<MessageData[]>> {
-    return this.makeRequest<MessageData[]>(`/conversations/${conversationId}/messages`);
+  async getConversationMessages(conversationId: string, impersonateUserId?: number | null): Promise<ApiResponse<MessageData[]>> {
+    const params = impersonateUserId ? `?impersonate_user_id=${impersonateUserId}` : '';
+    return this.makeRequest<MessageData[]>(`/conversations/${conversationId}/messages${params}`);
   }
 
   async sendMessage(
@@ -330,11 +368,14 @@ class ApiService {
   async resetSummaryPrompt(): Promise<ApiResponse<{ prompt: string }>> {
     return this.makeRequest<{ prompt: string }>('/admin/summary-prompt/reset', { method: 'POST' });
   }
-  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean } }>> {
-    return this.makeRequest<{ settings: { provider: string; enabled: boolean } }>('/admin/summary-settings');
+  async getSummarySettings(): Promise<ApiResponse<{ settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean } }>> {
+    return this.makeRequest<{ settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean } }>('/admin/summary-settings');
   }
-  async updateSummarySettings(settings: { provider: string; enabled: boolean }): Promise<ApiResponse> {
+  async updateSummarySettings(settings: { provider: string; enabled: boolean; model?: string | null; min_messages?: number; min_chars?: number; auto_on_export?: boolean }): Promise<ApiResponse> {
     return this.makeRequest('/admin/summary-settings', { method: 'POST', body: JSON.stringify(settings) });
+  }
+  async testSummary(payload: { messages?: string[]; provider?: string; model?: string; prompt_override?: string }): Promise<ApiResponse<{ summary: string; provider: string; model: string; chars: number }>> {
+    return this.makeRequest<{ summary: string; provider: string; model: string; chars: number }>('/admin/summary-test', { method: 'POST', body: JSON.stringify(payload) });
   }
   // New multi summary prompts endpoints
   async listSummaryPrompts(): Promise<ApiResponse<{ active_id: string; prompts: SummaryPrompt[] }>> {
@@ -380,6 +421,10 @@ class ApiService {
 
   async getPersonalities(): Promise<ApiResponse<{ default_id: string|null; personalities: PersonalityEntry[] }>> {
     return this.makeRequest('/personalities');
+  }
+
+  async listSystemPrompts(): Promise<ApiResponse<{ active_id: string | null; prompts: SystemPromptEntry[] }>> {
+    return this.makeRequest<{ active_id: string | null; prompts: SystemPromptEntry[] }>('/admin/system-prompts');
   }
   
   async getConversationSummary(conversationId: string): Promise<ApiResponse<{ conversation_id: string; summary: string }>> {
@@ -427,6 +472,51 @@ class ApiService {
       throw error;
     }
   }
+  async downloadConversationPdf(conversationId: string): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}` };
+    const resp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=pdf`, { headers });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        const retry = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=pdf`, { headers: { 'Authorization': `Bearer ${CredentialManager.getAccessToken()}` } });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+    return resp.blob();
+  }
+  async downloadConversationTxt(conversationId: string): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}` };
+    const url = `${API_BASE_URL}/conversations/${conversationId}/export-with-report?format=txt`;
+    const resp = await fetch(url, { headers });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        const retry = await fetch(url, { headers: { 'Authorization': `Bearer ${CredentialManager.getAccessToken()}` } });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
+    return resp.blob();
+  }
+
+  // RAG management (existing methods may be elsewhere; adding search quick method)
+  async searchRagDocuments(query: string): Promise<ApiResponse<{ results: any[] }>> {
+    const q = encodeURIComponent(query);
+    return this.makeRequest<{ results: any[] }>(`/admin/rag/document/search?q=${q}`);
+  }
+
+  async recoverRagGroups(): Promise<ApiResponse<{ created: number; recovered: any[] }>> {
+    return this.makeRequest<{ created: number; recovered: any[] }>(`/admin/rag/recover-groups`, { method: 'POST' });
+  }
 
   // Chat endpoint (compatibile con sistema esistente)
   async chat(messages: any[], provider: string = 'anthropic'): Promise<Response> {
@@ -467,59 +557,113 @@ class ApiService {
 
   // === RAG Embedding Management ===
   async getEmbeddingConfig(): Promise<ApiResponse<any>> {
-  // Backend path: /api/rag/embedding/config
-  return this.makeRequest('/rag/embedding/config');
+    return this.makeRequest('/admin/rag/embedding/config');
   }
   async listLocalEmbeddingModels(): Promise<ApiResponse<{ models: string[] }>> {
-  // Backend exposes /embedding/models
-  return this.makeRequest('/rag/embedding/models');
+    return this.makeRequest('/admin/rag/embedding/local-models');
   }
   async setEmbeddingProvider(provider_type: string, model_name: string): Promise<ApiResponse<any>> {
-  // Backend endpoint: POST /rag/embedding/select
-  return this.makeRequest('/rag/embedding/select', { method: 'POST', body: JSON.stringify({ provider_type, model_name }) });
+    return this.makeRequest('/admin/rag/embedding/set', {
+      method: 'POST',
+      body: JSON.stringify({ provider_type, model_name })
+    });
   }
   async startEmbeddingDownload(model_name: string): Promise<ApiResponse<{ task_id: string }>> {
-  // Backend endpoint: POST /rag/embedding/download
-  return this.makeRequest('/rag/embedding/download', { method: 'POST', body: JSON.stringify({ model_name }) });
+    return this.makeRequest('/admin/rag/embedding/download/start', {
+      method: 'POST',
+      body: JSON.stringify({ model_name })
+    });
   }
   async getEmbeddingDownloadStatus(task_id: string): Promise<ApiResponse<any>> {
-  // Backend endpoint: GET /rag/embedding/download/status/{task_id}
-  return this.makeRequest(`/rag/embedding/download/status/${encodeURIComponent(task_id)}`);
+    const q = encodeURIComponent(task_id);
+    return this.makeRequest(`/admin/rag/embedding/download/status?task_id=${q}`);
   }
   async listEmbeddingDownloadTasks(): Promise<ApiResponse<{ tasks: any[] }>> {
-  return this.makeRequest('/rag/embedding/download/tasks');
+    return this.makeRequest('/admin/rag/embedding/download/tasks');
   }
 
   // === RAG Groups & Documents ===
   async getRagStats(): Promise<ApiResponse<any>> {
-  return this.makeRequest('/rag/stats');
+    return this.makeRequest('/admin/rag/stats');
   }
   async listRagGroups(): Promise<ApiResponse<{ groups: any[] }>> {
-  return this.makeRequest('/rag/groups');
+    return this.makeRequest('/admin/rag/groups');
+  }
+  async fixRagOrphans(): Promise<ApiResponse<{ moved: number; group_id: number }>> {
+    return this.makeRequest('/admin/rag/fix-orphans', { method: 'POST' });
+  }
+  async getRagOrphansStatus(): Promise<ApiResponse<{ orphan_chunks: number }>> {
+    return this.makeRequest('/admin/rag/orphans/status');
+  }
+  async cleanupRagOrphanChunks(): Promise<ApiResponse<{ removed: number }>> {
+    return this.makeRequest('/admin/rag/orphans/cleanup-chunks', { method: 'POST' });
+  }
+  async cleanupRagOrphanDocuments(): Promise<ApiResponse<{ deleted: number; requested: number }>> {
+    return this.makeRequest('/admin/rag/orphans/cleanup-documents', { method: 'POST' });
   }
   async createRagGroup(name: string, description: string): Promise<ApiResponse<any>> {
-  return this.makeRequest('/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
+    return this.makeRequest('/admin/rag/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
   }
   async updateRagGroup(id: number, payload: { name?: string; description?: string }): Promise<ApiResponse<any>> {
-  return this.makeRequest(`/rag/groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
   }
   async deleteRagGroup(id: number): Promise<ApiResponse<any>> {
-  return this.makeRequest(`/rag/groups/${id}`, { method: 'DELETE' });
+    return this.makeRequest(`/admin/rag/groups/${id}`, { method: 'DELETE' });
   }
   async listRagDocuments(groupId: number): Promise<ApiResponse<{ documents: any[] }>> {
-  return this.makeRequest(`/rag/groups/${groupId}/documents`);
+    return this.makeRequest(`/admin/rag/groups/${groupId}/documents`);
   }
   async deleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
-  // NOTE: Verify backend provides this route; adjust if different
-  return this.makeRequest(`/rag/documents/${documentId}`, { method: 'DELETE' });
+    return this.makeRequest(`/admin/rag/documents/${documentId}`, { method: 'DELETE' });
+  }
+  async renameRagDocument(documentId: number, filename: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/rename`, { method: 'POST', body: JSON.stringify({ filename }) });
+  }
+  async moveRagDocument(documentId: number, group_id: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/move`, { method: 'POST', body: JSON.stringify({ group_id }) });
+  }
+  async duplicateRagDocument(documentId: number, target_group_id: number): Promise<ApiResponse<{ new_document_id: number }>> {
+    return this.makeRequest<{ new_document_id: number }>(`/admin/rag/documents/${documentId}/duplicate`, { method: 'POST', body: JSON.stringify({ target_group_id }) });
+  }
+  async reprocessRagDocument(documentId: number, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<{ chunk_count: number }>> {
+    return this.makeRequest<{ chunk_count: number }>(`/admin/rag/documents/${documentId}/reprocess`, { method: 'POST', body: JSON.stringify(opts || {}) });
+  }
+  async exportRagDocument(documentId: number): Promise<ApiResponse<{ document: any; chunks: any[] }>> {
+    return this.makeRequest<{ document: any; chunks: any[] }>(`/admin/rag/documents/${documentId}/export`);
+  }
+  async archiveRagDocument(documentId: number, archived: boolean): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/archive`, { method: 'POST', body: JSON.stringify({ archived }) });
+  }
+  async updateRagDocumentPermissions(documentId: number, allow_preview: boolean, allow_download: boolean): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/permissions`, { method: 'POST', body: JSON.stringify({ allow_preview, allow_download }) });
+  }
+  async updateRagDocumentName(documentId: number, name: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/name`, { method: 'PUT', body: JSON.stringify({ name }) });
+  }
+  async ragDocumentMetadata(documentId: number): Promise<ApiResponse<{ document: any }>> {
+    return this.makeRequest<{ document: any }>(`/admin/rag/documents/${documentId}/metadata`);
+  }
+  async reassignRagDocumentToOrphans(documentId: number): Promise<ApiResponse<{ group_id: number; duplicate_removed?: boolean; already_in_orphans?: boolean }>> {
+    return this.makeRequest<{ group_id: number; duplicate_removed?: boolean; already_in_orphans?: boolean }>(`/admin/rag/documents/${documentId}/reassign-orphans`, { method: 'POST' });
+  }
+  async forceDeleteRagDocument(documentId: number): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/admin/rag/documents/${documentId}/force`, { method: 'DELETE' });
+  }
+  async listAllRagDocuments(params?: { search?: string; group_id?: number; limit?: number; offset?: number }): Promise<ApiResponse<{ total:number; documents:any[] }>> {
+    const q: string[] = []
+    if (params?.search) q.push(`search=${encodeURIComponent(params.search)}`)
+    if (typeof params?.group_id === 'number') q.push(`group_id=${params.group_id}`)
+    if (typeof params?.limit === 'number') q.push(`limit=${params.limit}`)
+    if (typeof params?.offset === 'number') q.push(`offset=${params.offset}`)
+    const qs = q.length ? `?${q.join('&')}` : ''
+    return this.makeRequest(`/admin/rag/documents${qs}`)
   }
   async uploadRagDocument(groupId: number, file: File): Promise<ApiResponse<any>> {
     const form = new FormData();
     form.append('group_id', String(groupId));
     form.append('file', file);
     const accessToken = CredentialManager.getAccessToken();
-  // Backend route: POST /api/rag/upload-multi (multipart form with group_id & files[])
-  const resp = await fetch(`${API_BASE_URL}/rag/upload-multi`, {
+    const resp = await fetch(`${API_BASE_URL}/admin/rag/upload`, {
       method: 'POST',
       headers: accessToken ? { 'Authorization': `Bearer ${accessToken}` } : undefined,
       body: form
@@ -530,6 +674,88 @@ class ApiService {
       return { success: false, error: data.detail || 'Upload failed' };
     } catch {
       return { success: false, error: 'Upload parse error' };
+    }
+  }
+
+  async replaceRagDocument(documentId: number, file: File, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<any>> {
+    const form = new FormData();
+    form.append('file', file);
+    if (typeof opts?.chunk_size === 'number' && !Number.isNaN(opts.chunk_size)) {
+      form.append('chunk_size', String(opts.chunk_size));
+    }
+    if (typeof opts?.chunk_overlap === 'number' && !Number.isNaN(opts.chunk_overlap)) {
+      form.append('chunk_overlap', String(opts.chunk_overlap));
+    }
+    const accessToken = CredentialManager.getAccessToken();
+    const resp = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace`, {
+      method: 'POST',
+      headers: accessToken ? { 'Authorization': `Bearer ${accessToken}` } : undefined,
+      body: form
+    });
+    try {
+      const data = await resp.json();
+      if (resp.ok) return { success: true, data };
+      return { success: false, error: data.detail || 'Replace failed' };
+    } catch {
+      return { success: false, error: 'Replace parse error' };
+    }
+  }
+
+  async replaceRagDocumentChunked(documentId: number, file: File, onProgress?: (percent: number) => void, opts?: { chunk_size?: number; chunk_overlap?: number }): Promise<ApiResponse<any>> {
+    try {
+      // 1. Init
+      const initRes = await this.post(`/admin/rag/documents/${documentId}/replace/init`);
+      if (!initRes.success) return initRes;
+      const uploadId = initRes.data.upload_id;
+
+      // 2. Upload chunks
+      const CHUNK_SIZE = 1024 * 1024; // 1MB
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+      const accessToken = CredentialManager.getAccessToken();
+      const headersAuth: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {};
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        const form = new FormData();
+        form.append('upload_id', uploadId);
+        form.append('chunk_index', String(i));
+        form.append('file', chunk);
+        
+        const res = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace/append`, {
+            method: 'POST',
+            headers: headersAuth,
+            body: form
+        });
+        
+        if (!res.ok) throw new Error(`Chunk ${i+1}/${totalChunks} upload failed`);
+        
+        if (onProgress) {
+            onProgress(Math.round(((i + 1) / totalChunks) * 100));
+        }
+      }
+
+      // 3. Commit
+      const commitForm = new FormData();
+      commitForm.append('upload_id', uploadId);
+      commitForm.append('filename', file.name);
+      if (opts?.chunk_size) commitForm.append('chunk_size', String(opts.chunk_size));
+      if (opts?.chunk_overlap) commitForm.append('chunk_overlap', String(opts.chunk_overlap));
+      
+      const commitRes = await fetch(`${API_BASE_URL}/admin/rag/documents/${documentId}/replace/commit`, {
+          method: 'POST',
+          headers: headersAuth,
+          body: commitForm
+      });
+      
+      const commitData = await commitRes.json();
+      if (commitRes.ok) return { success: true, data: commitData };
+      return { success: false, error: commitData.detail || 'Commit failed' };
+
+    } catch (e: any) {
+      return { success: false, error: e.message || 'Chunked upload error' };
     }
   }
 
@@ -564,11 +790,18 @@ class ApiService {
     try {
       const resp = await fetch(`${API_BASE_URL}/transcribe`, { method: 'POST', headers, body: form });
       const data = await resp.json();
+      // 202 => modello in download/caricamento
+      if (resp.status === 202) {
+        return { success: false, error: data.status || 'Model not ready', data } as any;
+      }
       if (resp.ok) return { success: true, data };
       return { success: false, error: data.detail || 'Transcription failed' };
     } catch (e:any) {
       return { success: false, error: e?.message || 'Network error' };
     }
+  }
+  async whisperModelStatus(model: string): Promise<ApiResponse<any>> {
+    return this.makeRequest(`/whisper/models/${encodeURIComponent(model)}/status`);
   }
   async getWhisperHealth(): Promise<ApiResponse<any>> {
     return this.makeRequest('/whisper/health');
@@ -578,9 +811,181 @@ class ApiService {
     return this.makeRequest('/whisper/warm' + (model && !body ? `?model=${encodeURIComponent(model)}` : ''), { method: 'POST', body });
   }
 
+  // === Available Models for Providers ===
+  async getAvailableModels(provider: string): Promise<ApiResponse<{ models: string[] }>> {
+    return this.makeRequest(`/admin/models/${encodeURIComponent(provider)}`);
+  }
+
+  // === Database Info ===
+  async getDatabaseInfo(include_sizes: boolean = false, opts: { order?: 'name'|'rows'|'size'; cacheSeconds?: number; forceRefresh?: boolean } = {}): Promise<ApiResponse<{ engine: string; version?: string|null; tables: ({ name: string; rows: number|null; size_bytes?: number|null; size_pct?: number }|string)[]; critical_missing?: string[]; attached?: any[]; total_rows?: number; total_size_bytes?: number|null; elapsed_ms?: number; include_sizes?: boolean; order?: string; cached?: boolean; cache_age_s?: number; cache_ttl_s?: number }>> {
+    const params: string[] = [];
+    if (include_sizes) params.push('include_sizes=true');
+    if (opts.order) params.push(`order=${encodeURIComponent(opts.order)}`);
+    if (typeof opts.cacheSeconds === 'number') params.push(`cache_seconds=${opts.cacheSeconds}`);
+    if (opts.forceRefresh) params.push('force_refresh=true');
+    const qp = params.length ? `?${params.join('&')}` : '';
+    return this.makeRequest<{ engine: string; version?: string|null; tables: ({ name: string; rows: number|null; size_bytes?: number|null; size_pct?: number }|string)[]; critical_missing?: string[]; attached?: any[]; total_rows?: number; total_size_bytes?: number|null; elapsed_ms?: number; include_sizes?: boolean; order?: string; cached?: boolean; cache_age_s?: number; cache_ttl_s?: number }>(`/admin/db-info${qp}`);
+  }
+
+  // === Predefined Queries ===
+  async listQueries(): Promise<ApiResponse<{ queries: any[] }>> {
+    return this.makeRequest('/queries');
+  }
+  async describeQuery(id: string): Promise<ApiResponse<{ query: any }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}`);
+  }
+  async previewQuery(id: string, params: Record<string, any>): Promise<ApiResponse<{ query_id: string; count: number; rows: any[] }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}/preview`, { method: 'POST', body: JSON.stringify({ params }) });
+  }
+  async executeQuery(id: string, params: Record<string, any>): Promise<ApiResponse<{ query_id: string; count: number; rows: any[] }>> {
+    return this.makeRequest(`/queries/${encodeURIComponent(id)}/execute`, { method: 'POST', body: JSON.stringify({ params }) });
+  }
+  async nlq(text: string): Promise<ApiResponse<{ matched: boolean; query_id?: string; params?: any; label?: string; message?: string; suggestions?: any[] }>> {
+    return this.makeRequest('/queries/nlq', { method: 'POST', body: JSON.stringify({ text }) });
+  }
+  async exportQueryCsv(id: string, params: Record<string, any>): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: HeadersInit = accessToken ? { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${API_BASE_URL}/queries/${encodeURIComponent(id)}/export`, { method: 'POST', headers, body: JSON.stringify({ params }) });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(txt || 'Export failed');
+    }
+    return resp.blob();
+  }
+
+  // === DB Explorer (Admin) ===
+  async listDbTables(): Promise<ApiResponse<{ tables: string[] }>> {
+    return this.makeRequest<{ tables: string[] }>(`/admin/db/tables`);
+  }
+  async sampleTable(table: string, limit: number = 100): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    const q = new URLSearchParams({ limit: String(limit) }).toString();
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/table/${encodeURIComponent(table)}?${q}`);
+  }
+  async runDbQuery(sql: string, limit: number = 100): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/query`, { method: 'POST', body: JSON.stringify({ sql, limit }) });
+  }
+  async getTableColumns(table: string): Promise<ApiResponse<{ name: string; type: string; is_nullable: boolean; is_primary: boolean }[]>> {
+    return this.makeRequest(`/admin/db/columns/${encodeURIComponent(table)}`);
+  }
+  async dbSearch(table: string, q: string, limit: number = 50): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    const qs = new URLSearchParams({ table, q, limit: String(limit) }).toString();
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/search?${qs}`);
+  }
+  async dbUpdate(table: string, key: Record<string, any>, set: Record<string, any>): Promise<ApiResponse<{ updated: number }>> {
+    return this.makeRequest<{ updated: number }>(`/admin/db/update`, { method: 'POST', body: JSON.stringify({ table, key, set }) });
+  }
+  async dbInsert(table: string, values: Record<string, any>): Promise<ApiResponse<{ inserted: number }>> {
+    return this.makeRequest<{ inserted: number }>(`/admin/db/insert`, { method: 'POST', body: JSON.stringify({ table, values }) });
+  }
+  async dbDelete(table: string, key: Record<string, any>): Promise<ApiResponse<{ deleted: number }>> {
+    return this.makeRequest<{ deleted: number }>(`/admin/db/delete`, { method: 'POST', body: JSON.stringify({ table, key }) });
+  }
+
+  // === DB Query Builder ===
+  async dbQueryBuilder(payload: {
+    table: string;
+    select?: string[];
+    filters?: { column: string; op: string; value?: any }[];
+    group_by?: string[];
+    metrics?: { fn: 'count'|'sum'|'avg'|'min'|'max'; column?: string; alias?: string }[];
+    order_by?: { by: string; dir?: 'ASC'|'DESC' };
+    limit?: number;
+    // Server-side decrypted title when authenticated
+    title?: string;
+    offset?: number;
+    distinct?: boolean;
+  }): Promise<ApiResponse<{ columns: string[]; rows: any[] }>> {
+    return this.makeRequest<{ columns: string[]; rows: any[] }>(`/admin/db/query-builder`, { method: 'POST', body: JSON.stringify(payload) });
+  }
+
+  // === Forms (Questionari) ===
+  async listForms(): Promise<ApiResponse<{ forms: { id: string; name: string; description?: string; items_count: number }[] }>> {
+    return this.makeRequest(`/forms`);
+  }
+  async getForm(formId: string): Promise<ApiResponse<{ form: { id: string; name: string; description?: string; items: any[] } }>> {
+    return this.makeRequest(`/forms/${encodeURIComponent(formId)}`);
+  }
+  async submitForm(formId: string, values: any, opts: { conversationId?: string; personalityId?: string } = {}): Promise<ApiResponse<{ id: string }>> {
+    return this.makeRequest(`/forms/${encodeURIComponent(formId)}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ values, conversation_id: opts.conversationId || null, personality_id: opts.personalityId || null })
+    });
+  }
+  // Admin forms
+  async adminListForms(): Promise<ApiResponse<{ forms: any[] }>> {
+    return this.makeRequest(`/admin/forms`);
+  }
+  async adminSaveForm(form: { id?: string; name: string; description?: string; items: any[] }): Promise<ApiResponse<{ id: string }>> {
+    return this.makeRequest(`/admin/forms`, { method: 'POST', body: JSON.stringify(form) });
+  }
+  async adminDeleteForm(id: string): Promise<ApiResponse<{ success: boolean }>> {
+    return this.makeRequest(`/admin/forms/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  async adminListFormSubmissions(id: string, limit: number = 100, offset: number = 0): Promise<ApiResponse<{ items: any[] }>> {
+    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) }).toString();
+    return this.makeRequest(`/admin/forms/${encodeURIComponent(id)}/submissions?${q}`);
+  }
+
   // === Pipeline (Regex Routes & File Mappings) ===
   async getPipelineConfig(): Promise<ApiResponse<{ routes: { pattern: string; topic: string }[]; files: Record<string,string> }>> {
     return this.makeRequest('/admin/pipeline');
+  }
+    async getPipelineSettings(): Promise<ApiResponse<{ settings: { force_case_insensitive: boolean; normalize_accents: boolean } }>> {
+      return this.makeRequest('/admin/pipeline-settings');
+    }
+    async updatePipelineSettings(force_case_insensitive: boolean, normalize_accents: boolean): Promise<ApiResponse<any>> {
+      return this.makeRequest('/admin/pipeline-settings', {
+        method: 'POST',
+        body: JSON.stringify({ force_case_insensitive, normalize_accents })
+      });
+    }
+  async validatePipeline(): Promise<ApiResponse<{ issues: { pattern:string; topic?:string; severity:string; code:string; message:string }[]; counts: { ERROR:number; WARN:number; INFO:number } }>> {
+    return this.makeRequest('/admin/pipeline/validate');
+  }
+  async getPipelineRegexGuide(): Promise<ApiResponse<{ content: string }>> {
+    return this.makeRequest('/admin/pipeline/regex-guide');
+  }
+  async getPipelinePreviewContext(topic: string): Promise<ApiResponse<{
+    exists: boolean;
+    topic: string;
+    filename?: string;
+    message?: string;
+    content_length?: number;
+    preview?: string;
+    full_content?: string;
+  }>> {
+    return this.makeRequest(`/admin/pipeline/preview-context?topic=${encodeURIComponent(topic)}`);
+  }
+  async getPipelineHistory(limit: number = 50, offset: number = 0): Promise<ApiResponse<{
+    history: Array<{ timestamp: string; action: string; user: string; before?: any; after?: any; metadata?: any }>;
+    total: number;
+  }>> {
+    return this.makeRequest(`/admin/pipeline/history?limit=${limit}&offset=${offset}`);
+  }
+  async exportPipelineConfig(): Promise<void> {
+    // Download diretto come file
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string, string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    const response = await fetch(`${API_BASE_URL}/admin/pipeline/export`, { headers });
+    if (!response.ok) throw new Error('Export fallito');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'pipeline_config_export.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  async importPipelineConfig(config: { routes: { pattern: string; topic: string }[]; files: Record<string, string> }, merge: boolean = false): Promise<ApiResponse<any>> {
+    return this.makeRequest('/admin/pipeline/import', {
+      method: 'POST',
+      body: JSON.stringify({ routes: config.routes, files: config.files, merge })
+    });
+  }
+  async getAdminGuide(): Promise<ApiResponse<{ content: string }>> {
+    return this.makeRequest('/admin/admin-guide');
   }
   async savePipelineConfig(cfg: { routes: { pattern: string; topic: string }[]; files: Record<string,string> }): Promise<ApiResponse<any>> {
     return this.makeRequest('/admin/pipeline', { method: 'POST', body: JSON.stringify(cfg) });
@@ -633,7 +1038,7 @@ class ApiService {
 
   // === Admin User Management ===
   async changeUserRole(userId: number, isAdmin: boolean): Promise<ApiResponse<any>> {
-    return this.makeRequest(`/admin/users/${userId}/role`, {
+    return this.makeRequest(`/admin/legacy-users/${userId}/role`, {
       method: 'PUT',
       body: JSON.stringify({ is_admin: isAdmin })
     });
@@ -699,6 +1104,112 @@ class ApiService {
   async getPublicWelcomeGuide(): Promise<ApiResponse<{ welcome: any; guide: any }>> {
     return this.makeRequest('/welcome-guides/public');
   }
+  async downloadConversationWithReportPost(conversationId: string, history: { id?: string; role: string; content: string; timestamp?: string }[], format?: 'zip'|'pdf'|'txt'): Promise<Blob> {
+    const accessToken = CredentialManager.getAccessToken();
+    if (!accessToken) throw new Error('User not authenticated. Please login first.');
+    const headers: HeadersInit = { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
+    const body = {
+      format: format || 'zip',
+      conversation_history: history
+    };
+    const resp = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body)
+    });
+    if (resp.status === 401) {
+      const refreshed = await this.refreshToken();
+      if (refreshed) {
+        headers['Authorization'] = `Bearer ${CredentialManager.getAccessToken()}`;
+        const retry = await fetch(`${API_BASE_URL}/conversations/${conversationId}/export-with-report`, { method: 'POST', headers, body: JSON.stringify(body) });
+        if (!retry.ok) throw new Error(`Download failed: ${retry.status}`);
+        return retry.blob();
+      }
+      throw new Error('Authentication expired');
+    }
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(`Download failed: ${resp.status} - ${txt}`);
+    }
+    return resp.blob();
+  }
+
+  // Config backup & integrity
+  async getConfigStatus(): Promise<ApiResponse<{ files: {id:string; relative:string; filename:string; kind:string; required:boolean; sha256?:string; exists:boolean}[]; aggregate_sha256: string }>> {
+    return this.makeRequest('/admin/config/status');
+  }
+  // Legacy/simple backup (admin endpoints)
+  async downloadConfigBackup(params: { include_seed?: boolean; include_avatars?: boolean; include_db?: boolean; dry_run?: boolean } = {}): Promise<Response> {
+    const q = new URLSearchParams();
+    if (params.include_seed) q.set('include_seed','true');
+    if (params.include_avatars) q.set('include_avatars','true');
+    if (params.include_db === false) q.set('include_db','false');
+    if (params.dry_run) q.set('dry_run','true');
+    const url = `/admin/config/backup${q.toString()?`?${q.toString()}`:''}`;
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}${url}`, { headers });
+  }
+  async downloadDbDump(tables?: string[]): Promise<Response> {
+    const q = new URLSearchParams();
+    if (tables && tables.length) q.set('tables', tables.join(','));
+    const url = `/admin/db/dump${q.toString()?`?${q.toString()}`:''}`;
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}${url}`, { headers });
+  }
+  async restoreConfigBackup(file: File, opts: { allow_seed?: boolean; dry_run?: boolean } = {}): Promise<ApiResponse<any>> {
+    const q = new URLSearchParams();
+    if (opts.allow_seed) q.set('allow_seed','true');
+    if (opts.dry_run !== false) q.set('dry_run','true'); // default dry_run true
+    const url = `/admin/config/restore${q.toString()?`?${q.toString()}`:''}`;
+    const form = new FormData();
+    form.append('file', file, file.name || 'backup.zip');
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    try {
+      const res = await fetch(`${API_BASE_URL}${url}`, { method: 'POST', headers, body: form });
+      const data = await res.json().catch(()=>({}));
+      if (res.ok) return { success: true, data };
+      return { success: false, error: (data.detail || data.error || 'Restore failed'), data };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+
+  // Advanced backup (new endpoints with conflict preview/apply)
+  async backupExportZipAdvanced(): Promise<Response> {
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    return fetch(`${API_BASE_URL}/backup/export`, { headers });
+  }
+  async backupImportPreview(file: File): Promise<ApiResponse<{ import_id: string; conflicts: any; summary: any }>> {
+    const form = new FormData();
+    form.append('file', file, file.name || 'backup.zip');
+    const accessToken = CredentialManager.getAccessToken();
+    const headers: Record<string,string> = {};
+    if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+    try {
+      const res = await fetch(`${API_BASE_URL}/backup/import/preview`, { method: 'POST', headers, body: form });
+      const data = await res.json();
+      if (res.ok) return { success: true, data } as any;
+      return { success: false, error: data?.detail || data?.error || 'Preview failed' };
+    } catch (e:any) {
+      return { success: false, error: e?.message || 'Network error' };
+    }
+  }
+  async backupImportApply(import_id: string, decisions: any): Promise<ApiResponse<{ ok: boolean }>> {
+    return this.makeRequest<{ ok: boolean }>(`/backup/import/apply`, { method: 'POST', body: JSON.stringify({ import_id, decisions }) });
+  }
+  async backupImportDelete(import_id: string): Promise<ApiResponse<{ deleted: string }>> {
+    return this.makeRequest<{ deleted: string }>(`/backup/import/${encodeURIComponent(import_id)}`, { method: 'DELETE' });
+  }
+
+
 }
 
 // Istanza singola del servizio API

@@ -4,6 +4,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import CheckIcon from '@mui/icons-material/Check'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
+import SettingsIcon from '@mui/icons-material/Settings'
 import { authFetch, BACKEND } from '../utils/authFetch'
 
 export interface ProviderConfig {
@@ -20,9 +21,10 @@ export interface ProviderConfig {
 interface Props {
   provider: ProviderConfig
   onModelChange: (providerKey: string, model: string) => Promise<void> | void
+  onOpenAPIKeysPanel?: () => void
 }
 
-const ModelProviderSection: React.FC<Props> = ({ provider, onModelChange }) => {
+const ModelProviderSection: React.FC<Props> = ({ provider, onModelChange, onOpenAPIKeysPanel }) => {
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState<string[]>(provider.models || [])
   const [loadingModels, setLoadingModels] = useState(false)
@@ -89,7 +91,20 @@ const ModelProviderSection: React.FC<Props> = ({ provider, onModelChange }) => {
         </IconButton>
         <Typography variant="subtitle1" sx={{ flex: 1 }}>{provider.name || provider.key}</Typography>
         {provider.enabled ? <Chip size="small" color="success" label="on" /> : <Chip size="small" label="off" />}
-        {provider.api_key_status && <Chip size="small" label={provider.api_key_status === 'configured' ? 'key ok' : 'key ?'} />}
+        {provider.api_key_status && (
+          <Chip 
+            size="small" 
+            label={provider.api_key_status === 'configured' ? 'key ok' : 'key ?'} 
+            color={provider.api_key_status === 'configured' ? 'success' : 'warning'}
+          />
+        )}
+        {provider.api_key_status === 'missing' && onOpenAPIKeysPanel && (
+          <Tooltip title="Configura API Key">
+            <IconButton size="small" onClick={onOpenAPIKeysPanel} color="warning">
+              <SettingsIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
       </Stack>
       <Collapse in={open} unmountOnExit>
         <Box sx={{ mt: 1, pl: 5 }}>

@@ -1,0 +1,60 @@
+name: poggi
+
+# ----------------- Template comuni -----------------
+x-pg: &pg
+  image: postgres:16-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-qsa_user} -d $${POSTGRES_DB:-qsa_chatbot}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 5s
+
+x-be: &be
+  build: ../../backend
+  restart: unless-stopped
+  user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
+  depends_on: {}
+
+x-fe: &fe
+  restart: unless-stopped
+  depends_on: []
+
+# ----------------- Servizi Poggi -----------------
+services:
+  # ---- Postgres Poggi ----
+  postgres-poggi:
+    <<: *pg
+    env_file: [.env]
+    ports: ["5537:5432"]
+    volumes: ["pgdata-poggi:/var/lib/postgresql/data"]
+
+  # ---- Backend Poggi ----
+  backend-poggi:
+    <<: *be
+    env_file: [.env]
+    ports: ["8117:8005"]
+    volumes:
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/poggi/storage:/app/storage
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/models:/app/models
+      - ${CHATBOT_DATA_ROOT:-../../runtime-data}/poggi/config:/app/config
+      - ./.env:/app/.env:ro
+      - ./.env:/app/backend/.env:ro
+    depends_on: { postgres-poggi: { condition: service_healthy } }
+
+  # ---- Frontend Poggi ----
+  frontend-poggi:
+    <<: *fe
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_BACKEND_TARGET: http://backend-poggi:8005
+        VITE_SITE_NAME: poggi
+    ports: ["5178:5175"]
+    depends_on: [backend-poggi]
+
+# ----------------- Volumi -----------------
+volumes:
+  pgdata-poggi:
